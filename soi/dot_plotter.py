@@ -13,7 +13,6 @@ import matplotlib.cm as cm
 
 mpl.use("Agg")
 mpl.rcParams['pdf.fonttype'] = 42
-#mpl.rcParams['image.antialiased'] = False
 
 from .RunCmdsMP import logger
 from .WGDI import AK
@@ -146,6 +145,8 @@ def dotplot_args(parser):
 						  help=argparse.SUPPRESS)  # "clip ks > max-ks. [default=%(default)s]")
 	group_ks.add_argument('--hist-ylim', type=float, default=None,
 						  help=argparse.SUPPRESS)  # "max y axis of Ks histgram. [default=%(default)s]")
+	group_ks.add_argument('--lfont_scale', metavar='NUM', type=float, default=1.5,
+                            help="scaling factor for font size of x/y labels of subplots b--d [default=%(default)s]")
 
 	group_ploidy = parser.add_argument_group('Ploidy plot',
 											 'options to plot relative ploidy (synteny depth)')
@@ -280,7 +281,7 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 				clip_ks=None, min_block=None, ks_step=0.02,
 				xlabels=None, ylabels=None, xpositions=None, ypositions=None,
 				xelines=None, yelines=None, xlim=None, ylim=None,
-				figsize=18, fontsize=10, cfont_scale=0.8, point_size=0.8, 
+				figsize=18, fontsize=10, cfont_scale=0.8, lfont_scale=1.5, point_size=0.8, 
 				xclines=None, yclines=None,
 				plot_bin=None, output_hist=False,
 				xoffset=None, yoffset=None, xbars=None, ybars=None, gff=None,
@@ -292,7 +293,7 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 				):
 	xcsize = ycsize = fontsize * cfont_scale  # chromosome labels
 	xsize = ysize = fontsize * 2.5	 # species labels
-	labsize = fontsize * 1.5	# x/y labels of b-d plots
+	labsize = fontsize * lfont_scale	# x/y labels of b-d plots
 	lsize = fontsize * 1.7		# a-d labels
 	if xlabel is not None and xlabels is not None and remove_prefix:
 		logger.info('trying to remove the same prefix for X chromosome labels: {}...'.format(xlabels[:100]))
@@ -341,9 +342,9 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 		kXs += Xs
 		kYs += Ys
 		if ks is None:
-			plt.plot(Xs, Ys, linewidth=1.5)
+			plt.plot(Xs, Ys, linewidth=1.5, rasterized=True)
 		else:
-			plt.plot(Xs, Ys, color="grey", ls='-', alpha=0.45, linewidth=0.55)
+			plt.plot(Xs, Ys, color="grey", ls='-', alpha=0.45, linewidth=0.55, rasterized=True)
 	ymin, ymax = 0, ylim
 	xmin, xmax = 0, xlim
 
@@ -393,10 +394,10 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 
 	# species labels
 	if xlabel:
-		ax.set_xlabel(xlabel, ha='center', fontsize=xsize, labelpad=xlabelpad)
+		ax.set_xlabel(xlabel, ha='center', fontsize=xsize, labelpad=xlabelpad, style='italic')
 		ax.xaxis.set_label_position('top')
 	if ylabel:
-		ax.set_ylabel(ylabel, rotation='vertical', ha='center', fontsize=ysize,
+		ax.set_ylabel(ylabel, rotation='vertical', ha='center', fontsize=ysize, style='italic', 
 					  labelpad=ylabelpad)
 		ax.yaxis.set_label_position('right')
 
@@ -508,7 +509,7 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	logger.info('Output figures: {}'.format(outplots))
 	logging.disable()
 	for outplot in outplots:
-		plt.savefig(outplot, bbox_inches='tight', dpi=400, transparent=True) # transparent=True
+		plt.savefig(outplot, bbox_inches='tight', dpi=400, transparent=True, )
 
 	# x/y ~ Ks
 	if plot_bin:
@@ -560,7 +561,7 @@ def plot_fold(ax, titles, ref_coord_paths, ref_coord_graph, qry_coord_graph,
 						qry_coord_graph, rq_ortholog_graph, **kargs)
 	data = [np.array(sorted(d_fold.items()))]
 	plot_bars(data, titles, ax=ax, ncol=1, nrow=1, **kargs)
-
+	ax.minorticks_on()
 
 def _histgram(ax, allKs, cmap=None, xlim=None, ylim=None, bins=100, normed=False,
 			  xlabel='Ks', ylabel=' of syntenic gene pairs', fontsize=None, output_hist=False):
@@ -596,7 +597,7 @@ def _histgram(ax, allKs, cmap=None, xlim=None, ylim=None, bins=100, normed=False
 # point.set_zorder(10)
 	ax.set_xlim(0, xlim)
 	ax.set_ylim(0, ylim)
-	ax.set_xlabel(xlabel, fontsize=fontsize*1.2)  # Ks/OrthoIndex; fontsize
+	ax.set_xlabel(xlabel, fontsize=fontsize*1.5)  # Ks/OrthoIndex; fontsize
 	ax.set_ylabel(ylabel, fontsize=fontsize*0.9)	# y lab; fontsize
 	ax.minorticks_on()
 	cbar = plt.colorbar(ax=ax)

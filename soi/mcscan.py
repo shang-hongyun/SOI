@@ -1323,7 +1323,7 @@ All chromosomes or scaffolds will be used.'.format(chrLst, e))
 			chroms += [chrom]
 		return Chromosomes(chroms)
 
-	def to_graph(self):
+	def to_graph(self, add_telomere=False, target_chroms={}):
 		'''graph: linear'''
 		G = GffGraph()
 		d_chrom = OrderedDict()
@@ -1333,11 +1333,19 @@ All chromosomes or scaffolds will be used.'.format(chrLst, e))
 			except KeyError:
 				d_chrom[line.chrom] = [line]
 		for chrom, lines in list(d_chrom.items()):
+			if target_chroms and chrom not in target_chroms:
+				continue
 			lines = sorted(lines, key=lambda x: x.start)
 			for i, line in enumerate(lines):
 				line.index = i
 			path = lines
-			G.add_path(path)
+			G.add_path(path)	# node: line
+			if add_telomere:
+				Ltel, Rtel = (chrom, 'L'), (chrom, 'R')
+				G.add_node(Ltel, telomere=1)
+				G.add_node(Rtel, telomere=1)
+				G.add_edge(Ltel, lines[0])	# left
+				G.add_edge(lines[-1], Rtel)	# right
 		return G
 
 
@@ -2039,8 +2047,54 @@ class ColinearGroups:
 		sp_dict = parse_spsd(spsd)
 		self.sp_dict = sp_dict
 		self.spsd = spsd
-		self.max_ploidy = max(list(sp_dict.values())+[1])
+		try: self.max_ploidy = max(list(sp_dict.values())+[1])
+		except AttributeError: self.max_ploidy  = 1
 		self.prefix = spsd
+
+	@property
+	def raw_graph(self):
+		G = nx.Graph()
+		sp_pairs = set([])
+		for rc in Collinearity(self.collinearity, kaks=self.kaks):
+			if rc.N < self.min_size:  # min length
+				continue
+			sp_pairs.add(rc.species)
+			for pair in rc.pairs:
+				G.add_edge(*pair)
+		if self.orthologs is not None:
+			for pair in Pairs(self.orthologs):
+				if pair.species in sp_pairs:
+					continue
+				G.add_edge(*pair.pair)
+		return G
+
+	@property
+	def graph(self):
+		G = nx.Graph()
+		d_ks = {}
+		sp_pairs = set([])
+		for rc in Collinearity(self.collinearity, kaks=self.kaks):
+			if rc.N < self.min_size:  # min length
+				continue
+			if set(rc.species) - set(self.sp_dict):  # both be in sp_dict
+				continue
+			if self.noparalog and len(set(rc.species)) == 1:  # discard paralog
+				continue
+			sp_pairs.add(rc.species)
+			for pair, ks in zip(rc.pairs, rc.ks):
+				G.add_edge(*pair)
+				key = tuple(sorted(pair))
+				d_ks[key] = ks
+		# print sp_pairs
+		self.d_ks = d_ks
+		if self.orthologs is not None:  # Orthologs without synteny information
+			for pair in Pairs(self.orthologs):
+				if set(pair.species) - set(self.sp_dict):  # Retain only the target species
+					continue
+				if pair.species in sp_pairs:  # Import only those without synteny information.
+					continue
+				G.add_edge(*pair.pair)
+		return G
 
 	@property
 	def groups(self):
@@ -2092,22 +2146,6 @@ class ColinearGroups:
 		cmd = 'infomap {} {} --clu -N 10  -2'.format(graphfile, self.tmpdir)
 		run_cmd(cmd)
 
-	@property
-	def raw_graph(self):
-		G = nx.Graph()
-		sp_pairs = set([])
-		for rc in Collinearity(self.collinearity, kaks=self.kaks):
-			if rc.N < self.min_size:  # min length
-				continue
-			sp_pairs.add(rc.species)
-			for pair in rc.pairs:
-				G.add_edge(*pair)
-		if self.orthologs is not None:
-			for pair in Pairs(self.orthologs):
-				if pair.species in sp_pairs:
-					continue
-				G.add_edge(*pair.pair)
-		return G
 
 	def gene_retention(self, winsize=100, winstep=None, min_genes=0.02):
 		if winstep is None:
@@ -2207,33 +2245,6 @@ class ColinearGroups:
 				last_i = i
 			last_v = v
 
-	@property
-	def graph(self):
-		G = nx.Graph()
-		d_ks = {}
-		sp_pairs = set([])
-		for rc in Collinearity(self.collinearity, kaks=self.kaks):
-			if rc.N < self.min_size:  # min length
-				continue
-			if set(rc.species) - set(self.sp_dict):  # both be in sp_dict
-				continue
-			if len(set(rc.species)) == 1:  # discard paralog
-				continue
-			sp_pairs.add(rc.species)
-			for pair, ks in zip(rc.pairs, rc.ks):
-				G.add_edge(*pair)
-				key = tuple(sorted(pair))
-				d_ks[key] = ks
-		# print sp_pairs
-		self.d_ks = d_ks
-		if self.orthologs is not None:  # Orthologs without synteny information
-			for pair in Pairs(self.orthologs):
-				if set(pair.species) - set(self.sp_dict):  # Retain only the target species
-					continue
-				if pair.species in sp_pairs:  # Import only those without synteny information.
-					continue
-				G.add_edge(*pair.pair)
-		return G
 
 	def filter_blocks(self):
 		for rc in Collinearity(self.collinearity):
@@ -3509,6 +3520,8 @@ def parse_spsd(spsd, skip=False):
 	d = OrderedDict()
 	if spsd is None:
 		return d
+	elif not isinstance(spsd, str):
+		return spsd
 	for line in open(spsd):
 		temp = line.strip().split()
 		if not temp:

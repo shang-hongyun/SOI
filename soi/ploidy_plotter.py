@@ -83,7 +83,7 @@ def main(args):
 	sps = [args.ref] + args.qry
 	if args.output is None:
 		sps = [x[:2] for x in sps]
-		args.output = '-'.join(sps) + '_' + str(args.window_size)
+		args.output = 'dp.' + '-'.join(sps) + '_' + str(args.window_size)
 	if args.nrow is None:
 		args.nrow = int(ceil(sqrt(len(args.qry))))
 	if args.window_step is None:
@@ -214,7 +214,8 @@ def parse_collinearity(collinearity, ref, qry, min_block=10, min_same_block=25, 
 			continue
 		sp1, sp2 = rc.species
 		if sp1 == sp2 and sp1 in qry:
-			d_paralog_graph[sp1].add_edges_from(rc.pairs)
+#			d_paralog_graph[sp1].add_edges_from(rc.pairs)
+			d_ortholog_graph[sp1].add_edges_from(rc.pairs)
 			continue
 		elif (sp1 == ref and sp2 in qry):
 			d_ortholog_graph[sp2].add_edges_from(rc.pairs)

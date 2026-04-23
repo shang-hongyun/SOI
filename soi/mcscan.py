@@ -2073,7 +2073,7 @@ class ColinearGroups:
 		G = nx.Graph()
 		d_ks = {}
 		sp_pairs = set([])
-		for rc in Collinearity(self.collinearity, kaks=self.kaks):
+		for rc in XCollinearity(self.collinearity, kaks=self.kaks):
 			if rc.N < self.min_size:  # min length
 				continue
 			if set(rc.species) - set(self.sp_dict):  # both be in sp_dict

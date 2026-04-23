@@ -8,13 +8,16 @@ from .mcscan import ColinearGroups
 from .tree import number_nodes
 from .RunCmdsMP import logger
 
+def xmain(**kargs):
+	HOG(**kargs).pipe()
+	
 class HOG:
-	def __init__(self, ogfile=None, orthfiles=None, sptreefile=None, outfile = "HOGs.tsv",
-		  paralog=False):
+	def __init__(self, ogfile=None, orthfiles=None, sptreefile=None, outpre = "HOGs",
+		  paralog=False, **kargs):
 		self.ogfile = ogfile
 		self.orthfiles = orthfiles
 		self.sptreefile = sptreefile
-		self.outfile = outfile
+		self.outtsv = outpre + '.tsv'
 		self.noparalog = not paralog
 	def pipe(self, write_tsv=True):
 		logger.info(f'Reading and Numbering species tree from {self.sptreefile}')
@@ -133,9 +136,9 @@ class HOG:
 		logger.info("All HOGs with hierarchy built successfully!")
 		
 		if write_tsv:
-			with open(self.outfile, 'w', encoding='utf-8') as f:
+			with open(self.outtsv, 'w', encoding='utf-8') as f:
 				self.write_all_hogs_in_one_file(f)
-			logger.info(f"HOGs written to {self.outfile}")
+			logger.info(f"HOGs written to {self.outtsv}")
 		return self.all_hogs
 		
 	def write_all_hogs_in_one_file(self, fout=sys.stdout):
@@ -192,6 +195,8 @@ class HOGrecord:
     # 打印美化（调试用）
     def __repr__(self):
         return f"{self.hog_id}"
+
+
 
 def main():
 	HOG(ogfile=sys.argv[1], orthfiles=sys.argv[2], sptreefile=sys.argv[3]).pipe()

@@ -70,6 +70,26 @@ def func_filter(**kargs):
 	from .mcscan import identify_orthologous_blocks
 	identify_orthologous_blocks(**kargs)
 
+def args_hog(parser):
+	parser.add_argument('-og', '-orthogroup', required=True, type=str,
+						dest='ogfile', metavar='FILE',
+						help='Orthogroup file [required]')
+	parser.add_argument('-o', '-orthologs', required=True, type=str,
+						dest='orthfiles', metavar='FILE', nargs='*',
+						help='Ortholog file [required]')
+	parser.add_argument('-t', '-sptree', required=True, type=str,
+						dest='sptreefile', metavar='FILE',
+						help='Species tree file [required]')
+	parser.add_argument('-prefix', type=str, default='HOGs',
+						dest='outpre', metavar='FILE',
+						help='Output prefix [default=%(default)s]')
+	parser.add_argument('-paralog', default=False,
+						dest='paralog', action='store_true',
+						help='Include paralogs [default=%(default)s]')
+
+def func_hog(**kargs):
+	from .hog import xmain as hog_main
+	hog_main(**kargs)
 
 def args_cluster(parser):
 	parser.add_argument('-s', '-synteny', required=True,  type=str,  nargs='*',
@@ -256,6 +276,9 @@ def makeArgs():
 	parser_depth = subparsers.add_parser('depth',
 										 help='Bar plots for synteny depth')
 	args_depth(parser_depth)
+	parser_hog = subparsers.add_parser('hog',
+									   help='Split HOGs from orthogroups using synteny and species tree.')
+	args_hog(parser_hog)
 
 	if len(sys.argv) == 1:
 		parser.print_help(sys.stderr) 
@@ -272,6 +295,7 @@ FUNC = {
 	'phylo': func_phylo,
 	'stats': func_stats,
 	'depth': func_depth,
+	'hog': func_hog,
 }
 
 

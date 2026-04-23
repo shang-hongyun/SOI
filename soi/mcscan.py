@@ -21,7 +21,6 @@ from .small_tools import open_file as open
 
 SEP = "|"
 
-
 class Gene():
 	'''Parser of Gff Line'''
 

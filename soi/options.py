@@ -74,9 +74,9 @@ def args_hog(parser):
 	parser.add_argument('-og', '-orthogroup', required=True, type=str,
 						dest='ogfile', metavar='FILE',
 						help='Orthogroup file [required]')
-	parser.add_argument('-o', '-orthologs', required=True, type=str,
+	parser.add_argument('-s', '-synteny', required=True, type=str,
 						dest='orthfiles', metavar='FILE', nargs='*',
-						help='Ortholog file [required]')
+						help='Ortholog/Collinearity files [required]')
 	parser.add_argument('-t', '-sptree', required=True, type=str,
 						dest='sptreefile', metavar='FILE',
 						help='Species tree file [required]')
@@ -90,6 +90,40 @@ def args_hog(parser):
 def func_hog(**kargs):
 	from .hog import xmain as hog_main
 	hog_main(**kargs)
+
+def args_rak(parser):
+	parser.add_argument('-og', '-orthogroup', required=True, type=str,
+						dest='ogfile', metavar='FILE',
+						help='Orthogroup file [required]')
+	parser.add_argument('-s', '-synteny', required=True, type=str,
+						dest='orthfiles', metavar='FILE', nargs='*',
+						help='Ortholog/Collinearity files [required]')
+	parser.add_argument('-t', '-sptree', required=True, type=str,
+						dest='sptreefile', metavar='FILE',
+						help='Species tree file [required]')
+	parser.add_argument('-g', '-gff', required=True, type=str,
+						dest='gfffile', metavar='FILE',
+						help='GFF annotation file [required]')
+	parser.add_argument('-prefix', type=str, default='AKR',
+						dest='outpre', metavar='FILE',
+						help='Output prefix [default=%(default)s]')
+	parser.add_argument('-paralog', default=False,
+						dest='paralog', action='store_true',
+						help='Include paralogs [default=%(default)s]')
+	parser.add_argument('-rounds', type=int, default=3,
+						dest='rounds', metavar='INT',
+						help='Optimization rounds [default=%(default)s]')
+	parser.add_argument('-chrlist', type=str, default=None,
+						dest='chrom_list', metavar='FILE',
+						help='Chromosome list file (one per line) to retain [default=%(default)s]')
+	parser.add_argument('-mingenes', type=int, default=0,
+						dest='min_genes', metavar='INT',
+						help='Minimum gene number per chromosome to retain [default=%(default)s]')
+
+def func_rak(**kargs):
+	from .karyotype import AKR
+	akr = AKR(**kargs)
+	akr.run()
 
 def args_cluster(parser):
 	parser.add_argument('-s', '-synteny', required=True,  type=str,  nargs='*',
@@ -279,6 +313,9 @@ def makeArgs():
 	parser_hog = subparsers.add_parser('hog',
 									   help='Split HOGs from orthogroups using synteny and species tree.')
 	args_hog(parser_hog)
+	parser_rak = subparsers.add_parser('rak',
+									   help='Reconstruct ancestral karyotypes based on HOG and telomere-centric model.')
+	args_rak(parser_rak)
 
 	if len(sys.argv) == 1:
 		parser.print_help(sys.stderr) 
@@ -296,6 +333,7 @@ FUNC = {
 	'stats': func_stats,
 	'depth': func_depth,
 	'hog': func_hog,
+	'rak': func_rak,
 }
 
 

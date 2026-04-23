@@ -132,7 +132,7 @@ class HOG:
 							break
 
 		logger.info(f"Processed {len(self.all_hogs)} HOGs")
-		print(Counter(v['node_id'] for v in self.all_hogs.values()))
+		#print(Counter(v['node_id'] for v in self.all_hogs.values()))
 		logger.info("All HOGs with hierarchy built successfully!")
 		
 		if write_tsv:
@@ -190,7 +190,7 @@ class HOGrecord:
 
     # 🔥 相等判断：两个HOG的hog_id相同则视为同一个对象
     def __eq__(self, other):
-        return isinstance(other, HOG) and self.hog_id == other.hog_id
+        return isinstance(other, HOGrecord) and self.hog_id == other.hog_id
 
     # 打印美化（调试用）
     def __repr__(self):

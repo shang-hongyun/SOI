@@ -91,6 +91,14 @@ def func_hog(**kargs):
 	from .hog import xmain as hog_main
 	hog_main(**kargs)
 
+def args_sim(parser):
+	from .evolution_simulator_ak import sim_args
+	sim_args(parser)
+
+def func_sim(**kargs):
+	from .evolution_simulator_ak import xmain as sim_main
+	sim_main(**kargs)
+
 def args_rak(parser):
 	parser.add_argument('-og', '-orthogroup', required=True, type=str,
 						dest='ogfile', metavar='FILE',
@@ -316,6 +324,9 @@ def makeArgs():
 	parser_rak = subparsers.add_parser('rak',
 									   help='Reconstruct ancestral karyotypes based on HOG and telomere-centric model.')
 	args_rak(parser_rak)
+	parser_sim = subparsers.add_parser('sim',
+									   help='Simulate chromosome rearrangement evolution.')
+	args_sim(parser_sim)
 
 	if len(sys.argv) == 1:
 		parser.print_help(sys.stderr) 
@@ -334,6 +345,7 @@ FUNC = {
 	'depth': func_depth,
 	'hog': func_hog,
 	'rak': func_rak,
+	'sim': func_sim,
 }
 
 

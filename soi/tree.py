@@ -6,7 +6,11 @@ class SpeciesTree:
 
 def number_nodes(sptreefile):
 	treestr = convertNHX(sptreefile)
-	tree = Tree(treestr)
+#	print(treestr)
+	tree = load_tree_smart(treestr)
+#	try: tree = Tree(treestr, format=0)
+#	except :
+#		tree = Tree(treestr, format=1)
 	i = 0
 	for node in tree.traverse():
 		node.show = True
@@ -20,6 +24,27 @@ def number_nodes(sptreefile):
 	tree.write(outfile=sptreefile + ".labeled.nwk", format=1)
 	return tree 
 
+
+def load_tree_smart(treestr):
+    """
+    智能判断：检测内部节点标签是纯数字(support)还是文本(name)
+    """
+    # 提取所有 ")LABEL:" 或 ")LABEL;" 模式的内部节点标签
+    # 匹配 ) 后到 : 或 ; 或 ) 前的内容
+    internal_labels = re.findall(r'\)([^:;,\(\)]+)(?=:)', treestr)
+    
+    # 判断是否有非数字标签（允许空，允许小数）
+    has_text_label = any(
+        label and not re.match(r'^\d*\.?\d+$', label) 
+        for label in internal_labels
+    )
+    
+    if has_text_label:
+        # 有文本标签（如 N1），用 format=1
+        return Tree(treestr, format=1)
+    else:
+        # 只有数字或空，用 format=0（保留 support 值）
+        return Tree(treestr, format=0)
 
 def convert_newick(line: str) -> str:
     '''(A,B[p=2]); (A,B[p=2]:0.1); (A,B:0.1[p=2]); (A,B[&&NHX:p=2])'''

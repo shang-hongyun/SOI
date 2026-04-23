@@ -121,7 +121,7 @@ def args_rak(parser):
 						help='Minimum gene number per chromosome to retain [default=%(default)s]')
 
 def func_rak(**kargs):
-	from .karyotype import AKR
+	from .AK import AKR
 	akr = AKR(**kargs)
 	akr.run()
 

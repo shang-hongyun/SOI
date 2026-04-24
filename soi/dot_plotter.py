@@ -82,17 +82,25 @@ def dotplot_args(parser):
 	group_dot.add_argument('--ylines', metavar='FILE', type=str, default=None,
 						   help="bed/pos file to add horizontal lines. [default=%(default)s]")
 	group_dot.add_argument('--xbars', metavar='FILE', type=str, default=None,
-						   help="ancetor file to set colorbar for x axis. [default=%(default)s]")
+						   help="ancetor file to set colorbar for x axis (top). Fallback to --xanc. [default=%(default)s]")
 	group_dot.add_argument('--ybars', metavar='FILE', type=str, default=None,
-						   help="ancetor file to set colorbar for y axis. [default=%(default)s]")
+						   help="ancetor file to set colorbar for y axis (left). Fallback to --yanc. [default=%(default)s]")
+	group_dot.add_argument('--xanc', metavar='FILE', type=str, default=None,
+						   help="ancestor file for x axis (used by colorbar fallback, --colorby-sg/anc x). [default=%(default)s]")
+	group_dot.add_argument('--yanc', metavar='FILE', type=str, default=None,
+						   help="ancestor file for y axis (used by colorbar fallback, --colorby-sg/anc y). [default=%(default)s]")
+	group_dot.add_argument('--colorby-sg', choices=['x', 'y'], default=None,
+						   help="color dots by subgenome from x or y ancestor file. [default=%(default)s]")
+	group_dot.add_argument('--colorby-anc', choices=['x', 'y'], default=None,
+						   help="color dots by ancestor color from x or y ancestor file. [default=%(default)s]")
 	group_dot.add_argument('--xbarlab', action='store_true', default=False,
 						   help="plot labels for x bars. [default=%(default)s]")
 	group_dot.add_argument('--ybarlab', action='store_true', default=False,
 						   help="plot labels for y bars. [default=%(default)s]")
 	group_dot.add_argument('--xlabel', type=str, default=None,
-						   help="x label for dot plot. [default=%(default)s]")
+						   help="x label (species) for dot plot (top). [default=%(default)s]")
 	group_dot.add_argument('--ylabel', type=str, default=None,
-						   help="y label for dot plot. [default=%(default)s]")
+						   help="y label (species) for dot plot (left). [default=%(default)s]")
 	group_dot.add_argument('--figsize', metavar='NUM', type=float, nargs='+', default=[15],
 						   help="figure size (width [height]) [default=%(default)s]")
 	group_dot.add_argument('--fontsize', metavar='NUM', type=float, default=10,
@@ -295,6 +303,7 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 				xclines=None, yclines=None,
 				plot_bin=None, output_hist=False,
 				xoffset=None, yoffset=None, xbars=None, ybars=None, gff=None,
+				xanc=None, yanc=None, colorby_sg=None, colorby_anc=None,
 				gene_axis=None, xbarlab=True, ybarlab=True,
 				hist_ylim=None, xlabel=None, ylabel=None, remove_prefix=True,
 				number_plots=True, same_sp=False, cbar=False,
@@ -351,7 +360,7 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 			allKs += [myks]
 		kXs += Xs
 		kYs += Ys
-		if ks is None:
+		if ks is None and colorby_sg is None and colorby_anc is None:
 			plt.plot(Xs, Ys, linewidth=1.5, rasterized=True)
 		else:
 			plt.plot(Xs, Ys, color="grey", ls='-', alpha=0.45, linewidth=0.55, rasterized=True)
@@ -374,29 +383,60 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 		kXs += [None, None]  # points not plot
 		kYs += [None, None]
 		Ks += [0, max_ks]  # unify the scale
-		plt.scatter(kXs, kYs, marker=',', s=point_size, c=Ks, cmap=cmap, 
+		plt.scatter(kXs, kYs, marker=',', s=point_size, c=Ks, cmap=cmap,
 			rasterized=True, edgecolors='none',linewidths=0,
 			)
+	# colorby-sg / colorby-anc dot coloring
+	if colorby_sg is not None or colorby_anc is not None:
+		anc_mode = None
+		anc_file = None
+		use_x = False
+		if colorby_sg is not None:
+			anc_mode = 'sg'
+			use_x = (colorby_sg == 'x')
+			anc_file = xanc if use_x else yanc
+		else:
+			anc_mode = 'anc'
+			use_x = (colorby_anc == 'x')
+			anc_file = xanc if use_x else yanc
+		if anc_file is None:
+			logger.warn('colorby-{} requires --{}anc file'.format(anc_mode, 'x' if use_x else 'y'))
+		else:
+			d_offset = xoffset if use_x else yoffset
+			anc_segs = _build_anc_segments(anc_file, d_offset, gene_axis, gff)
+			color_arr = []
+			for px, py in zip(kXs, kYs):
+				pos = px if use_x else py
+				if pos is None:
+					continue
+				c = _lookup_anc_color(anc_segs, pos, mode=anc_mode)
+				color_arr.append(c if c else 'lightgrey')
+			plt.scatter(kXs[:len(color_arr)], kYs[:len(color_arr)],
+				marker=',', s=point_size, c=color_arr,
+				rasterized=True, edgecolors='none', linewidths=0,
+				)
 	if same_sp:
 		plt.plot((xmin, xmax), (ymin, ymax), ls='--',
 				 color="grey", linewidth=0.8)
 
 	# color bars
 	xlabelpad, ylabelpad = 10, 7.5
-	if xbars:
+	xbar_file = xbars or xanc
+	ybar_file = ybars or yanc
+	if xbar_file:
 		y = ylim
 		width = ylim / 60
 		ylim += width  # increase limit
-		has_lab = AK(xbars).plot_dotplot(xy=y, align='edge', d_offset=xoffset,
+		has_lab = AK(xbar_file).plot_dotplot(xy=y, align='edge', d_offset=xoffset,
 										 axis='x', width=width, label=xbarlab,
 										 gene_axis=gene_axis, gff=gff, fontsize=xcsize-1)
 		if has_lab:
 			xlabelpad += xcsize
-	if ybars:
+	if ybar_file:
 		x = xlim
 		width = xlim / 60
 		xlim += width
-		has_lab = AK(ybars).plot_dotplot(xy=x, align='edge', d_offset=yoffset,
+		has_lab = AK(ybar_file).plot_dotplot(xy=x, align='edge', d_offset=yoffset,
 										 axis='y', width=width, label=ybarlab,
 										 gene_axis=gene_axis, gff=gff, fontsize=ycsize-1)
 		if has_lab:
@@ -658,6 +698,51 @@ def _remove_prefix(labels):
 	else:
 		logger.info('no same prefix to remove')
 	return labels
+
+# subgenome colors for --colorby-sg
+_sg_colors = ['#f9c00c', '#00b9f1', '#7200da', '#f9320c', '#00b8a9',
+			  '#ff6f61', '#6b5b95', '#88b04b', '#f7cac9', '#92a8d1']
+
+
+def _build_anc_segments(anc_file, d_offset, gene_axis, gff):
+	'''Parse ancestor file and return list of (plot_start, plot_end, subgenome, color).'''
+	from .WGDI import AK as _AK
+	segments = []
+	for seg in _AK(anc_file).lazy_lines(gene_axis, gff=gff):
+		if seg.chrom not in d_offset:
+			continue
+		offset = d_offset[seg.chrom]
+		plot_start = offset + seg.start
+		plot_end = offset + seg.end
+		segments.append((plot_start, plot_end, seg.subgenome, seg.color))
+	segments.sort(key=lambda x: x[0])
+	return segments
+
+
+def _lookup_anc_color(segments, pos, mode='sg'):
+	'''Find the segment containing pos and return its color.
+	mode='sg': return subgenome-mapped color
+	mode='anc': return ancestor color string directly
+	'''
+	# binary search for the rightmost segment with plot_start <= pos
+	lo, hi = 0, len(segments)
+	while lo < hi:
+		mid = (lo + hi) // 2
+		if segments[mid][0] <= pos:
+			lo = mid + 1
+		else:
+			hi = mid
+	if lo == 0:
+		return None
+	seg = segments[lo - 1]
+	plot_start, plot_end, subgenome, color = seg
+	if plot_start <= pos <= plot_end:
+		if mode == 'sg':
+			idx = subgenome % len(_sg_colors)
+			return _sg_colors[idx]
+		else:
+			return color
+	return None
 
 
 def parse_hvlines(bedfile, min_span=10):

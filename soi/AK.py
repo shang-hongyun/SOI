@@ -1767,11 +1767,10 @@ class AKR:
     def _collapse_wgd(self, node):
         """
         将WGD节点的post-WGD基因组推断为pre-WGD基因组。
-        核心思路：
-        1. 将post-WGD HOG映射到父节点层级的HOG
-        2. 基于parent HOG集合的Jaccard相似度，将post-WGD染色体配对（聚类）
-        3. 对每对同源染色体，按平均位置投票确定pre-WGD的基因顺序
-        4. 生成pre-WGD的AncestralAdjacencyGraph，存入self.pre_wgd_graphs
+        策略：边投影 + ILP+SA线性化
+        1. 将post-WGD图的边投影到parent HOG空间
+        2. 按支持度（跨亚基因组）加权
+        3. 使用ILP+SA求解最优路径覆盖
         """
         node_id = node.name
         post_graph = self.anc_graphs.get(node_id)
@@ -1790,96 +1789,63 @@ class AKR:
             logger.warning("No mapping from {} to parent {} for WGD collapse".format(node_id, parent_id))
             return
 
-        # 2. 收集每条post-WGD染色体的parent信息
-        chroms = []
-        for chrom in post_graph.chromosomes:
-            genes = [n for n in chrom if n not in post_graph.telomeres]
-            parent_seq = [mapping.get(g) for g in genes if g in mapping]
-            parent_set = set(p for p in parent_seq if p is not None)
-            chroms.append({
-                'genes': genes,
-                'parent_seq': parent_seq,
-                'parent_set': parent_set,
-            })
+        # 2. 投影边到parent HOG空间，统计支持度
+        edge_support = defaultdict(int)
 
-        n = len(chroms)
-        if n == 0:
-            return
-
-        # 3. 配对染色体：基于parent_set Jaccard相似度
-        pairs = []
-        for i in range(n):
-            for j in range(i + 1, n):
-                s1, s2 = chroms[i]['parent_set'], chroms[j]['parent_set']
-                if not s1 or not s2:
-                    continue
-                inter = len(s1 & s2)
-                union = len(s1 | s2)
-                sim = inter / union if union > 0 else 0
-                pairs.append((sim, i, j))
-        pairs.sort(reverse=True)
-
-        # 贪心匹配：每条染色体最多匹配一次
-        matched = set()
-        groups = []
-        for sim, i, j in pairs:
-            if i in matched or j in matched:
+        for u, v, d in post_graph.graph.edges(data=True):
+            if u in post_graph.telomeres or v in post_graph.telomeres:
                 continue
-            if sim < 0.2:
-                break
-            groups.append([i, j])
-            matched.add(i)
-            matched.add(j)
-
-        # 未匹配的单独成组
-        for i in range(n):
-            if i not in matched:
-                groups.append([i])
-
-        # 4. 对每组，推断pre-WGD染色体
-        pre_chroms = []
-        for group in groups:
-            parent_pos = defaultdict(list)
-            for chrom_idx in group:
-                for pos, p in enumerate(chroms[chrom_idx]['parent_seq']):
-                    if p is not None:
-                        parent_pos[p].append((chrom_idx, pos))
-            if not parent_pos:
+            pu = mapping.get(u)
+            pv = mapping.get(v)
+            if pu is None or pv is None or pu == pv:
                 continue
-            sorted_parents = sorted(
-                parent_pos.keys(),
-                key=lambda p: sum(pos for _, pos in parent_pos[p]) / len(parent_pos[p])
-            )
-            pre_chroms.append(sorted_parents)
+            key = (pu, pv) if pu.hog_id < pv.hog_id else (pv, pu)
+            edge_support[key] += 1
 
-        # 5. 构建pre-WGD图
+        # 3. 构建pre-WGD图
         pre_graph = AncestralAdjacencyGraph(node_id="{}_pre".format(node_id))
         pre_graph.species_set = set(post_graph.species_set)
 
-        # 链向投票
+        # 收集所有parent HOG
+        parent_hogs = set(mapping.values())
         strand_votes = defaultdict(lambda: {'+': 0, '-': 0})
-        for chrom in post_graph.chromosomes:
-            genes = [n for n in chrom if n not in post_graph.telomeres]
-            for g in genes:
-                if g in mapping:
-                    strand = post_graph.graph.nodes[g].get('strand', '+')
-                    strand_votes[mapping[g]][strand] += 1
+        for g, p in mapping.items():
+            strand = post_graph.graph.nodes[g].get('strand', '+')
+            strand_votes[p][strand] += 1
 
-        for chrom in pre_chroms:
-            for p in chrom:
-                pre_graph.graph.add_node(p, hog=p)
-                pre_graph.gene_nodes.add(p)
-                pre_graph.hog_map[p] = p
-                consensus = '+' if strand_votes[p]['+'] >= strand_votes[p]['-'] else '-'
-                pre_graph.graph.nodes[p]['strand'] = consensus
-            for i in range(len(chrom) - 1):
-                pre_graph.graph.add_edge(chrom[i], chrom[i + 1])
-                pre_graph.graph.add_edge(chrom[i + 1], chrom[i])
+        for p in parent_hogs:
+            pre_graph.graph.add_node(p, hog=p)
+            pre_graph.gene_nodes.add(p)
+            pre_graph.hog_map[p] = p
+            consensus = '+' if strand_votes[p]['+'] >= strand_votes[p]['-'] else '-'
+            pre_graph.graph.nodes[p]['strand'] = consensus
 
+        # 添加边，按支持度分类
+        for (pu, pv), count in edge_support.items():
+            if count >= ploidy:
+                support = 2
+                conflict = False
+            else:
+                support = 1
+                conflict = True
+            pre_graph.graph.add_edge(pu, pv, support=support, conflict=conflict, og_weight=count)
+
+        # 4. 确定目标染色体数：优先用姐妹节点的实际染色体数
+        target_pre = max(len(list(post_graph.chromosomes)) // ploidy, 1)
+        sister_name = None
+        for child in parent.children:
+            if child.name != node_id and child.name in self.anc_graphs:
+                sister_graph = self.anc_graphs[child.name]
+                target_pre = len(list(sister_graph.chromosomes))
+                sister_name = child.name
+                break
+
+        # 5. 使用ILP+SA线性化（即使全局use_ilp_sa=False，WGD collapse也用ILP+SA）
+        pre_graph = self._linearize_graph_ilp_sa(pre_graph, target_chromosomes=target_pre)
         pre_graph._add_telomeres()
         self.pre_wgd_graphs[node_id] = pre_graph
-        logger.info("WGD collapse for {}: {} post -> {} pre chromosomes (groups={})".format(
-            node_id, n, len(pre_chroms), [len(g) for g in groups]))
+        logger.info("WGD collapse for {}: {} post chroms -> {} pre chroms (target={}, sister={})".format(
+            node_id, len(list(post_graph.chromosomes)), len(list(pre_graph.chromosomes)), target_pre, sister_name))
 
     # =====================
     # ILP + SA 混合线性化

@@ -49,7 +49,7 @@ class TPMLine:
 
 
 class AK:
-    '''Parser for WGDI ancestor.txt'''
+    '''Parser for WGDI ancestor.txt+'''
 
     def __init__(self, akfile):
         self.akfile = akfile
@@ -235,7 +235,7 @@ class Segment:
             temp[:5]
         self.start, self.end = int(self.start), int(self.end)
         self.subgenome = int(self.subgenome)
-        try:
+        try:  #plus format
             self.label = temp[5]
         except IndexError:
             self.label = None

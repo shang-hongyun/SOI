@@ -317,6 +317,7 @@ class AKR:
             logger.info('Optimization round {}'.format(i))
             self._optimize_round()
 
+        self._detect_events_topdown()
         self._export_results()
 
         logger.info("=== 祖先核型重建完成 ===")
@@ -523,6 +524,19 @@ class AKR:
             sum(1 for u, v, d in merged.graph.edges(data=True) if d.get('conflict')),
             time.time()-t1))
 
+        # 根据子节点投票确定每个 HOG 的共识链向
+        strand_votes = defaultdict(lambda: {'+': 0, '-': 0})
+        for mc in mapped_children:
+            for rec in mc.gene_nodes:
+                strand = mc.graph.nodes[rec].get('strand')
+                if strand is None:
+                    strand = getattr(rec, 'strand', '+')
+                strand_votes[rec][strand] += 1
+        for rec in merged.gene_nodes:
+            votes = strand_votes.get(rec, {'+': 1, '-': 0})
+            consensus = '+' if votes['+'] >= votes['-'] else '-'
+            merged.graph.nodes[rec]['strand'] = consensus
+
         # 导出重建前 GFA（原始合并结果，含冲突）
         t1 = time.time()
         merge_gfa = "{}.{}.merge.gfa".format(self.outpre, node_id)
@@ -562,7 +576,7 @@ class AKR:
         t2 = time.time()
         merged = self._resolve_duplications(merged, mapped_children)
         t3 = time.time()
-        merged = self._resolve_inversions(merged, mapped_children)
+        merged = self._resolve_inversions(merged, mapped_children, child_graphs)
         logger.info("  Small rearrangements: indel {:.2f}s, dup {:.2f}s, inv {:.2f}s".format(
             t2-t1, t3-t2, time.time()-t3))
 
@@ -669,6 +683,20 @@ class AKR:
             mapped.gene_nodes.add(rec)
             mapped.hog_map[rec] = rec
 
+        # 记录每个 HOG 的链向（来自子节点原始基因或祖先图节点属性）
+        # 对映射到同一 HOG 的多个基因进行投票，保留多数链向
+        strand_votes = defaultdict(lambda: {'+': 0, '-': 0})
+        for gene, rec in mapping.items():
+            # 优先从图节点属性读取（祖先图已设置 strand），
+            # 否则从基因对象本身读取（GffLine 有 strand 属性）
+            strand = graph.graph.nodes[gene].get('strand')
+            if strand is None:
+                strand = getattr(gene, 'strand', '+')
+            strand_votes[rec][strand] += 1
+        for rec, votes in strand_votes.items():
+            consensus = '+' if votes['+'] >= votes['-'] else '-'
+            mapped.graph.nodes[rec]['strand'] = consensus
+
         # 记录每个HOG在子节点中的端点信息（telomere-centric追踪）
         # hog_endpoints: hog_rec -> {'left': [(chrom_id, tel_left), ...], 'right': [...]}
         mapped.hog_endpoints = defaultdict(lambda: {'left': [], 'right': []})
@@ -713,6 +741,8 @@ class AKR:
         节点取并集，边按支持度投票：
         - support=2：两个子节点都支持，高置信度保留
         - support=1：仅一个子节点支持，标记为冲突边
+        同时标记 conflict 边是否涉及子节点染色体端点（端点邻接更可能是重排断点），
+        以及冲突边在另一子节点中是否位于同一染色体（同一染色体更可能是祖先邻接断裂）。
         返回合并后的 AncestralAdjacencyGraph。
         """
         merged = AncestralAdjacencyGraph(node_id=node_id)
@@ -725,16 +755,64 @@ class AKR:
             merged.gene_nodes.add(rec)
             merged.hog_map[rec] = rec
 
+        # 预计算每个子节点的 HOG -> 染色体索引 / 位置
+        child_chrom_info = []
+        for g in (g1, g2):
+            h2c = {}
+            h2p = {}
+            for ci, chrom in enumerate(g.chromosomes):
+                genes = [n for n in chrom if n not in g.telomeres]
+                for pos, h in enumerate(genes):
+                    h2c[h] = ci
+                    h2p[h] = pos
+            child_chrom_info.append((h2c, h2p))
+
         # 边支持度统计（无向，按 hog_id 字符串排序作为 key）
         edge_support = Counter()
-        for g in (g1, g2):
+        edge_endpoint = {}  # key -> bool (是否涉及子节点端点)
+        edge_children = defaultdict(set)  # key -> {child_index}
+        for i, g in enumerate((g1, g2)):
+            hog_endpoints = getattr(g, 'hog_endpoints', {})
             for n1, n2 in g.get_adjacencies(include_telomere=False):
                 key = (n1, n2) if n1.hog_id < n2.hog_id else (n2, n1)
                 edge_support[key] += 1
+                edge_children[key].add(i)
+                # 若任一端点是子节点染色体端点，标记为端点边
+                for h in (n1, n2):
+                    ep = hog_endpoints.get(h, {})
+                    if ep.get('left') or ep.get('right'):
+                        edge_endpoint[key] = True
+
+        # 为 conflict 边计算：在另一子节点中是否位于同一染色体及距离
+        same_chrom_other = {}
+        dist_other = {}
+        for key, count in edge_support.items():
+            if count >= 2:
+                continue
+            child_idx = list(edge_children[key])[0]
+            other_idx = 1 - child_idx
+            h1, h2 = key
+            other_h2c = child_chrom_info[other_idx][0]
+            other_h2p = child_chrom_info[other_idx][1]
+            c1 = other_h2c.get(h1)
+            c2 = other_h2c.get(h2)
+            if c1 is not None and c2 is not None and c1 == c2:
+                same_chrom_other[key] = True
+                p1 = other_h2p.get(h1, 0)
+                p2 = other_h2p.get(h2, 0)
+                dist_other[key] = abs(p1 - p2)
+            else:
+                same_chrom_other[key] = False
+                dist_other[key] = 999999
 
         for (h1, h2), count in edge_support.items():
-            merged.graph.add_edge(h1, h2, support=count, conflict=(count < 2))
-            merged.graph.add_edge(h2, h1, support=count, conflict=(count < 2))
+            is_endpoint = edge_endpoint.get((h1, h2), False)
+            merged.graph.add_edge(h1, h2, support=count, conflict=(count < 2), endpoint=is_endpoint)
+            merged.graph.add_edge(h2, h1, support=count, conflict=(count < 2), endpoint=is_endpoint)
+
+        # 将 conflict 边排序辅助信息附加到 merged 图对象上，供 _linearize_graph 使用
+        merged.same_chrom_other = same_chrom_other
+        merged.dist_other = dist_other
 
         return merged
 
@@ -815,22 +893,42 @@ class AKR:
     def _estimate_target_chromosomes(self, node):
         """
         估计目标染色体数目。
-        使用所有叶子物种（包括后代和外类群）的染色体数的中位数作为先验估计。
-        这样可以避免过度连接或碎片化，且不依赖上层重建结果。
+        使用直接子节点的染色体数，取最大值作为估计。
+        对于根节点，同时考虑所有叶子的最大值（祖先数可能大于任何直接后代）。
         """
-        all_leaves = set(self.tree.get_leaf_names())
+        child_counts = []
+        for child in node.children:
+            child_name = child.name
+            if child_name in self.anc_graphs:
+                child_counts.append(len(list(self.anc_graphs[child_name].chromosomes)))
+            elif child_name in self.leaf_graphs:
+                child_counts.append(len(list(self.leaf_graphs[child_name].chromosomes)))
+
+        # 回退到后代叶子最大值
         clade_leaves = set(node.get_leaf_names())
-        counts = []
-        for leaf in all_leaves:
+        leaf_counts = []
+        for leaf in clade_leaves:
             if leaf in self.leaf_graphs:
-                counts.append(len(list(self.leaf_graphs[leaf].chromosomes)))
-        if not counts:
-            return 1
-        counts.sort()
-        n = len(counts)
-        if n % 2 == 1:
-            return counts[n // 2]
-        return int(round((counts[n // 2 - 1] + counts[n // 2]) / 2.0))
+                leaf_counts.append(len(list(self.leaf_graphs[leaf].chromosomes)))
+
+        if not child_counts:
+            return max(leaf_counts) if leaf_counts else 1
+
+        base = max(max(child_counts), max(leaf_counts) if leaf_counts else 0)
+
+        # 启发式修正：当所有子节点染色体数相同且较小时，它们可能在各自分支上
+        # 独立丢失了染色体，导致祖先实际染色体数更多。
+        if len(child_counts) >= 2 and len(set(child_counts)) == 1:
+            same_count = child_counts[0]
+            if same_count <= 5:
+                base += 1
+
+        # 根节点额外修正：若所有叶子的染色体数都较少，根祖先可能更多。
+        if node.is_root() and leaf_counts:
+            if max(leaf_counts) <= 7:
+                base += 1
+
+        return base
 
     def _linearize_graph(self, aag, target_chromosomes=None):
         """
@@ -879,8 +977,45 @@ class AKR:
             else:
                 conflict_edges.append((key, weight))
 
-        # 按权重降序排序 conflict 边，权重相同按 hog_id 稳定排序
-        conflict_edges.sort(key=lambda x: (x[1], x[0][0].hog_id, x[0][1].hog_id), reverse=True)
+        # 按权重降序排序 conflict 边；涉及子节点端点的边降级（更可能是重排断点）
+        # 优先选择在另一子节点中位于同一染色体且距离近的冲突边，这些边更可能是
+        # 祖先邻接在另一子节点中被局部重排打断，而非衍生融合/易位。
+        # 距离阈值设为 50：同一染色体但距离 > 50 的边被视为可疑，与不同染色体边同级。
+        endpoint_penalty = {}
+        for u, v, d in aag.graph.edges(data=True):
+            if d.get('conflict') and d.get('endpoint'):
+                key = (u, v) if u.hog_id < v.hog_id else (v, u)
+                endpoint_penalty[key] = True
+        same_chrom_other = getattr(aag, 'same_chrom_other', {})
+        dist_other = getattr(aag, 'dist_other', {})
+
+        def _conflict_edge_priority(key):
+            same = same_chrom_other.get(key, False)
+            dist = dist_other.get(key, 999999)
+            endpoint = endpoint_penalty.get(key, False)
+            # Tier 0: same chrom, close (< 50), non-endpoint
+            # Tier 1: same chrom, close (< 50), endpoint
+            # Tier 2: same chrom, far (>= 50), non-endpoint
+            # Tier 3: same chrom, far (>= 50), endpoint  OR  diff chrom, non-endpoint
+            # Tier 4: diff chrom, endpoint
+            if same and dist < 50:
+                tier = 0 if not endpoint else 1
+            elif same:
+                tier = 2 if not endpoint else 3
+            else:
+                tier = 3 if not endpoint else 4
+            return tier
+
+        conflict_edges.sort(key=lambda x: (
+            -x[1],                          # 权重高优先
+            _conflict_edge_priority(x[0]),  # 质量 tier
+            dist_other.get(x[0], 999999),   # 距离近优先（仅对同 tier 有效）
+            x[0][0].hog_id, x[0][1].hog_id  # 确定性兜底
+        ))
+
+        # 将 conflict 边分为高质量和低质量两组，先尽量用高质量边，若仍无法达到目标再用低质量边
+        high_quality = [e for e in conflict_edges if _conflict_edge_priority(e[0]) <= 1]
+        low_quality = [e for e in conflict_edges if _conflict_edge_priority(e[0]) > 1]
 
         # Union-Find
         parent = {n: n for n in undirected.nodes()}
@@ -911,8 +1046,9 @@ class AKR:
         initial_components = count_components()
 
         # Phase 2: Kruskal 加入 conflict 边，直到达到目标染色体数
+        # 2a: 先使用高质量冲突边（同染色体、距离近）
         if target_chromosomes is None or initial_components > target_chromosomes:
-            for (u, v), weight in conflict_edges:
+            for (u, v), weight in high_quality:
                 if degree[u] >= 2 or degree[v] >= 2:
                     continue
                 if find(u) == find(v):
@@ -926,10 +1062,45 @@ class AKR:
                     if current <= target_chromosomes:
                         break
 
+        # 2b: 若仍未达到目标，回退到低质量冲突边
+        if target_chromosomes is not None and count_components() > target_chromosomes:
+            for (u, v), weight in low_quality:
+                if degree[u] >= 2 or degree[v] >= 2:
+                    continue
+                if find(u) == find(v):
+                    continue
+                selected.add((u, v))
+                degree[u] += 1
+                degree[v] += 1
+                union(u, v)
+                current = count_components()
+                if current <= target_chromosomes:
+                    break
+
         final_components = count_components()
+        logger.info("  Linearization stats: initial={}, target={}, final={}".format(
+            initial_components, target_chromosomes, final_components))
         if target_chromosomes is not None and final_components > target_chromosomes:
             logger.info("  Linearization: target {} chromosomes, reached {} (insufficient edges)".format(
                 target_chromosomes, final_components))
+
+        # Phase 3: 强制连接孤立节点（度为0）到最佳邻居，避免单基因染色体 artifact
+        isolated = [n for n in undirected.nodes() if degree.get(n, 0) == 0]
+        for h in isolated:
+            best_n = None
+            best_w = -1
+            for n in undirected.neighbors(h):
+                if degree.get(n, 0) >= 2:
+                    continue
+                key = (h, n) if h.hog_id < n.hog_id else (n, h)
+                w = edge_weights.get(key, 0)
+                if w > best_w:
+                    best_w = w
+                    best_n = n
+            if best_n is not None:
+                selected.add((h, best_n))
+                degree[h] = 1
+                degree[best_n] += 1
 
         # 构建无向子图
         subg = nx.Graph()
@@ -945,7 +1116,7 @@ class AKR:
                 seen_nodes.add(n)
                 continue
 
-            comp = subg.subgraph(comp_nodes)
+            comp = subg.subgraph(comp_nodes).copy()
             # 检测并打破环（理论上 Kruskal 不会产生环，但 support=2 边可能已有环）
             if comp.number_of_edges() == len(comp_nodes):
                 # 找到权重最低的边删除
@@ -985,6 +1156,13 @@ class AKR:
         for n in undirected.nodes():
             if n not in seen_nodes:
                 new_graph.add_node(n)
+
+        # 复制原图的节点属性（如 strand）到新图
+        for n in new_graph.nodes():
+            if n in aag.graph:
+                for k, v in aag.graph.nodes[n].items():
+                    if k not in new_graph.nodes[n]:
+                        new_graph.nodes[n][k] = v
 
         result = AncestralAdjacencyGraph(node_id=aag.node_id)
         result.species_set = aag.species_set
@@ -1221,71 +1399,12 @@ class AKR:
                 ))
         return merged
 
-    def _resolve_inversions(self, merged, mapped_children):
+    def _resolve_inversions(self, merged, mapped_children, child_graphs):
         """
-        解决 Inversion。
-        在子节点映射后的染色体上检测 strand blocks：
-        连续同向的 HOG 构成一个 block，若某 block 与最大 block 方向相反，
-        且包含 >=2 个 HOG，则推断为 inversion 事件。
-        注意：祖先图本身不修改方向，仅记录事件。
+        底向上 Inversion 检测已禁用：底向上策略把子节点分支上的反转误归因到当前节点，
+        导致大量假阳性。Inversion 检测统一由顶向下阶段 (_detect_events_topdown) 完成，
+        该阶段比较祖先与其父节点的链向，能准确识别发生在该分支上的 inversion。
         """
-        node_id = merged.node_id
-        for mc in mapped_children:
-            for chrom in mc.chromosomes:
-                seq = []
-                for node in chrom:
-                    if node in mc.telomeres:
-                        continue
-                    if node not in mc.hog_map:
-                        continue
-                    rec = mc.hog_map[node]
-                    strand = getattr(node, 'strand', '+')
-                    seq.append((node, rec, strand))
-                if len(seq) < 3:
-                    continue
-                # 按 HOG 去重（基于 __eq__ 即 hog_id）
-                seen_hogs = set()
-                filtered = []
-                for node, rec, strand in seq:
-                    if rec not in seen_hogs:
-                        seen_hogs.add(rec)
-                        filtered.append((node, rec, strand))
-                if len(filtered) < 3:
-                    continue
-                # 划分 strand block
-                blocks = []
-                start = 0
-                curr_strand = filtered[0][2]
-                for i in range(1, len(filtered)):
-                    if filtered[i][2] != curr_strand:
-                        blocks.append((start, i - 1, curr_strand, filtered[start:i]))
-                        start = i
-                        curr_strand = filtered[i][2]
-                blocks.append((start, len(filtered) - 1, curr_strand, filtered[start:]))
-
-                if len(blocks) <= 1:
-                    continue
-                blocks_sorted = sorted(blocks, key=lambda b: len(b[3]), reverse=True)
-                main_block = blocks_sorted[0]
-                for start_idx, end_idx, strand, block_items in blocks:
-                    if len(block_items) < 2:
-                        continue
-                    if (start_idx, end_idx, strand) == (main_block[0], main_block[1], main_block[2]):
-                        continue
-                    block_hogs = [item[1] for item in block_items]
-                    block_genes = [item[0] for item in block_items]
-                    if start_idx == 0 or end_idx == len(filtered) - 1:
-                        etype = 'telomere_inversion'
-                    else:
-                        etype = 'internal_inversion'
-                    merged.events.append(RearrangementEvent(
-                        etype, node_id,
-                        genes_involved=block_genes,
-                        desc="{}: {} HOGs (strand={}) in {} chrom, HOGs={}..{}".format(
-                            etype, len(block_hogs), strand, mc.node_id,
-                            block_hogs[0].hog_id, block_hogs[-1].hog_id),
-                        support=len(block_hogs)
-                    ))
         return merged
 
     def _resolve_telomere_rearrangements(self, node, merged, mapped_children, mapped_outgroups):
@@ -1335,64 +1454,175 @@ class AKR:
                 pos_first = merged_hog_positions.get(h_first)
                 pos_last = merged_hog_positions.get(h_last)
 
-                # NCF：两端HOG在祖先中位于不同染色体
-                if pos_first and pos_last and pos_first['chrom_idx'] != pos_last['chrom_idx']:
-                    merged.events.append(RearrangementEvent(
-                        'ncf', node_id,
-                        genes_involved=[h_first, h_last],
-                        desc="NCF: ends of {} chrom fused from anc chroms {} and {}".format(
-                            mc.node_id, pos_first['chrom_idx'], pos_last['chrom_idx']),
-                        support=1
-                    ))
-
-                # Telomere inversion / 端粒重排检测：
-                # 若子节点的左端点HOG在祖先中变为内部节点（或右端点），说明端粒位置改变
-                if pos_first and not pos_first['is_left_end']:
-                    merged.events.append(RearrangementEvent(
-                        'telomere_inversion', node_id,
-                        genes_involved=[h_first],
-                        desc="Telomere change: {} left-end HOG {} became internal in anc chrom {}".format(
-                            mc.node_id, h_first.hog_id, pos_first['chrom_idx']),
-                        support=1
-                    ))
-                if pos_last and not pos_last['is_right_end']:
-                    merged.events.append(RearrangementEvent(
-                        'telomere_inversion', node_id,
-                        genes_involved=[h_last],
-                        desc="Telomere change: {} right-end HOG {} became internal in anc chrom {}".format(
-                            mc.node_id, h_last.hog_id, pos_last['chrom_idx']),
-                        support=1
-                    ))
-
-        # Reciprocal Translocation：比较两个子节点的端粒邻接图
-        if len(mapped_children) == 2:
-            mc1, mc2 = mapped_children
-            ends1 = mc1.get_chromosome_ends()
-            ends2 = mc2.get_chromosome_ends()
-
-            def build_end_graph(ends):
-                g = nx.Graph()
-                for left_tel, first_g, last_g, right_tel in ends:
-                    if first_g and last_g and first_g not in mc1.telomeres and last_g not in mc1.telomeres:
-                        g.add_edge(first_g, last_g)
-                return g
-
-            g1 = build_end_graph(ends1)
-            g2 = build_end_graph(ends2)
-            shared_ends = set(g1.nodes()) & set(g2.nodes())
-            for h in shared_ends:
-                partners1 = set(g1.neighbors(h))
-                partners2 = set(g2.neighbors(h))
-                if partners1 != partners2 and partners1 and partners2:
-                    merged.events.append(RearrangementEvent(
-                        'reciprocal_translocation', node_id,
-                        genes_involved=[h],
-                        desc="End {} partners changed: {} -> {}".format(
-                            h.hog_id, partners1, partners2),
-                        support=1
-                    ))
+                # NCF 和 telomere inversion 检测已移至顶向下阶段（_detect_events_topdown），
+                # 底向上阶段仅用于重建祖先图，不记录事件，避免将分支差异误判为节点事件。
+                pass
 
         return merged
+
+    def _detect_events_topdown(self):
+        """
+        自顶向下事件检测：将每个内部节点与其父节点比较，
+        通过断点图（breakpoint graph）思想检测 EEJ、Fission、NCF、
+        Translocation 和 Inversion 事件。
+        """
+        for node in self.tree.traverse(strategy="preorder"):
+            if node.is_root() or node.is_leaf():
+                continue
+            node_id = node.name
+            parent_id = node.up.name
+            if node_id not in self.anc_graphs or parent_id not in self.anc_graphs:
+                continue
+            anc = self.anc_graphs[node_id]
+            par = self.anc_graphs[parent_id]
+            self._compare_ancestor_to_parent(anc, par, node_id)
+
+    def _compare_ancestor_to_parent(self, anc, par, node_id):
+        """
+        比较祖先图 anc 与其父节点图 par，检测重排事件并写入 anc.events。
+        注意：anc 和 par 使用不同节点层级的 HOGrecord（hog_id 包含节点名），
+        需要通过 hog_parent 映射建立对应关系后再比较。
+        """
+        # 0. 建立 anc HOG -> par HOG 的映射
+        anc_to_par = {}
+        par_hog_by_id = {h.hog_id: h for h in par.gene_nodes}
+        for h in anc.gene_nodes:
+            parent_hog_id = self.hog_parent.get(h.hog_id)
+            if parent_hog_id and parent_hog_id in par_hog_by_id:
+                anc_to_par[h] = par_hog_by_id[parent_hog_id]
+
+        # 1. 邻接集合比较（映射到父节点 HOG 空间）
+        par_adjs = set(par.get_adjacencies(include_telomere=False))
+        anc_adjs_mapped = set()
+        for h1, h2 in anc.get_adjacencies(include_telomere=False):
+            p1 = anc_to_par.get(h1)
+            p2 = anc_to_par.get(h2)
+            if p1 and p2 and p1 != p2:
+                key = (p1, p2) if p1.hog_id < p2.hog_id else (p2, p1)
+                anc_adjs_mapped.add(key)
+        par_adjs_norm = set()
+        for h1, h2 in par_adjs:
+            key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+            par_adjs_norm.add(key)
+
+        lost = par_adjs_norm - anc_adjs_mapped   # 父节点有，anc 没有
+        gained = anc_adjs_mapped - par_adjs_norm  # anc 有，父节点没有
+
+        # 将规范化后的邻接还原为 HOGrecord 对
+        lost_pairs = list(lost)
+        gained_pairs = list(gained)
+
+        # 2. 父节点端点 HOG
+        par_ends = set()
+        for chrom in par.chromosomes:
+            genes = [n for n in chrom if n not in par.telomeres]
+            if genes:
+                par_ends.add(genes[0])
+                par_ends.add(genes[-1])
+
+        # 3. 分类 gained adjacencies（新连接）
+        # 只有涉及父节点端点的邻接变化才报告为事件（EEJ 或 NCF）。
+        for p1, p2 in gained_pairs:
+            p1_end = p1 in par_ends
+            p2_end = p2 in par_ends
+            if p1_end and p2_end:
+                etype = 'eej'
+            elif p1_end or p2_end:
+                etype = 'ncf'
+            else:
+                continue
+            anc.events.append(RearrangementEvent(
+                etype, node_id,
+                genes_involved=[p1, p2],
+                desc="{}: {} and {}".format(etype.upper(), p1.hog_id, p2.hog_id),
+                support=1
+            ))
+
+        # 4. 分类 lost adjacencies（断裂）-> fission
+        # 将父节点的 lost adjacency 映射回 anc 的染色体位置
+        par_to_anc = {p: a for a, p in anc_to_par.items()}
+        anc_hog_to_chrom = {}
+        anc_chrom_ends = set()  # anc 中端点 HOG 集合
+        for i, chrom in enumerate(anc.chromosomes):
+            genes = [n for n in chrom if n not in anc.telomeres]
+            for j, n in enumerate(genes):
+                anc_hog_to_chrom[n] = i
+                if j == 0 or j == len(genes) - 1:
+                    anc_chrom_ends.add(n)
+
+        for p1, p2 in lost_pairs:
+            a1 = par_to_anc.get(p1)
+            a2 = par_to_anc.get(p2)
+            c1 = anc_hog_to_chrom.get(a1) if a1 else None
+            c2 = anc_hog_to_chrom.get(a2) if a2 else None
+            # 关键过滤：要求 a1 和 a2 在 anc 中都是端点，避免重建内部断裂误判为 fission
+            if c1 is not None and c2 is not None and c1 != c2:
+                if a1 in anc_chrom_ends and a2 in anc_chrom_ends:
+                    anc.events.append(RearrangementEvent(
+                        'fission', node_id,
+                        genes_involved=[p1, p2],
+                        desc="Fission: {} and {} separated".format(p1.hog_id, p2.hog_id),
+                        support=1
+                    ))
+
+        # 5. Inversion 检测：链向比较（使用映射后的 HOG）
+        # 预计算父节点染色体长度
+        par_chrom_lengths = {}
+        par_hog_to_chrom = {}
+        for pci, chrom in enumerate(par.chromosomes):
+            pgenes = [n for n in chrom if n not in par.telomeres]
+            par_chrom_lengths[pci] = len(pgenes)
+            for g in pgenes:
+                par_hog_to_chrom[g] = pci
+
+        for chrom in anc.chromosomes:
+            genes = [n for n in chrom if n not in anc.telomeres and n in anc_to_par]
+            if len(genes) < 3:
+                continue
+            # 找出链向与父节点不一致的连续块
+            blocks = []
+            start = 0
+            for i in range(len(genes)):
+                anc_s = anc.graph.nodes[genes[i]].get('strand')
+                if anc_s is None:
+                    anc_s = getattr(genes[i], 'strand', '+')
+                par_h = anc_to_par[genes[i]]
+                par_s = par.graph.nodes[par_h].get('strand')
+                if par_s is None:
+                    par_s = getattr(par_h, 'strand', '+')
+                if anc_s == par_s:
+                    if i > start:
+                        blocks.append(genes[start:i])
+                    start = i + 1
+            if start < len(genes):
+                blocks.append(genes[start:])
+
+            # 阈值：固定最小 3，且占染色体长度 >= 2%（避免大染色体漏掉小 inversion）
+            min_block_size = max(3, int(len(genes) * 0.02) + 1)
+            for block in blocks:
+                if len(block) < min_block_size:
+                    continue
+                # 过滤：不能占父节点对应染色体的绝大部分（排除 NCF/EEJ/RT 导致的整臂翻转）
+                par_chroms = {par_hog_to_chrom.get(anc_to_par[h]) for h in block}
+                if len(par_chroms) != 1 or None in par_chroms:
+                    continue
+                par_ci = list(par_chroms)[0]
+                if len(block) >= par_chrom_lengths.get(par_ci, 0) * 0.9:
+                    continue
+                is_left = block[0] == genes[0]
+                is_right = block[-1] == genes[-1]
+                if is_left or is_right:
+                    etype = 'telomere_inversion'
+                else:
+                    etype = 'internal_inversion'
+                block_par_hogs = [anc_to_par[h] for h in block]
+                anc.events.append(RearrangementEvent(
+                    etype, node_id,
+                    genes_involved=block_par_hogs,
+                    desc="{}: {} HOGs from {} to {}".format(
+                        etype, len(block), block[0].hog_id, block[-1].hog_id),
+                    support=len(block)
+                ))
 
     def _get_outgroup_graphs(self, node):
         """
@@ -1447,8 +1677,10 @@ class AKR:
         with open(event_file, 'w') as f:
             header = ["node", "event_type", "genes", "chroms", "desc", "support"]
             f.write('\t'.join(header) + '\n')
-            for node_id, events in self.events.items():
-                for ev in events:
+            for node_id, aag in self.anc_graphs.items():
+                if node_id in self.leaf_graphs:
+                    continue
+                for ev in aag.events:
                     genes = ','.join(str(g) for g in ev.genes_involved)
                     chroms = ','.join(str(c) for c in ev.parent_chroms)
                     line = [node_id, ev.event_type, genes, chroms, ev.desc, str(ev.support)]

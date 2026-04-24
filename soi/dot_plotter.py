@@ -260,8 +260,18 @@ def main(args):
 					xpositions=xpositions, ypositions=ypositions,
 					xelines=lines1, yelines=lines2,
 					xlim=max(lines1), ylim=max(lines2))
-	ploidy_data = coord_path1, coord_path2, coord_graph1, coord_graph2 = \
+	ploidy_data = coord_path1, coord_path2, coord_graph1, coord_graph2, d_species = \
 		parse_gff(gff, chrs1, chrs2)
+	ploidy_data = coord_path1, coord_path2, coord_graph1, coord_graph2
+	# 从GFF数据提取species label，如果命令行未指定
+	if args.xlabel is None and chrs1:
+		sp1 = set(d_species.get(c) for c in chrs1 if c in d_species)
+		if len(sp1) == 1:
+			args.xlabel = sp1.pop()
+	if args.ylabel is None and chrs2:
+		sp2 = set(d_species.get(c) for c in chrs2 if c in d_species)
+		if len(sp2) == 1:
+			args.ylabel = sp2.pop()
 	outplots = [prefix + '.' + fmt for fmt in args.format]
 	ks = None if kaks is None and args.ofdir is None else True
 	# plot all
@@ -716,9 +726,11 @@ def parse_gff(gff, chrs1, chrs2):
 	coord_graph1 = nx.Graph()
 	coord_graph2 = nx.Graph()
 	d_gff = {}
+	d_species = {}
 	for line in XGff(gff):
 		if not line.chrom in chrs:
 			continue
+		d_species[line.chrom] = line.species
 		key = (line.species, line.chrom)
 		try:
 			d_gff[key] += [line]
@@ -745,7 +757,7 @@ def parse_gff(gff, chrs1, chrs2):
 				coord_graph1.add_edge(*edge)
 			if chrom in set(chrs2):
 				coord_graph2.add_edge(*edge)
-	return coord_path1, coord_path2, coord_graph1, coord_graph2
+	return coord_path1, coord_path2, coord_graph1, coord_graph2, d_species
 
 
 def parse_collinearity(collinearity, gff, chrs1, chrs2, kaks, homology,

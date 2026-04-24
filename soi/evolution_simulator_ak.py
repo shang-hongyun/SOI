@@ -365,54 +365,48 @@ class EvolutionSimulator:
     # Fractionation
     # ------------------------------------------------------------------
     def _apply_fractionation(self, karyo, centros, node_name):
+        # Find all multi-copy genes (same ancestor has >=2 copies)
         anc_copies = defaultdict(list)
         for cid in list(karyo.keys()):
-            for gid, orient in karyo[cid]:
-                anc = self.tracker.get_ancestor(gid)
-                anc_copies[anc].append((gid, orient, cid))
-
-        lost = 0
-        genes_to_remove = set()
-        for anc, copies in anc_copies.items():
-            n_copies = len(copies)
-            if n_copies <= 1:
-                continue
-            n_lose = min(poisson_sample(self.rng, self.frac_rate), n_copies - 1)
-            if n_lose > 0:
-                to_lose = self.rng.sample(range(n_copies), n_lose)
-                for idx in to_lose:
-                    gid, orient, cid = copies[idx]
-                    genes_to_remove.add((gid, cid))
-
-        for cid in list(karyo.keys()):
-            retained = []
-            removed_indices = []
             for i, (gid, orient) in enumerate(karyo[cid]):
-                if (gid, cid) in genes_to_remove:
-                    self.tracker.gene_ancestor.pop(gid, None)
-                    self.tracker.gene_species.pop(gid, None)
-                    self.tracker.gene_wgd_copies.pop(gid, None)
-                    lost += 1
-                    removed_indices.append(i)
-                else:
-                    retained.append((gid, orient))
-            # Update centromere for deletions
-            if cid in centros and removed_indices:
-                c = centros[cid]
-                for idx in reversed(removed_indices):
-                    if idx < c:
-                        c -= 1
-                centros[cid] = max(0, min(len(retained), c))
-            if retained:
-                karyo[cid] = retained
-            else:
-                del karyo[cid]
-                centros.pop(cid, None)
+                anc = self.tracker.get_ancestor(gid)
+                anc_copies[anc].append((gid, orient, cid, i))
 
-        if lost > 0:
-            self.events.append({"node": node_name, "type": "fractionation",
-                                "lost": lost, "rate": self.frac_rate})
-        return lost > 0
+        # Only keep ancestors with >1 copy
+        multi = {anc: copies for anc, copies in anc_copies.items()
+                 if len(copies) > 1}
+        if not multi:
+            return False
+
+        # Randomly pick one ancestor and remove one random copy
+        anc = self.rng.choice(list(multi.keys()))
+        copies = multi[anc]
+        victim = self.rng.choice(copies)
+        lost_gid, lost_orient, lost_cid, lost_idx = victim
+
+        # Remove from karyotype
+        genes = karyo[lost_cid]
+        retained = [g for i, g in enumerate(genes) if i != lost_idx]
+        # Update centromere
+        if lost_cid in centros:
+            c = centros[lost_cid]
+            if c > lost_idx:
+                centros[lost_cid] = c - 1
+        if retained:
+            karyo[lost_cid] = retained
+        else:
+            del karyo[lost_cid]
+            centros.pop(lost_cid, None)
+
+        # Remove from tracker
+        self.tracker.gene_ancestor.pop(lost_gid, None)
+        self.tracker.gene_species.pop(lost_gid, None)
+        self.tracker.gene_wgd_copies.pop(lost_gid, None)
+
+        self.events.append({"node": node_name, "type": "fractionation",
+                            "gene": lost_gid, "chrom": lost_cid,
+                            "anc": anc, "len": 1})
+        return True
 
     # ------------------------------------------------------------------
     # Rearrangement dispatch
@@ -874,10 +868,10 @@ class EvolutionSimulator:
         print("Events:")
         order = [
             "WGD", "fission", "EEJ", "NCF",
-            "RT", "unidir_trans", "inversion", "chromothripsis",
+            "RT", "inversion", "chromothripsis",
             "seg_deletion", "seg_duplication",
-            "gene_gain", "gene_loss", "fractionation",
-            "tandem_dup", "dispersed_dup",
+            "tandem_dup", "dispersed_dup", "unidir_trans",
+			"gene_gain", "gene_loss", "fractionation",
         ]
         printed = set()
         for etype in order:
@@ -903,7 +897,7 @@ class EvolutionSimulator:
         if not os.path.isdir(outdir):
             os.makedirs(outdir)
         species = sorted(self.leaf_karyotypes.keys())
-        print("\nGenerating output files in {}/...".format(outdir))
+        print("\nGenerating output files in {} ...".format(outdir))
 
         for sp in species:
             for cid, genes in self.leaf_karyotypes[sp].items():
@@ -1431,17 +1425,17 @@ def sim_args(parser):
                        help='Max genes per ancestral chromosome [default=%(default)s]')
 
     g_rate = parser.add_argument_group('Rates (per unit branch length)')
-    g_rate.add_argument('--inv-rate', type=float, default=15.0,
+    g_rate.add_argument('--inv-rate', type=float, default=10.0,
                         help='Inversion rate [default=%(default)s]')
-    g_rate.add_argument('--rt-rate', type=float, default=3.0,
+    g_rate.add_argument('--rt-rate', type=float, default=4.0,
                         help='Reciprocal translocation rate [default=%(default)s]')
-    g_rate.add_argument('--ncf-rate', type=float, default=1.0,
+    g_rate.add_argument('--ncf-rate', type=float, default=2.0,
                         help='Non-centric fusion rate [default=%(default)s]')
-    g_rate.add_argument('--eej-rate', type=float, default=1.0,
+    g_rate.add_argument('--eej-rate', type=float, default=2.0,
                         help='End-end joining rate [default=%(default)s]')
     g_rate.add_argument('--fission-rate', type=float, default=0.02,
                         help='Fission rate (very low) [default=%(default)s]')
-    g_rate.add_argument('--wgd-rate', type=float, default=0.4,
+    g_rate.add_argument('--wgd-rate', type=float, default=0.2,
                         help='WGD rate (2x most common) [default=%(default)s]')
     g_rate.add_argument('--gene-gain-rate', type=float, default=0.5,
                         help='Gene gain rate [default=%(default)s]')
@@ -1453,7 +1447,7 @@ def sim_args(parser):
                         help='Dispersed duplication rate [default=%(default)s]')
     g_rate.add_argument('--unidir-trans-rate', type=float, default=1.0,
                         help='Unidirectional translocation rate [default=%(default)s]')
-    g_rate.add_argument('--frac-rate', type=float, default=20.0,
+    g_rate.add_argument('--frac-rate', type=float, default=1000,
                         help='Fractionation rate after WGD (Poisson rate per gene) [default=%(default)s]')
     g_rate.add_argument('--seg-del-rate', type=float, default=0.1,
                         help='Segmental deletion rate [default=%(default)s]')

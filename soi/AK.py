@@ -2,6 +2,8 @@ import sys
 import time
 import itertools
 import random
+import math
+import re
 from collections import Counter, defaultdict, OrderedDict
 from typing import Optional, Set, Dict, List, Tuple
 import networkx as nx
@@ -9,6 +11,11 @@ import networkx as nx
 from .mcscan import ColinearGroups, Gff, GffGraph, SyntenyGraph, GffLine
 from .hog import HOG, HOGrecord
 from .RunCmdsMP import logger
+
+try:
+    import pulp
+except ImportError:
+    pulp = None
 
 
 # =====================
@@ -263,6 +270,8 @@ class AKR:
                  min_genes=0,
                  timeout=600,
                  node_timeout=300,
+                 use_ilp_sa=True,
+                 sa_iterations=5000,
                  **kargs):
 
         self.ogfile = ogfile
@@ -278,12 +287,15 @@ class AKR:
         self.min_genes = min_genes
         self.timeout = timeout  # 全局总超时秒数
         self.node_timeout = node_timeout  # 单节点重建超时秒数
+        self.use_ilp_sa = use_ilp_sa and pulp is not None  # 是否使用ILP+SA混合线性化
+        self.sa_iterations = sa_iterations
         self._start_time = None
 
         self.hog = None
         self.tree = None
         self.leaf_graphs = {}
         self.anc_graphs = {}
+        self.pre_wgd_graphs = {}  # WGD节点的pre-WGD图
         self.events = defaultdict(list)
 
         self.hogs_by_node = defaultdict(list)
@@ -294,6 +306,24 @@ class AKR:
         self.hog_children = defaultdict(list)  # parent_hog_id -> [child_hog_id]
         self.hog_species = defaultdict(set)    # hog_id -> {species}
         self._hog_node_cache = {}      # hog_id -> node_id（预解析，加速查找）
+        self.ploidy_map = {}           # node_name -> ploidy_factor（从树文件解析）
+
+    def _parse_ploidy_map(self):
+        """从物种树文件中解析 [p=N] 多倍体标注"""
+        if not self.sptreefile:
+            return
+        try:
+            with open(self.sptreefile) as f:
+                nw = f.read()
+            for m in re.finditer(r'([\w. -]+)\[p=(\d+)\]', nw):
+                name = m.group(1).strip()
+                ploidy = int(m.group(2))
+                if ploidy > 1:
+                    self.ploidy_map[name] = ploidy
+            if self.ploidy_map:
+                logger.info("Ploidy annotations: {}".format(self.ploidy_map))
+        except Exception as e:
+            logger.warning("Failed to parse ploidy map: {}".format(e))
 
     def run(self):
         """主运行函数"""
@@ -301,6 +331,7 @@ class AKR:
         self._start_time = time.time()
 
         self._build_hogs()
+        self._parse_ploidy_map()
         self._build_leaf_graphs()
 
         for node in self.tree.traverse(strategy="postorder"):
@@ -312,6 +343,10 @@ class AKR:
                     self.timeout, elapsed))
                 break
             self._reconstruct_node(node)
+
+            # WGD节点：额外生成pre-WGD基因组
+            if node.name in self.ploidy_map and self.ploidy_map[node.name] > 1:
+                self._collapse_wgd(node)
 
         for i in range(self.rounds):
             logger.info('Optimization round {}'.format(i))
@@ -484,10 +519,13 @@ class AKR:
                 node_id, len(children)))
 
         # 收集子节点图（叶子图或已重建的祖先图）
+        # WGD节点优先使用pre-WGD图参与父节点重建
         child_graphs = []
         for child in children:
             child_id = child.name
-            if child_id in self.anc_graphs:
+            if child_id in self.pre_wgd_graphs:
+                child_graphs.append(self.pre_wgd_graphs[child_id])
+            elif child_id in self.anc_graphs:
                 child_graphs.append(self.anc_graphs[child_id])
             elif child.is_leaf() and child_id in self.leaf_graphs:
                 child_graphs.append(self.leaf_graphs[child_id])
@@ -562,7 +600,10 @@ class AKR:
         merged = self._resolve_merge_conflicts(merged, mapped_children, mapped_outgroups)
         t2 = time.time()
         target_chromosomes = self._estimate_target_chromosomes(node)
-        merged = self._linearize_graph(merged, target_chromosomes=target_chromosomes)
+        if self.use_ilp_sa:
+            merged = self._linearize_graph_ilp_sa(merged, target_chromosomes=target_chromosomes)
+        else:
+            merged = self._linearize_graph(merged, target_chromosomes=target_chromosomes)
         t3 = time.time()
         merged._add_telomeres()
         logger.info("  After conflict resolution: {} HOGs, {} chromosomes (conflict {:.2f}s, linearize {:.2f}s, telomere {:.2f}s)".format(
@@ -1656,7 +1697,10 @@ class AKR:
             to_remove = {n for n in aag.gene_nodes if aag.graph.degree(n) == 0}
             if to_remove:
                 aag.remove_nodes(to_remove)
-                new_aag = self._linearize_graph(aag)
+                if self.use_ilp_sa:
+                    new_aag = self._linearize_graph_ilp_sa(aag)
+                else:
+                    new_aag = self._linearize_graph(aag)
                 new_aag._add_telomeres()
                 self.anc_graphs[node_id] = new_aag
 
@@ -1715,3 +1759,418 @@ class AKR:
             flen.write('\t'.join(map(str, [chrom_name, chrom_end, len(real_nodes)])) + '\n')
         fgff.close()
         flen.close()
+
+    # =====================
+    # WGD pre-WGD 重建
+    # =====================
+
+    def _collapse_wgd(self, node):
+        """
+        将WGD节点的post-WGD基因组推断为pre-WGD基因组。
+        核心思路：
+        1. 将post-WGD HOG映射到父节点层级的HOG
+        2. 基于parent HOG集合的Jaccard相似度，将post-WGD染色体配对（聚类）
+        3. 对每对同源染色体，按平均位置投票确定pre-WGD的基因顺序
+        4. 生成pre-WGD的AncestralAdjacencyGraph，存入self.pre_wgd_graphs
+        """
+        node_id = node.name
+        post_graph = self.anc_graphs.get(node_id)
+        if post_graph is None:
+            return
+        parent = node.up
+        if not parent:
+            return
+
+        parent_id = parent.name
+        ploidy = self.ploidy_map.get(node_id, 2)
+
+        # 1. 建立post-WGD HOG -> parent HOG映射
+        mapping = self._map_child_node_to_hog(parent_id, post_graph)
+        if not mapping:
+            logger.warning("No mapping from {} to parent {} for WGD collapse".format(node_id, parent_id))
+            return
+
+        # 2. 收集每条post-WGD染色体的parent信息
+        chroms = []
+        for chrom in post_graph.chromosomes:
+            genes = [n for n in chrom if n not in post_graph.telomeres]
+            parent_seq = [mapping.get(g) for g in genes if g in mapping]
+            parent_set = set(p for p in parent_seq if p is not None)
+            chroms.append({
+                'genes': genes,
+                'parent_seq': parent_seq,
+                'parent_set': parent_set,
+            })
+
+        n = len(chroms)
+        if n == 0:
+            return
+
+        # 3. 配对染色体：基于parent_set Jaccard相似度
+        pairs = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                s1, s2 = chroms[i]['parent_set'], chroms[j]['parent_set']
+                if not s1 or not s2:
+                    continue
+                inter = len(s1 & s2)
+                union = len(s1 | s2)
+                sim = inter / union if union > 0 else 0
+                pairs.append((sim, i, j))
+        pairs.sort(reverse=True)
+
+        # 贪心匹配：每条染色体最多匹配一次
+        matched = set()
+        groups = []
+        for sim, i, j in pairs:
+            if i in matched or j in matched:
+                continue
+            if sim < 0.2:
+                break
+            groups.append([i, j])
+            matched.add(i)
+            matched.add(j)
+
+        # 未匹配的单独成组
+        for i in range(n):
+            if i not in matched:
+                groups.append([i])
+
+        # 4. 对每组，推断pre-WGD染色体
+        pre_chroms = []
+        for group in groups:
+            parent_pos = defaultdict(list)
+            for chrom_idx in group:
+                for pos, p in enumerate(chroms[chrom_idx]['parent_seq']):
+                    if p is not None:
+                        parent_pos[p].append((chrom_idx, pos))
+            if not parent_pos:
+                continue
+            sorted_parents = sorted(
+                parent_pos.keys(),
+                key=lambda p: sum(pos for _, pos in parent_pos[p]) / len(parent_pos[p])
+            )
+            pre_chroms.append(sorted_parents)
+
+        # 5. 构建pre-WGD图
+        pre_graph = AncestralAdjacencyGraph(node_id="{}_pre".format(node_id))
+        pre_graph.species_set = set(post_graph.species_set)
+
+        # 链向投票
+        strand_votes = defaultdict(lambda: {'+': 0, '-': 0})
+        for chrom in post_graph.chromosomes:
+            genes = [n for n in chrom if n not in post_graph.telomeres]
+            for g in genes:
+                if g in mapping:
+                    strand = post_graph.graph.nodes[g].get('strand', '+')
+                    strand_votes[mapping[g]][strand] += 1
+
+        for chrom in pre_chroms:
+            for p in chrom:
+                pre_graph.graph.add_node(p, hog=p)
+                pre_graph.gene_nodes.add(p)
+                pre_graph.hog_map[p] = p
+                consensus = '+' if strand_votes[p]['+'] >= strand_votes[p]['-'] else '-'
+                pre_graph.graph.nodes[p]['strand'] = consensus
+            for i in range(len(chrom) - 1):
+                pre_graph.graph.add_edge(chrom[i], chrom[i + 1])
+                pre_graph.graph.add_edge(chrom[i + 1], chrom[i])
+
+        pre_graph._add_telomeres()
+        self.pre_wgd_graphs[node_id] = pre_graph
+        logger.info("WGD collapse for {}: {} post -> {} pre chromosomes (groups={})".format(
+            node_id, n, len(pre_chroms), [len(g) for g in groups]))
+
+    # =====================
+    # ILP + SA 混合线性化
+    # =====================
+
+    def _linearize_graph_ilp_sa(self, aag, target_chromosomes=None):
+        """
+        ILP松弛 + 模拟退火混合线性化。
+        Phase 1: ILP求解度<=2、边数=N-target_chrom的松弛问题（可能含环）
+        Phase 2: 以ILP解为初始解，SA消除环并优化目标
+        """
+        if pulp is None:
+            logger.warning("pulp not available, falling back to greedy linearization")
+            return self._linearize_graph(aag, target_chromosomes=target_chromosomes)
+
+        undirected = aag.graph.to_undirected()
+        undirected.remove_nodes_from(aag.telomeres)
+        nodes = list(undirected.nodes())
+
+        if not nodes:
+            result = AncestralAdjacencyGraph(node_id=aag.node_id)
+            result.species_set = aag.species_set
+            result.hog_map = dict(aag.hog_map)
+            result.graph = nx.DiGraph()
+            return result
+
+        # 计算边权重
+        edge_weights = {}
+        for u, v, d in aag.graph.edges(data=True):
+            if u in aag.telomeres or v in aag.telomeres:
+                continue
+            key = (u, v) if u.hog_id < v.hog_id else (v, u)
+            if key not in edge_weights:
+                support = d.get('support', 1)
+                og_weight = d.get('og_weight', 0)
+                weight = 200 if support >= 2 else 100 + min(og_weight * 50, 100)
+                edge_weights[key] = weight
+
+        if not edge_weights:
+            return self._linearize_graph(aag, target_chromosomes=target_chromosomes)
+
+        # Phase 1: ILP松弛
+        t0 = time.time()
+        prob = pulp.LpProblem("Linearize", pulp.LpMaximize)
+
+        x = {}
+        for key in edge_weights:
+            u, v = key
+            x[key] = pulp.LpVariable("x_{}_{}".format(u.hog_id, v.hog_id), lowBound=0, upBound=1, cat='Binary')
+
+        prob += pulp.lpSum(edge_weights[key] * x[key] for key in edge_weights)
+
+        node_edges = defaultdict(list)
+        for key in edge_weights:
+            u, v = key
+            node_edges[u].append(x[key])
+            node_edges[v].append(x[key])
+
+        for n in nodes:
+            if n in node_edges:
+                prob += pulp.lpSum(node_edges[n]) <= 2, "degree_{}".format(n.hog_id)
+
+        n_nodes = len(nodes)
+        if target_chromosomes is not None and target_chromosomes > 0:
+            target_edges = max(n_nodes - target_chromosomes, 0)
+            prob += pulp.lpSum(x[key] for key in edge_weights) == target_edges, "edge_count"
+
+        try:
+            solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=20)
+            prob.solve(solver)
+        except Exception as e:
+            logger.warning("ILP solve failed: {}, falling back to greedy".format(e))
+            return self._linearize_graph(aag, target_chromosomes=target_chromosomes)
+
+        if pulp.LpStatus[prob.status] not in ['Optimal', 'Feasible']:
+            logger.warning("ILP status: {}, falling back to greedy".format(pulp.LpStatus[prob.status]))
+            return self._linearize_graph(aag, target_chromosomes=target_chromosomes)
+
+        selected_edges = set()
+        for key, var in x.items():
+            if var.value() is not None and var.value() > 0.5:
+                selected_edges.add(key)
+
+        logger.info("  ILP solved: {} edges in {:.2f}s".format(len(selected_edges), time.time() - t0))
+
+        # Phase 2: 模拟退火
+        t0 = time.time()
+        current_edges = set(selected_edges)
+        current_score = self._evaluate_edge_set(current_edges, edge_weights, nodes, target_chromosomes)
+        best_edges = set(current_edges)
+        best_score = current_score
+
+        temperature = 100.0
+        cooling_rate = 0.9995
+        min_temp = 0.01
+        all_edges = list(edge_weights.keys())
+
+        iteration = 0
+        max_iter = self.sa_iterations
+
+        while temperature > min_temp and iteration < max_iter:
+            iteration += 1
+            op = random.choice(['remove_add', 'swap'])
+            new_edges = None
+
+            if op == 'remove_add':
+                if not current_edges:
+                    continue
+                e_remove = random.choice(list(current_edges))
+                u_r, v_r = e_remove
+                candidates = []
+                for e in all_edges:
+                    if e in current_edges:
+                        continue
+                    u_a, v_a = e
+                    # 计算当前度
+                    deg = {n: 0 for n in nodes}
+                    for e2 in current_edges:
+                        deg[e2[0]] += 1
+                        deg[e2[1]] += 1
+                    # 移除e_remove后的度
+                    deg[u_r] -= 1
+                    deg[v_r] -= 1
+                    # 添加e后的度
+                    deg[u_a] += 1
+                    deg[v_a] += 1
+                    if all(deg[n] <= 2 for n in (u_a, v_a, u_r, v_r)):
+                        candidates.append(e)
+                if not candidates:
+                    continue
+                e_add = random.choice(candidates)
+                new_edges = set(current_edges)
+                new_edges.remove(e_remove)
+                new_edges.add(e_add)
+
+            elif op == 'swap':
+                if len(current_edges) < 2:
+                    continue
+                edges_list = list(current_edges)
+                e1 = random.choice(edges_list)
+                e2 = random.choice(edges_list)
+                if e1 == e2:
+                    continue
+                u1, v1 = e1
+                u2, v2 = e2
+                swaps = []
+                if u1 != u2 and v1 != v2:
+                    ne1 = (u1, u2) if u1.hog_id < u2.hog_id else (u2, u1)
+                    ne2 = (v1, v2) if v1.hog_id < v2.hog_id else (v2, v1)
+                    if ne1 in edge_weights and ne2 in edge_weights:
+                        swaps.append((ne1, ne2))
+                if u1 != v2 and v1 != u2:
+                    ne1 = (u1, v2) if u1.hog_id < v2.hog_id else (v2, u1)
+                    ne2 = (v1, u2) if v1.hog_id < u2.hog_id else (u2, v1)
+                    if ne1 in edge_weights and ne2 in edge_weights:
+                        swaps.append((ne1, ne2))
+                if not swaps:
+                    continue
+                ne1, ne2 = random.choice(swaps)
+                new_edges = set(current_edges)
+                new_edges.remove(e1)
+                new_edges.remove(e2)
+                new_edges.add(ne1)
+                new_edges.add(ne2)
+
+            if new_edges is None:
+                continue
+
+            new_score = self._evaluate_edge_set(new_edges, edge_weights, nodes, target_chromosomes)
+            delta = new_score - current_score
+
+            if delta > 0 or random.random() < math.exp(delta / max(temperature, 0.001)):
+                current_edges = new_edges
+                current_score = new_score
+                if current_score > best_score:
+                    best_edges = set(current_edges)
+                    best_score = current_score
+
+            temperature *= cooling_rate
+
+        logger.info("  SA: {} iters, score {:.1f} -> {:.1f} in {:.2f}s".format(
+            iteration, self._evaluate_edge_set(selected_edges, edge_weights, nodes, target_chromosomes),
+            best_score, time.time() - t0))
+
+        # Phase 3: 构建结果图
+        return self._edges_to_aag(aag, best_edges, nodes, edge_weights)
+
+    def _evaluate_edge_set(self, edges, edge_weights, nodes, target_chromosomes):
+        """评估边集质量：权重和 - 惩罚项"""
+        score = sum(edge_weights.get(e, 0) for e in edges)
+
+        degree = {n: 0 for n in nodes}
+        for u, v in edges:
+            degree[u] = degree.get(u, 0) + 1
+            degree[v] = degree.get(v, 0) + 1
+
+        penalty = 0
+        for n, d in degree.items():
+            if d > 2:
+                penalty += (d - 2) * 500
+
+        if target_chromosomes is not None:
+            n_components = len(nodes) - len(edges)
+            penalty += abs(n_components - target_chromosomes) * 200
+
+        subg = nx.Graph()
+        for n in nodes:
+            subg.add_node(n)
+        for u, v in edges:
+            subg.add_edge(u, v)
+
+        n_cycles = 0
+        for comp in nx.connected_components(subg):
+            sg = subg.subgraph(comp)
+            if sg.number_of_edges() >= len(comp) and len(comp) > 1:
+                n_cycles += 1
+        penalty += n_cycles * 300
+
+        isolated = sum(1 for n in nodes if degree.get(n, 0) == 0)
+        penalty += isolated * 100
+
+        return score - penalty
+
+    def _edges_to_aag(self, aag, edges, nodes, edge_weights):
+        """将优化后的边集转换回AncestralAdjacencyGraph"""
+        subg = nx.Graph()
+        for n in nodes:
+            subg.add_node(n)
+        for u, v in edges:
+            subg.add_edge(u, v)
+
+        new_graph = nx.DiGraph()
+        seen_nodes = set()
+
+        for comp_nodes in nx.connected_components(subg):
+            if len(comp_nodes) == 1:
+                n = list(comp_nodes)[0]
+                new_graph.add_node(n)
+                seen_nodes.add(n)
+                continue
+
+            comp = subg.subgraph(comp_nodes).copy()
+
+            # 打破环
+            if comp.number_of_edges() == len(comp_nodes):
+                weakest = None
+                min_w = float('inf')
+                for u, v in comp.edges():
+                    key = (u, v) if u.hog_id < v.hog_id else (v, u)
+                    w = edge_weights.get(key, 0)
+                    if w < min_w:
+                        min_w = w
+                        weakest = (u, v)
+                if weakest:
+                    comp.remove_edge(*weakest)
+
+            endpoints = [n for n in comp_nodes if comp.degree(n) == 1]
+            if endpoints:
+                start = endpoints[0]
+            else:
+                start = list(comp_nodes)[0]
+
+            curr = start
+            prev = None
+            while True:
+                nbrs = [n for n in comp.neighbors(curr) if n != prev]
+                if not nbrs:
+                    break
+                nxt = nbrs[0]
+                new_graph.add_edge(curr, nxt)
+                prev = curr
+                curr = nxt
+
+            seen_nodes.update(comp_nodes)
+
+        for n in nodes:
+            if n not in seen_nodes:
+                new_graph.add_node(n)
+
+        for n in new_graph.nodes():
+            if n in aag.graph:
+                for k, v in aag.graph.nodes[n].items():
+                    if k not in new_graph.nodes[n]:
+                        new_graph.nodes[n][k] = v
+
+        result = AncestralAdjacencyGraph(node_id=aag.node_id)
+        result.species_set = aag.species_set
+        result.hog_map = dict(aag.hog_map)
+        result.graph = new_graph
+        result.gene_nodes = set(new_graph.nodes())
+        for n in new_graph.nodes():
+            if hasattr(n, 'chrom'):
+                result.chrom_map[n] = n.chrom
+        return result

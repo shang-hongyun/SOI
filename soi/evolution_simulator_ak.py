@@ -31,6 +31,9 @@ from collections import defaultdict, Counter
 from ete3 import Tree
 import networkx as nx
 
+from .ak_dotplot import draw_ancestor_dotplots
+from .tree import convert_newick
+
 
 # ============================================================================
 # Helper functions
@@ -106,23 +109,20 @@ def generate_tree(num_species, rng):
 
 
 def parse_tree(tree_file, wgd_rate=0.0):
-    """Parse tree file. If wgd_rate > 0, WGD is rate-based.
-    If wgd_rate == 0, [p=N] annotations in the tree are used."""
+    """Parse tree file, extracting [p=N] ploidy annotations from any node.
+    Tree annotations always take precedence; wgd_rate only controls
+    additional rate-based WGD on unannotated nodes."""
     with open(tree_file) as f:
         orig_nw = f.read().strip()
 
-    ploidy_map = {}
-    if wgd_rate == 0.0:
-        for m in re.finditer(r'([\w. -]+)\[p=(\d+)\]', orig_nw):
-            name = m.group(1).strip()
-            ploidy = int(m.group(2))
-            ploidy_map[name] = ploidy
+    # Convert [p=N] annotations to NHX format so ete3 can parse them
+    # as node features (works for leaves, named internals, unnamed internals)
+    converted_nw = convert_newick(orig_nw)
 
-    clean_nw = re.sub(r'\[p=\d+\]', '', orig_nw)
     tree = None
     for fmt in [1, 0, 2, 3, 8]:
         try:
-            tree = Tree(clean_nw, format=fmt)
+            tree = Tree(converted_nw, format=fmt)
             break
         except Exception:
             continue
@@ -140,6 +140,18 @@ def parse_tree(tree_file, wgd_rate=0.0):
                     node.name = candidate
                     existing_names.add(candidate)
                     break
+
+    # Build ploidy_map from ete3 node features (NHX:p=N)
+    ploidy_map = {}
+    for node in tree.traverse():
+        if hasattr(node, 'p'):
+            try:
+                ploidy = int(node.p)
+                if ploidy > 1:
+                    ploidy_map[node.name] = ploidy
+            except (ValueError, TypeError):
+                pass
+
     return tree, ploidy_map, orig_nw
 
 
@@ -898,6 +910,7 @@ class EvolutionSimulator:
             os.makedirs(outdir)
         species = sorted(self.leaf_karyotypes.keys())
         print("\nGenerating output files in {} ...".format(outdir))
+        output_files = []
 
         for sp in species:
             for cid, genes in self.leaf_karyotypes[sp].items():
@@ -906,19 +919,40 @@ class EvolutionSimulator:
 
         # Write tree first
         self._write_tree(outdir, orig_nw, tree)
+        output_files.append(os.path.join(outdir, "species_tree.nwk"))
 
         self._write_leaf_gff(outdir, species)
+        output_files.append(os.path.join(outdir, "all_species_gene.gff"))
         self._write_ancestor_gff(outdir, tree)
+        output_files.append(os.path.join(outdir, "ancestors_gene.gff"))
         self._write_og(outdir, species)
+        output_files.append(os.path.join(outdir, "ortholog_groups.txt"))
         self._write_orthologs(outdir, species)
+        output_files.append(os.path.join(outdir, "ortholog_pairs.txt"))
         self._write_events(outdir)
+        output_files.append(os.path.join(outdir, "events.tsv"))
         self._write_true_hogs(outdir, tree, species)
+        output_files.append(os.path.join(outdir, "true_hogs.tsv"))
         self._write_ancestor_karyotypes(outdir, tree)
-        self._draw_dotplots(outdir, tree, species)
+        output_files.append(os.path.join(outdir, "ancestors_karyotypes.txt"))
+        draw_ancestor_dotplots(
+            tree, self.all_node_karyotypes, outdir,
+            ancestor_fn=self.tracker.get_ancestor)
+        # Collect dotplot PNGs
+        root_name = None
+        for node in tree.traverse("preorder"):
+            if node.is_root():
+                root_name = node.name
+                break
+        for node in tree.traverse("preorder"):
+            name = node.name
+            if name == root_name or name not in self.all_node_karyotypes:
+                continue
+            output_files.append(os.path.join(outdir, "dotplot_{}.png".format(name)))
 
         print("Done! Output files:")
-        for f in sorted(os.listdir(outdir)):
-            print("  {}/{}".format(outdir, f))
+        for f in sorted(output_files):
+            print("  {}".format(f))
 
     # ------------------------------------------------------------------
     # Tree output — with [p=N] for simulated WGD
@@ -1234,160 +1268,6 @@ class EvolutionSimulator:
 
     # ------------------------------------------------------------------
     # Dotplot drawing
-    # ------------------------------------------------------------------
-    def _draw_dotplots(self, outdir, tree, species):
-        """Draw dotplots comparing each extant genome vs ancestor.
-        X-axis: ancestral gene order, Y-axis: extant gene order.
-        Color by ancestral chromosome."""
-        try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            from matplotlib.patches import Patch
-        except ImportError:
-            print("WARNING: matplotlib not available, skipping dotplot generation")
-            return
-
-        # Get root karyotype (ancestor)
-        root_name = None
-        for node in tree.traverse("preorder"):
-            if node.is_root():
-                root_name = node.name
-                break
-        if root_name not in self.all_node_karyotypes:
-            return
-        root_karyo = self.all_node_karyotypes[root_name]
-
-        # Build ancestral gene order (x-axis position)
-        anc_order = {}  # gene_id -> position (0-based)
-        pos = 0
-        sorted_cids = self._sorted_chr_ids(root_karyo)
-        for cid in sorted_cids:
-            for gid, orient in root_karyo[cid]:
-                anc_order[gid] = pos
-                pos += 1
-        n_anc = pos
-
-        # Color map for ancestor chromosomes
-        chr_names = sorted_cids
-        chr_colors = {}
-        cmap = plt.cm.get_cmap('tab20', max(len(chr_names), 1))
-        for i, cid in enumerate(chr_names):
-            chr_colors[cid] = cmap(i)
-
-        # Also get chr_id for each ancestral gene
-        anc_chr = {}
-        for cid in sorted_cids:
-            for gid, orient in root_karyo[cid]:
-                anc_chr[gid] = cid
-
-        def _chr_boundaries(ax, chr_list, karyo, axis='x'):
-            """Draw chromosome boundaries and return label positions."""
-            pos = 0
-            labels = []
-            for cid in chr_list:
-                n_genes = len(karyo[cid])
-                if pos > 0:
-                    if axis == 'x':
-                        ax.axvline(pos, color='black', linewidth=1.5, alpha=0.5)
-                    else:
-                        ax.axhline(pos, color='black', linewidth=1.5, alpha=0.5)
-                labels.append((pos + n_genes / 2.0, cid))
-                pos += n_genes
-            return labels, pos
-
-        # Draw one dotplot per species (vs ancestor)
-        for sp in sorted(species):
-            karyo = self.leaf_karyotypes[sp]
-            sp_sorted = self._sorted_chr_ids(karyo)
-
-            fig, ax = plt.subplots(figsize=(7, 7))
-            sp_pos = 0
-            xs, ys, colors = [], [], []
-
-            for cid in sp_sorted:
-                for gid, orient in karyo[cid]:
-                    anc = self.tracker.get_ancestor(gid)
-                    if anc in anc_order:
-                        xs.append(anc_order[anc])
-                        ys.append(sp_pos)
-                        colors.append(chr_colors.get(anc_chr.get(anc, ''), (0.5, 0.5, 0.5, 1.0)))
-                    sp_pos += 1
-            n_sp = sp_pos
-
-            ax.scatter(xs, ys, c=colors, s=5, marker='o', alpha=0.6, edgecolors='none')
-
-            ax.set_xlabel("Ancestor ({})".format(root_name))
-            ax.set_ylabel("{} gene order".format(sp))
-            ax.set_title("{} vs Ancestor".format(sp))
-            ax.set_xlim(0, n_anc)
-            ax.set_ylim(n_sp, 0)
-
-            # Ancestor chromosome boundaries (vertical)
-            anc_labels, _ = _chr_boundaries(ax, sorted_cids, root_karyo, axis='x')
-            # Species chromosome boundaries (horizontal)
-            sp_labels, _ = _chr_boundaries(ax, sp_sorted, karyo, axis='y')
-
-            # Chromosome labels on top axis
-            ax2 = ax.twiny()
-            ax2.set_xlim(ax.get_xlim())
-            ax2.set_xticks([p for p, _ in anc_labels])
-            ax2.set_xticklabels([c for _, c in anc_labels], fontsize=7, rotation=45, ha='left')
-            ax2.tick_params(length=0)
-
-            # Chromosome labels on right axis
-            ax3 = ax.twinx()
-            ax3.set_ylim(ax.get_ylim())
-            ax3.set_yticks([p for p, _ in sp_labels])
-            ax3.set_yticklabels([c for _, c in sp_labels], fontsize=7)
-            ax3.tick_params(length=0)
-
-            fig.tight_layout()
-            fig.savefig(os.path.join(outdir, "dotplot_{}.png".format(sp)), dpi=200)
-            plt.close(fig)
-
-        # Also draw a combined self-dotplot for the ancestor
-        fig, ax = plt.subplots(figsize=(10, 10))
-        pos = 0
-        xs, ys, colors = [], [], []
-        for cid in sorted_cids:
-            for gid, orient in root_karyo[cid]:
-                xs.append(pos)
-                ys.append(pos)
-                colors.append(chr_colors[cid])
-                pos += 1
-        ax.scatter(xs, ys, c=colors, s=6, marker='o', alpha=0.6, edgecolors='none')
-        ax.set_xlabel("Ancestor gene order")
-        ax.set_ylabel("Ancestor gene order")
-        ax.set_title("Ancestor ({}) self-dotplot".format(root_name))
-        ax.set_xlim(0, n_anc)
-        ax.set_ylim(n_anc, 0)
-
-        # Ancestor chromosome boundaries on both axes
-        anc_labels, _ = _chr_boundaries(ax, sorted_cids, root_karyo, axis='x')
-        _chr_boundaries(ax, sorted_cids, root_karyo, axis='y')
-
-        ax2 = ax.twiny()
-        ax2.set_xlim(ax.get_xlim())
-        ax2.set_xticks([p for p, _ in anc_labels])
-        ax2.set_xticklabels([c for _, c in anc_labels], fontsize=7, rotation=45, ha='left')
-        ax2.tick_params(length=0)
-
-        ax3 = ax.twinx()
-        ax3.set_ylim(ax.get_ylim())
-        ax3.set_yticks([p for p, _ in anc_labels])
-        ax3.set_yticklabels([c for _, c in anc_labels], fontsize=7)
-        ax3.tick_params(length=0)
-
-        # Legend
-        legend_patches = [Patch(facecolor=chr_colors[c], label=c) for c in sorted_cids]
-        ax.legend(handles=legend_patches, loc='upper right', fontsize=7,
-                  ncol=min(len(sorted_cids), 4))
-
-        fig.tight_layout()
-        fig.savefig(os.path.join(outdir, "dotplot_ancestor.png"), dpi=200)
-        plt.close(fig)
-
     # ------------------------------------------------------------------
     # Helper: sort chromosome IDs
     # ------------------------------------------------------------------

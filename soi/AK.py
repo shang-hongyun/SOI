@@ -1,4 +1,5 @@
 import sys
+import os
 import time
 import itertools
 import random
@@ -11,6 +12,7 @@ import networkx as nx
 from .mcscan import ColinearGroups, Gff, GffGraph, SyntenyGraph, GffLine
 from .hog import HOG, HOGrecord
 from .RunCmdsMP import logger
+from .ak_dotplot import draw_akr_dotplots
 
 try:
     import pulp
@@ -27,7 +29,7 @@ class RearrangementEvent:
     EVENT_TYPES = {
         'tandem_dup', 'proximal_dup', 'dispersed_dup',
         'indel', 'inversion', 'internal_inversion', 'telomere_inversion',
-        'translocation',
+        'unidir_trans',
         'reciprocal_translocation',
         'eej',
         'fission',
@@ -80,6 +82,11 @@ class AncestralAdjacencyGraph:
         self.hog_map = {}
         self.chrom_map = {}
         self.events = []
+        # 染色体来源追踪：记录每个节点/边来自哪个子图（source_id）
+        self.node_sources = {}   # node -> source_id (e.g., child node name)
+        self.edge_sources = {}   # (n1, n2) -> source_id
+        # 染色体物种来源：chrom_index -> set of species
+        self.chrom_species = {}  # chrom_index -> {species}
 
     @classmethod
     def from_gffgraph(cls, node_id, gffG, add_telomere=True):
@@ -334,6 +341,12 @@ class AKR:
         self._parse_ploidy_map()
         self._build_leaf_graphs()
 
+        # 处理多倍体叶子：生成pre-WGD图用于祖先重建
+        for leaf_name, ploidy in self.ploidy_map.items():
+            if leaf_name in self.leaf_graphs and ploidy > 1:
+                self._collapse_polyploid_leaf(leaf_name)
+
+        # 后序遍历：先重建物种分化节点，再重建pre-WGD伪节点
         for node in self.tree.traverse(strategy="postorder"):
             if node.is_leaf():
                 continue
@@ -342,9 +355,10 @@ class AKR:
                 logger.warning("Global timeout ({}s) reached at {:.1f}s, skipping remaining nodes".format(
                     self.timeout, elapsed))
                 break
+            # 物种分化节点重建
             self._reconstruct_node(node)
 
-            # WGD节点：额外生成pre-WGD基因组
+            # WGD节点：额外重建pre-WGD伪节点（统一日志格式）
             if node.name in self.ploidy_map and self.ploidy_map[node.name] > 1:
                 self._collapse_wgd(node)
 
@@ -499,22 +513,198 @@ class AKR:
             logger.info("Built leaf graph for {}: {} genes, {} chromosomes".format(
                 sp, len(aag.gene_nodes), len(list(aag.chromosomes))))
 
-    def _reconstruct_node(self, node):
+    def _reconstruct(self, target_node_id, child_graphs, child_source_ids=None,
+                     hog_level=None, outgroup_graphs=None,
+                     target_chromosomes=None, is_pre_wgd=False):
         """
-        重建一个内部节点的祖先核型。
+        统一重建方法：物种分化节点和 pre-WGD 节点共用同一流程。
         核心流程：
-        1. 将两个子节点图逐级映射到当前节点的 HOG
+        1. 将每个子节点图映射到目标 HOG 层级
         2. 合并映射后的邻接图（产生冲突边）
-        3. 外类群反向映射到当前节点 HOG
+        3. 外类群反向映射到目标 HOG（如有）
         4. 基于外类群投票解决合并冲突
         5. 线性化并重建端粒结构
-        6. 逐个解决小规模重排（indel / duplication / inversion）
+        6. 逐个解决小规模重排
         7. 解决 telomere-centric 大规模重排
+
+        Parameters:
+            target_node_id: 重建目标节点名称（如 "N4" 或 "pre-WGD N4"）
+            child_graphs: 子节点图列表（AncestralAdjacencyGraph）
+            child_source_ids: 子图来源标识列表（用于追踪染色体来源）
+            hog_level: 映射目标 HOG 层级的节点名（None 则用 target_node_id）
+            outgroup_graphs: 外类群图列表 [(graph, weight), ...]（None 则不使用外类群）
+            target_chromosomes: 目标染色体数目（None 则自动估计）
+            is_pre_wgd: 是否为 pre-WGD 重建（影响部分后处理）
         """
-        node_id = node.name
-        logger.info("Reconstructing node {}".format(node_id))
+        if child_source_ids is None:
+            child_source_ids = [cg.node_id for cg in child_graphs]
+        if hog_level is None:
+            hog_level = target_node_id
+
+        prefix = "pre-WGD " if is_pre_wgd else ""
+        logger.info("Reconstructing node {}{}".format(prefix, target_node_id))
         t0 = time.time()
 
+        # 打印子节点信息
+        for i, cg in enumerate(child_graphs):
+            n_chrom = len(list(cg.chromosomes))
+            n_genes = len(cg.gene_nodes)
+            n_edges = len(list(cg.get_adjacencies(include_telomere=False)))
+            logger.info("  Child {}: {} genes, {} chromosomes, {} adjacencies".format(
+                child_source_ids[i], n_genes, n_chrom, n_edges))
+
+        # ============================================================
+        # Step 1: 将每个子节点映射到目标 HOGrecord
+        # ============================================================
+        t1 = time.time()
+        mapped_children = [self._map_to_parent_hogs(hog_level, cg, source_id=sid)
+                           for cg, sid in zip(child_graphs, child_source_ids)]
+        for i, mc in enumerate(mapped_children):
+            n_edges = len(list(mc.get_adjacencies(include_telomere=False)))
+            logger.info("  Mapped child {} -> {} HOGs, {} adjacencies ({:.2f}s)".format(
+                child_source_ids[i], len(mc.gene_nodes), n_edges, time.time()-t1))
+
+        # ============================================================
+        # Step 2: 合并映射后的邻接图
+        # ============================================================
+        t1 = time.time()
+        merged = self._merge_child_graphs(target_node_id, mapped_children, child_source_ids)
+        n_conflict = sum(1 for u, v, d in merged.graph.edges(data=True) if d.get('conflict'))
+        logger.info("  After merge: {} HOGs, {} conflict edges ({:.2f}s)".format(
+            len(merged.gene_nodes), n_conflict, time.time()-t1))
+
+        # 根据子节点投票确定每个 HOG 的共识链向
+        strand_votes = defaultdict(lambda: {'+': 0, '-': 0})
+        for mc in mapped_children:
+            for rec in mc.gene_nodes:
+                strand = mc.graph.nodes[rec].get('strand')
+                if strand is None:
+                    strand = getattr(rec, 'strand', '+')
+                strand_votes[rec][strand] += 1
+        for rec in merged.gene_nodes:
+            votes = strand_votes.get(rec, {'+': 1, '-': 0})
+            consensus = '+' if votes['+'] >= votes['-'] else '-'
+            merged.graph.nodes[rec]['strand'] = consensus
+
+        # 导出重建前 GFA
+        t1 = time.time()
+        merge_gfa = "{}.{}.merge.gfa".format(self.outpre, target_node_id)
+        with open(merge_gfa, 'w') as fout:
+            merged.to_gfa(fout)
+        logger.info("  Exported pre-reconstruction GFA: {} ({:.2f}s)".format(merge_gfa, time.time()-t1))
+
+        # ============================================================
+        # Step 3: 外类群反向映射到目标 HOG（带系统发育距离权重）
+        # ============================================================
+        t1 = time.time()
+        mapped_outgroups = []
+        if outgroup_graphs:
+            mapped_outgroups = [(self._map_outgroup_to_current_hogs(hog_level, og), weight)
+                                for og, weight in outgroup_graphs]
+        total_weight = sum(w for _, w in mapped_outgroups) if mapped_outgroups else 0
+        logger.info("  Mapped {} outgroup graphs, total_weight={:.2f} ({:.2f}s)".format(
+            len(mapped_outgroups), total_weight, time.time()-t1))
+
+        # ============================================================
+        # Step 4: 基于外类群投票解决合并冲突 + 全局线性化
+        # ============================================================
+        t1 = time.time()
+        merged = self._resolve_merge_conflicts(merged, mapped_children, mapped_outgroups)
+        t2 = time.time()
+        if target_chromosomes is None:
+            target_chromosomes = max(len(list(child_graphs[0].chromosomes)), 1) if child_graphs else 1
+        if self.use_ilp_sa:
+            merged = self._linearize_graph_ilp_sa(merged, target_chromosomes=target_chromosomes)
+        else:
+            merged = self._linearize_graph(merged, target_chromosomes=target_chromosomes)
+        t3 = time.time()
+        merged._add_telomeres()
+        logger.info("  After conflict resolution: {} HOGs, {} chromosomes (conflict {:.2f}s, linearize {:.2f}s, telomere {:.2f}s)".format(
+            len(merged.gene_nodes), len(list(merged.chromosomes)), t2-t1, t3-t2, time.time()-t3))
+
+        # ============================================================
+        # Step 5: 逐个解决小规模重排
+        # ============================================================
+        t1 = time.time()
+        merged = self._resolve_indels(merged, mapped_children, mapped_outgroups)
+        t2 = time.time()
+        merged = self._resolve_duplications(merged, mapped_children)
+        logger.info("  Small rearrangements: indel {:.2f}s, dup {:.2f}s".format(
+            t2-t1, time.time()-t2))
+
+        # ============================================================
+        # Step 6: 检测重排事件（输入 vs 输出差异）
+        # ============================================================
+        t1 = time.time()
+        self._detect_bottomup_events(merged, mapped_children, child_source_ids)
+        logger.info("  Bottom-up event detection: {:.2f}s".format(time.time()-t1))
+
+        # 记录染色体物种来源
+        for ci, chrom in enumerate(merged.chromosomes):
+            genes = [n for n in chrom if n not in merged.telomeres]
+            species = set()
+            for g in genes:
+                srcs = merged.node_sources.get(g, set())
+                for src in srcs:
+                    # 从 child_graphs 中查找 source_id 对应的物种集
+                    for j, sid in enumerate(child_source_ids):
+                        if sid == src and j < len(child_graphs):
+                            species |= child_graphs[j].species_set
+            merged.chrom_species[ci] = species
+
+        # 事件分类统计
+        n_chrom = len(list(merged.chromosomes))
+        all_event_types = ['indel', 'tandem_dup', 'proximal_dup', 'dispersed_dup',
+                          'inversion', 'internal_inversion', 'telomere_inversion',
+                          'fission', 'ncf', 'eej', 'unidir_trans',
+                          'reciprocal_translocation']
+        evt_counts = Counter(e.event_type for e in merged.events)
+        evt_summary = ', '.join('{}:{}'.format(k, evt_counts.get(k, 0)) for k in all_event_types)
+
+        n_fission = evt_counts.get('fission', 0)
+        n_ncf = evt_counts.get('ncf', 0)
+        n_eej = evt_counts.get('eej', 0)
+        chrom_delta = n_fission - n_ncf - n_eej
+        child_chroms = [len(list(cg.chromosomes)) for cg in child_graphs]
+        avg_child_chrom = sum(child_chroms) / len(child_chroms) if child_chroms else n_chrom
+        expected_delta = avg_child_chrom - n_chrom
+        logger.info("Node {} final: {} chromosomes, events: {}".format(
+            target_node_id, n_chrom, evt_summary))
+        logger.info("  Chromosome validation: fission({}) - ncf({}) - eej({}) = delta {}".format(
+            n_fission, n_ncf, n_eej, chrom_delta))
+        logger.info("  Expected delta (child {:.1f} - anc {}) = {:.1f}, match={}".format(
+            avg_child_chrom, n_chrom, expected_delta,
+            "YES" if abs(chrom_delta - expected_delta) < 1.5 else "NO"))
+
+        node_elapsed = time.time() - t0
+        if self.node_timeout > 0 and node_elapsed > self.node_timeout:
+            logger.warning("Node {} reconstruction took {:.1f}s, exceeding node_timeout {}s".format(
+                target_node_id, node_elapsed, self.node_timeout))
+
+        # 导出重建后 GFA
+        anc_gfa = "{}.{}.anc.gfa".format(self.outpre, target_node_id)
+        with open(anc_gfa, 'w') as fout:
+            merged.to_gfa(fout)
+        logger.info("  Exported post-reconstruction GFA: {}".format(anc_gfa))
+
+        return merged
+
+    def _resolve_telomere_rearrangements_by_id(self, node_id, merged, mapped_children, mapped_outgroups):
+        """包装 _resolve_telomere_rearrangements，传入 node_id 而非 tree node"""
+        # 查找对应的树节点
+        node = self.tree.search_nodes(name=node_id)
+        if node:
+            return self._resolve_telomere_rearrangements(node[0], merged, mapped_children, mapped_outgroups)
+        # 找不到树节点（如 pre-WGD 伪节点），跳过 telomere rearrangements
+        logger.info("  No tree node for {}, skipping telomere rearrangements".format(node_id))
+        return merged
+
+    def _reconstruct_node(self, node):
+        """
+        重建一个物种分化内部节点的祖先核型。
+        委托给统一的 _reconstruct 方法。
+        """
+        node_id = node.name
         children = node.children
         if len(children) != 2:
             logger.warning("Node {} has {} children; expecting binary tree".format(
@@ -536,142 +726,22 @@ class AKR:
             logger.warning("No child graphs for {}".format(node_id))
             return
 
-        # 打印子节点信息
-        for cg in child_graphs:
-            n_chrom = len(list(cg.chromosomes))
-            n_genes = len(cg.gene_nodes)
-            n_edges = len(list(cg.get_adjacencies(include_telomere=False)))
-            logger.info("  Child {}: {} genes, {} chromosomes, {} adjacencies".format(
-                cg.node_id, n_genes, n_chrom, n_edges))
-
-        # ============================================================
-        # Step 1: 将每个子节点映射到当前节点的 HOGrecord
-        # ============================================================
-        t1 = time.time()
-        mapped_children = [self._map_to_parent_hogs(node_id, cg) for cg in child_graphs]
-        for i, mc in enumerate(mapped_children):
-            n_edges = len(list(mc.get_adjacencies(include_telomere=False)))
-            logger.info("  Mapped child {} -> {} HOGs, {} adjacencies ({:.2f}s)".format(
-                child_graphs[i].node_id, len(mc.gene_nodes), n_edges, time.time()-t1))
-
-        # ============================================================
-        # Step 2: 合并两个映射后的邻接图
-        # ============================================================
-        t1 = time.time()
-        merged = self._merge_two_graphs(node_id, mapped_children[0], mapped_children[1])
-        logger.info("  After merge: {} HOGs, {} conflict edges ({:.2f}s)".format(
-            len(merged.gene_nodes),
-            sum(1 for u, v, d in merged.graph.edges(data=True) if d.get('conflict')),
-            time.time()-t1))
-
-        # 根据子节点投票确定每个 HOG 的共识链向
-        strand_votes = defaultdict(lambda: {'+': 0, '-': 0})
-        for mc in mapped_children:
-            for rec in mc.gene_nodes:
-                strand = mc.graph.nodes[rec].get('strand')
-                if strand is None:
-                    strand = getattr(rec, 'strand', '+')
-                strand_votes[rec][strand] += 1
-        for rec in merged.gene_nodes:
-            votes = strand_votes.get(rec, {'+': 1, '-': 0})
-            consensus = '+' if votes['+'] >= votes['-'] else '-'
-            merged.graph.nodes[rec]['strand'] = consensus
-
-        # 导出重建前 GFA（原始合并结果，含冲突）
-        t1 = time.time()
-        merge_gfa = "{}.{}.merge.gfa".format(self.outpre, node_id)
-        with open(merge_gfa, 'w') as fout:
-            merged.to_gfa(fout)
-        logger.info("  Exported pre-reconstruction GFA: {} ({:.2f}s)".format(merge_gfa, time.time()-t1))
-
-        # ============================================================
-        # Step 3: 外类群反向映射到当前节点 HOG（带系统发育距离权重）
-        # ============================================================
-        t1 = time.time()
+        # 获取外类群图
         outgroup_graphs = self._get_outgroup_graphs(node)
-        mapped_outgroups = [(self._map_outgroup_to_current_hogs(node_id, og), weight)
-                            for og, weight in outgroup_graphs]
-        total_weight = sum(w for _, w in mapped_outgroups) if mapped_outgroups else 0
-        logger.info("  Mapped {} outgroup graphs, total_weight={:.2f} ({:.2f}s)".format(
-            len(mapped_outgroups), total_weight, time.time()-t1))
 
-        # ============================================================
-        # Step 4: 基于外类群投票解决合并冲突 + 全局线性化
-        # ============================================================
-        t1 = time.time()
-        merged = self._resolve_merge_conflicts(merged, mapped_children, mapped_outgroups)
-        t2 = time.time()
+        # 估计目标染色体数
         target_chromosomes = self._estimate_target_chromosomes(node)
-        if self.use_ilp_sa:
-            merged = self._linearize_graph_ilp_sa(merged, target_chromosomes=target_chromosomes)
-        else:
-            merged = self._linearize_graph(merged, target_chromosomes=target_chromosomes)
-        t3 = time.time()
-        merged._add_telomeres()
-        logger.info("  After conflict resolution: {} HOGs, {} chromosomes (conflict {:.2f}s, linearize {:.2f}s, telomere {:.2f}s)".format(
-            len(merged.gene_nodes), len(list(merged.chromosomes)), t2-t1, t3-t2, time.time()-t3))
 
-        # ============================================================
-        # Step 5: 逐个解决小规模重排
-        # ============================================================
-        t1 = time.time()
-        merged = self._resolve_indels(merged, mapped_children, mapped_outgroups)
-        t2 = time.time()
-        merged = self._resolve_duplications(merged, mapped_children)
-        t3 = time.time()
-        merged = self._resolve_inversions(merged, mapped_children, child_graphs)
-        logger.info("  Small rearrangements: indel {:.2f}s, dup {:.2f}s, inv {:.2f}s".format(
-            t2-t1, t3-t2, time.time()-t3))
-
-        # 节点超时检查：若已接近超时，跳过剩余步骤
-        if self.node_timeout > 0 and (time.time() - t0) > self.node_timeout:
-            logger.warning("  Node {} approaching timeout, skipping telomere rearrangements".format(node_id))
-        else:
-            # ============================================================
-            # Step 6: Telomere-centric 大规模重排
-            # ============================================================
-            t1 = time.time()
-            merged = self._resolve_telomere_rearrangements(node, merged, mapped_children, mapped_outgroups)
-            logger.info("  Telomere rearrangements: {:.2f}s".format(time.time()-t1))
+        merged = self._reconstruct(
+            target_node_id=node_id,
+            child_graphs=child_graphs,
+            hog_level=node_id,
+            outgroup_graphs=outgroup_graphs,
+            target_chromosomes=target_chromosomes,
+            is_pre_wgd=False
+        )
 
         self.anc_graphs[node_id] = merged
-
-        # 导出重建后 GFA
-        anc_gfa = "{}.{}.anc.gfa".format(self.outpre, node_id)
-        with open(anc_gfa, 'w') as fout:
-            merged.to_gfa(fout)
-        logger.info("  Exported post-reconstruction GFA: {}".format(anc_gfa))
-
-        # 事件分类统计与染色体数目验证
-        n_chrom = len(list(merged.chromosomes))
-        all_event_types = ['indel', 'tandem_dup', 'proximal_dup', 'dispersed_dup',
-                          'inversion', 'internal_inversion', 'telomere_inversion',
-                          'fission', 'ncf', 'eej', 'reciprocal_translocation']
-        evt_counts = Counter(e.event_type for e in merged.events)
-        evt_summary = ', '.join('{}:{}'.format(k, evt_counts.get(k, 0)) for k in all_event_types)
-        # 染色体数目验证：fission (+1), ncf (-1), eej (-1)
-        n_fission = evt_counts.get('fission', 0)
-        n_ncf = evt_counts.get('ncf', 0)
-        n_eej = evt_counts.get('eej', 0)
-        chrom_delta = n_fission - n_ncf - n_eej
-        # 计算子节点染色体数（取平均）
-        child_chroms = []
-        for cg in child_graphs:
-            child_chroms.append(len(list(cg.chromosomes)))
-        avg_child_chrom = sum(child_chroms) / len(child_chroms) if child_chroms else n_chrom
-        expected_delta = avg_child_chrom - n_chrom
-        logger.info("Node {} final: {} chromosomes, events: {}".format(
-            node_id, n_chrom, evt_summary))
-        logger.info("  Chromosome validation: fission({}) - ncf({}) - eej({}) = delta {}".format(
-            n_fission, n_ncf, n_eej, chrom_delta))
-        logger.info("  Expected delta (child {:.1f} - anc {}) = {:.1f}, match={}".format(
-            avg_child_chrom, n_chrom, expected_delta,
-            "YES" if abs(chrom_delta - expected_delta) < 1.5 else "NO"))
-
-        node_elapsed = time.time() - t0
-        if self.node_timeout > 0 and node_elapsed > self.node_timeout:
-            logger.warning("Node {} reconstruction took {:.1f}s, exceeding node_timeout {}s".format(
-                node_id, node_elapsed, self.node_timeout))
 
     def _map_child_node_to_hog(self, node_id, child_graph):
         """
@@ -709,21 +779,25 @@ class AKR:
                         mapping[n] = node_hog_records[hid]
         return mapping
 
-    def _map_to_parent_hogs(self, node_id, graph):
+    def _map_to_parent_hogs(self, node_id, graph, source_id=None):
         """
         将子图（叶子图或祖先图）的节点映射到指定 node_id 的 HOGrecord，
         返回一个新的 AncestralAdjacencyGraph，节点全部为 HOGrecord 对象。
         边按照原图的邻接关系复制，去除自环和端粒边。
+        source_id: 标记映射后图中节点/边的来源（如子节点名称），
+                   用于合并后追踪染色体来源。
         """
         mapping = self._map_child_node_to_hog(node_id, graph)
         mapped = AncestralAdjacencyGraph(node_id="{}_mapped".format(graph.node_id))
         mapped.species_set = set(graph.species_set)
+        src = source_id or graph.node_id
 
         # 添加节点：只添加成功映射的 HOGrecord
         for rec in set(mapping.values()):
             mapped.graph.add_node(rec, hog=rec)
             mapped.gene_nodes.add(rec)
             mapped.hog_map[rec] = rec
+            mapped.node_sources[rec] = {src}
 
         # 记录每个 HOG 的链向（来自子节点原始基因或祖先图节点属性）
         # 对映射到同一 HOG 的多个基因进行投票，保留多数链向
@@ -761,8 +835,9 @@ class AKR:
                 if g == last_g:
                     mapped.hog_endpoints[h]['right'].append((graph.node_id, right_tel))
 
-        # 复制边：只复制两端都成功映射的邻接，且去除自环和双向重复
-        seen_edges = set()
+        # 复制边：只复制两端都成功映射的邻接，且去除自环
+        # 统计映射到同一父边的子边数量作为support（WGD多拷贝场景下support>1）
+        edge_support = Counter()
         for n1, n2 in graph.get_adjacencies(include_telomere=False):
             if n1 in mapping and n2 in mapping:
                 h1 = mapping[n1]
@@ -770,36 +845,54 @@ class AKR:
                 if h1 == h2:
                     continue
                 key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
-                if key in seen_edges:
-                    continue
-                seen_edges.add(key)
-                mapped.graph.add_edge(h1, h2)
+                edge_support[key] += 1
+
+        for (h1, h2), count in edge_support.items():
+            mapped.graph.add_edge(h1, h2, support=count)
+            mapped.edge_sources[(h1, h2)] = {src}
+            mapped.edge_sources[(h2, h1)] = {src}
 
         return mapped
 
-    def _merge_two_graphs(self, node_id, g1, g2):
+    def _merge_child_graphs(self, node_id, mapped_children, child_source_ids=None):
         """
-        合并两个已经映射到同一层 HOG 的邻接图。
+        合并多个已映射到同一层 HOG 的邻接图。
         节点取并集，边按支持度投票：
-        - support=2：两个子节点都支持，高置信度保留
-        - support=1：仅一个子节点支持，标记为冲突边
+        - support=子图数：所有子图都支持，高置信度保留
+        - support<子图数：仅部分子图支持，标记为冲突边
         同时标记 conflict 边是否涉及子节点染色体端点（端点邻接更可能是重排断点），
-        以及冲突边在另一子节点中是否位于同一染色体（同一染色体更可能是祖先邻接断裂）。
+        以及冲突边在其他子节点中是否位于同一染色体（同一染色体更可能是祖先邻接断裂）。
         返回合并后的 AncestralAdjacencyGraph。
         """
+        n_children = len(mapped_children)
+        if child_source_ids is None:
+            child_source_ids = [mc.node_id for mc in mapped_children]
+
         merged = AncestralAdjacencyGraph(node_id=node_id)
-        merged.species_set = g1.species_set | g2.species_set
+        merged.species_set = set()
+        for g in mapped_children:
+            merged.species_set |= g.species_set
 
         # 节点并集
-        all_hogs = set(g1.gene_nodes) | set(g2.gene_nodes)
+        all_hogs = set()
+        for g in mapped_children:
+            all_hogs |= set(g.gene_nodes)
         for rec in all_hogs:
             merged.graph.add_node(rec, hog=rec)
             merged.gene_nodes.add(rec)
             merged.hog_map[rec] = rec
 
-        # 预计算每个子节点的 HOG -> 染色体索引 / 位置
+        # 记录节点来源（可能来自多个子图）
+        for i, g in enumerate(mapped_children):
+            src = child_source_ids[i]
+            for rec in g.gene_nodes:
+                if rec not in merged.node_sources:
+                    merged.node_sources[rec] = set()
+                merged.node_sources[rec].add(src)
+
+        # 预计算每个子图的 HOG -> 染色体索引 / 位置
         child_chrom_info = []
-        for g in (g1, g2):
+        for g in mapped_children:
             h2c = {}
             h2p = {}
             for ci, chrom in enumerate(g.chromosomes):
@@ -813,7 +906,7 @@ class AKR:
         edge_support = Counter()
         edge_endpoint = {}  # key -> bool (是否涉及子节点端点)
         edge_children = defaultdict(set)  # key -> {child_index}
-        for i, g in enumerate((g1, g2)):
+        for i, g in enumerate(mapped_children):
             hog_endpoints = getattr(g, 'hog_endpoints', {})
             for n1, n2 in g.get_adjacencies(include_telomere=False):
                 key = (n1, n2) if n1.hog_id < n2.hog_id else (n2, n1)
@@ -825,32 +918,47 @@ class AKR:
                     if ep.get('left') or ep.get('right'):
                         edge_endpoint[key] = True
 
-        # 为 conflict 边计算：在另一子节点中是否位于同一染色体及距离
+        # 记录边来源
+        for key, child_indices in edge_children.items():
+            h1, h2 = key
+            srcs = {child_source_ids[i] for i in child_indices}
+            merged.edge_sources[(h1, h2)] = srcs
+            merged.edge_sources[(h2, h1)] = srcs
+
+        # 为 conflict 边计算：在其他子节点中是否位于同一染色体及距离
         same_chrom_other = {}
         dist_other = {}
         for key, count in edge_support.items():
-            if count >= 2:
+            if count >= n_children:
                 continue
             child_idx = list(edge_children[key])[0]
-            other_idx = 1 - child_idx
             h1, h2 = key
-            other_h2c = child_chrom_info[other_idx][0]
-            other_h2p = child_chrom_info[other_idx][1]
-            c1 = other_h2c.get(h1)
-            c2 = other_h2c.get(h2)
-            if c1 is not None and c2 is not None and c1 == c2:
-                same_chrom_other[key] = True
-                p1 = other_h2p.get(h1, 0)
-                p2 = other_h2p.get(h2, 0)
-                dist_other[key] = abs(p1 - p2)
-            else:
-                same_chrom_other[key] = False
-                dist_other[key] = 999999
+            # 在所有其他子图中检查是否同染色体，取最小距离
+            min_dist = 999999
+            any_same = False
+            for other_idx in range(n_children):
+                if other_idx == child_idx:
+                    continue
+                other_h2c = child_chrom_info[other_idx][0]
+                other_h2p = child_chrom_info[other_idx][1]
+                c1 = other_h2c.get(h1)
+                c2 = other_h2c.get(h2)
+                if c1 is not None and c2 is not None and c1 == c2:
+                    any_same = True
+                    p1 = other_h2p.get(h1, 0)
+                    p2 = other_h2p.get(h2, 0)
+                    d = abs(p1 - p2)
+                    if d < min_dist:
+                        min_dist = d
+            same_chrom_other[key] = any_same
+            dist_other[key] = min_dist if any_same else 999999
 
         for (h1, h2), count in edge_support.items():
             is_endpoint = edge_endpoint.get((h1, h2), False)
-            merged.graph.add_edge(h1, h2, support=count, conflict=(count < 2), endpoint=is_endpoint)
-            merged.graph.add_edge(h2, h1, support=count, conflict=(count < 2), endpoint=is_endpoint)
+            merged.graph.add_edge(h1, h2, support=count,
+                                  conflict=(count < n_children), endpoint=is_endpoint)
+            merged.graph.add_edge(h2, h1, support=count,
+                                  conflict=(count < n_children), endpoint=is_endpoint)
 
         # 将 conflict 边排序辅助信息附加到 merged 图对象上，供 _linearize_graph 使用
         merged.same_chrom_other = same_chrom_other
@@ -994,6 +1102,7 @@ class AKR:
             result.species_set = aag.species_set
             result.hog_map = dict(aag.hog_map)
             result.graph = new_graph
+            result.events = list(aag.events)
             return result
 
         # 计算边权重，去重无向边
@@ -1110,7 +1219,11 @@ class AKR:
                         break
 
         # 2b: 若仍未达到目标，回退到低质量冲突边
+        # 当无目标染色体数时，也加入低质量边以尽可能补全图
+        need_low_quality = target_chromosomes is None
         if target_chromosomes is not None and count_components() > target_chromosomes:
+            need_low_quality = True
+        if need_low_quality:
             for (u, v), weight in low_quality:
                 if degree[u] >= 2 or degree[v] >= 2:
                     continue
@@ -1120,9 +1233,10 @@ class AKR:
                 degree[u] += 1
                 degree[v] += 1
                 union(u, v)
-                current = count_components()
-                if current <= target_chromosomes:
-                    break
+                if target_chromosomes is not None:
+                    current = count_components()
+                    if current <= target_chromosomes:
+                        break
 
         final_components = count_components()
         logger.info("  Linearization stats: initial={}, target={}, final={}".format(
@@ -1216,6 +1330,7 @@ class AKR:
         result.hog_map = dict(aag.hog_map)
         result.graph = new_graph
         result.gene_nodes = set(new_graph.nodes())
+        result.events = list(aag.events)
         for n in new_graph.nodes():
             if hasattr(n, 'chrom'):
                 result.chrom_map[n] = n.chrom
@@ -1453,6 +1568,180 @@ class AKR:
         该阶段比较祖先与其父节点的链向，能准确识别发生在该分支上的 inversion。
         """
         return merged
+
+    def _detect_bottomup_events(self, merged, mapped_children, child_source_ids):
+        """
+        检测底向上重排事件：比较每个子节点映射图（输入）与线性化后的祖先图（输出）。
+        每种冲突对应不同的重排类型，按从小到大顺序检测：
+
+        1. indel: HOG 在部分子节点缺失
+        2. duplication: HOG 在某子节点有多个拷贝
+        3. inversion: 链向不一致（子节点 vs 祖先共识）
+        4. fission: 祖先邻接在子节点中断裂，两端成为不同染色体端点
+        5. NCF: 祖先邻接在子节点中断裂，一端成为染色体端点
+        6. EEJ: 子节点新邻接连接了祖先的两个染色体端点
+        """
+        node_id = merged.node_id
+
+        # 构建祖先图位置索引
+        merged_hog_to_chrom = {}
+        merged_chrom_ends = {}  # hog -> 'left'/'right'/'both'/'internal'
+        merged_adjs_norm = set()
+        for ci, chrom in enumerate(merged.chromosomes):
+            genes = [n for n in chrom if n not in merged.telomeres]
+            for j, h in enumerate(genes):
+                merged_hog_to_chrom[h] = ci
+                if j == 0 and j == len(genes) - 1:
+                    merged_chrom_ends[h] = 'both'
+                elif j == 0:
+                    merged_chrom_ends[h] = 'left'
+                elif j == len(genes) - 1:
+                    merged_chrom_ends[h] = 'right'
+                else:
+                    merged_chrom_ends[h] = 'internal'
+        for n1, n2 in merged.get_adjacencies(include_telomere=False):
+            key = (n1, n2) if n1.hog_id < n2.hog_id else (n2, n1)
+            merged_adjs_norm.add(key)
+
+        def get_merged_strand(h):
+            s = merged.graph.nodes[h].get('strand')
+            return s if s else getattr(h, 'strand', '+')
+
+        for ci_idx, mc in enumerate(mapped_children):
+            src = child_source_ids[ci_idx] if ci_idx < len(child_source_ids) else mc.node_id
+
+            # 构建子节点位置索引
+            mc_hog_to_chrom = {}
+            mc_chrom_ends = {}
+            mc_adjs_norm = set()
+            for cci, chrom in enumerate(mc.chromosomes):
+                genes = [n for n in chrom if n not in mc.telomeres]
+                for j, h in enumerate(genes):
+                    mc_hog_to_chrom[h] = cci
+                    if j == 0 and j == len(genes) - 1:
+                        mc_chrom_ends[h] = 'both'
+                    elif j == 0:
+                        mc_chrom_ends[h] = 'left'
+                    elif j == len(genes) - 1:
+                        mc_chrom_ends[h] = 'right'
+                    else:
+                        mc_chrom_ends[h] = 'internal'
+            for n1, n2 in mc.get_adjacencies(include_telomere=False):
+                key = (n1, n2) if n1.hog_id < n2.hog_id else (n2, n1)
+                mc_adjs_norm.add(key)
+
+            def get_mc_strand(h):
+                s = mc.graph.nodes[h].get('strand')
+                return s if s else getattr(h, 'strand', '+')
+
+            # ============================================================
+            # 1. Inversion 检测（小重排）
+            # 子节点链向与祖先共识不一致的连续HOG块
+            # ============================================================
+            for cci, chrom in enumerate(mc.chromosomes):
+                genes = [n for n in chrom if n not in mc.telomeres
+                         and n in merged_hog_to_chrom]
+                if len(genes) < 3:
+                    continue
+                # 找出链向不一致的连续块
+                blocks = []
+                start = None
+                for i, h in enumerate(genes):
+                    mc_s = get_mc_strand(h)
+                    anc_s = get_merged_strand(h)
+                    if mc_s != anc_s:
+                        if start is None:
+                            start = i
+                    else:
+                        if start is not None:
+                            blocks.append((start, i))
+                            start = None
+                if start is not None:
+                    blocks.append((start, len(genes)))
+
+                min_block_size = max(3, int(len(genes) * 0.02) + 1)
+                for bstart, bend in blocks:
+                    block = genes[bstart:bend]
+                    if len(block) < min_block_size:
+                        continue
+                    is_left = (bstart == 0)
+                    is_right = (bend == len(genes))
+                    if is_left or is_right:
+                        etype = 'telomere_inversion'
+                    else:
+                        etype = 'internal_inversion'
+                    merged.events.append(RearrangementEvent(
+                        etype, node_id,
+                        genes_involved=block,
+                        desc="{}: {} HOGs [{}..{}] in {}".format(
+                            etype, len(block),
+                            block[0].hog_id, block[-1].hog_id, src),
+                        support=len(block)
+                    ))
+
+            # ============================================================
+            # 2. Fission / NCF 检测（大重排 - 祖先邻接在子节点中断裂）
+            # 邻接在祖先有、子节点无 → 子节点分支上断裂
+            # ============================================================
+            anc_only = merged_adjs_norm - mc_adjs_norm
+            for h1, h2 in anc_only:
+                e1 = mc_chrom_ends.get(h1, 'internal')
+                e2 = mc_chrom_ends.get(h2, 'internal')
+                c1 = mc_hog_to_chrom.get(h1)
+                c2 = mc_hog_to_chrom.get(h2)
+
+                # 两个HOG在子节点中分属不同染色体
+                if c1 is not None and c2 is not None and c1 != c2:
+                    if e1 != 'internal' and e2 != 'internal':
+                        # 两个都是子节点染色体端点 → fission
+                        merged.events.append(RearrangementEvent(
+                            'fission', node_id,
+                            genes_involved=[h1, h2],
+                            desc="Fission: {}-{} adjacent in ancestor, "
+                                 "separated in {}".format(
+                                h1.hog_id, h2.hog_id, src),
+                            support=1
+                        ))
+                    elif e1 != 'internal' or e2 != 'internal':
+                        # 一个是端点 → NCF
+                        merged.events.append(RearrangementEvent(
+                            'ncf', node_id,
+                            genes_involved=[h1, h2],
+                            desc="NCF: {}-{} adjacent in ancestor, "
+                                 "broken at end in {}".format(
+                                h1.hog_id, h2.hog_id, src),
+                            support=1
+                        ))
+
+            # ============================================================
+            # 3. EEJ / NCF 检测（大重排 - 子节点新连接）
+            # 邻接在子节点有、祖先无 → 子节点分支上创造了新连接
+            # ============================================================
+            child_only = mc_adjs_norm - merged_adjs_norm
+            for h1, h2 in child_only:
+                e1 = merged_chrom_ends.get(h1, 'internal')
+                e2 = merged_chrom_ends.get(h2, 'internal')
+
+                if e1 != 'internal' and e2 != 'internal':
+                    # 两个都是祖先染色体端点 → EEJ
+                    merged.events.append(RearrangementEvent(
+                        'eej', node_id,
+                        genes_involved=[h1, h2],
+                        desc="EEJ: {}-{} joined in {} "
+                             "(separate ends in ancestor)".format(
+                            h1.hog_id, h2.hog_id, src),
+                        support=1
+                    ))
+                elif e1 != 'internal' or e2 != 'internal':
+                    # 一个是祖先染色体端点 → NCF
+                    merged.events.append(RearrangementEvent(
+                        'ncf', node_id,
+                        genes_involved=[h1, h2],
+                        desc="NCF: {}-{} adjacent in {} "
+                             "near end in ancestor".format(
+                            h1.hog_id, h2.hog_id, src),
+                        support=1
+                    ))
 
     def _resolve_telomere_rearrangements(self, node, merged, mapped_children, mapped_outgroups):
         """
@@ -1771,6 +2060,14 @@ class AKR:
                     f.write('\t'.join(line) + '\n')
         logger.info("Exported rearrangement events to {}".format(event_file))
 
+        # Draw dotplots
+        outdir = os.path.dirname(self.outpre) or '.'
+        try:
+            draw_akr_dotplots(self, outdir)
+            logger.info("Exported dotplots to {}".format(outdir))
+        except Exception as e:
+            logger.warning("Failed to export dotplots: {}".format(e))
+
     def _export_aag_wgdi(self, aag, prefix):
         """将 AncestralAdjacencyGraph 导出为 wgdi 格式的 gff 和 lens"""
         fgff = open(prefix + '.gff', 'w')
@@ -1800,222 +2097,56 @@ class AKR:
         fgff.close()
         flen.close()
 
-    # =====================
-    # WGD pre-WGD 重建
-    # =====================
 
-    def _get_subgenome_from_chrom(self, chrom_name, ploidy):
+    def _collapse_polyploid_leaf(self, leaf_id):
         """
-        从染色体名称解析亚基因组索引。
-        模拟器命名：species|1_1, species|1_2, species|1_1f 等。
-        返回 1~ploidy 的整数，或 None。
+        将多倍体叶子基因组推断为pre-WGD基因组。
+        直接将post-WGD图映射到父节点HOG，由support计数自然区分
+        亚基因组内保留邻接(support=ploidy)与亚基因组间假邻接(support=1)，
+        无需亚基因组拆分。
         """
-        if '|' in chrom_name:
-            chrom = chrom_name.split('|', 1)[1]
-        else:
-            chrom = chrom_name
-        match = re.search(r'_(\d+)(f*)$', chrom)
-        if match:
-            idx = int(match.group(1))
-            if 1 <= idx <= ploidy:
-                return idx
-        return None
+        leaf_graph = self.leaf_graphs.get(leaf_id)
+        if leaf_graph is None:
+            return
+        ploidy = self.ploidy_map.get(leaf_id, 2)
 
-    def _partition_graph_by_subgenome(self, graph, ploidy):
-        """
-        将叶子图按亚基因组分区。
-        优先尝试染色体名称后缀（_1/_2），如不可用则退回到基于HOG重叠的配对法。
-        返回 dict{subgenome_index: AncestralAdjacencyGraph}。
-        """
-        partitions = {i: [] for i in range(1, ploidy + 1)}
-        has_suffix = False
+        leaf_node = self.tree.search_nodes(name=leaf_id)
+        if not leaf_node:
+            return
+        parent = leaf_node[0].up
+        if not parent:
+            return
+        parent_id = parent.name
 
-        # 先尝试后缀法
-        for chrom in graph.chromosomes:
-            if not chrom:
-                continue
-            votes = defaultdict(int)
-            for node in chrom:
-                if node in graph.telomeres:
-                    continue
-                chrom_name = getattr(node, 'chrom', str(node))
-                sg = self._get_subgenome_from_chrom(chrom_name, ploidy)
-                if sg is not None:
-                    votes[sg] += 1
-            if votes:
-                has_suffix = True
-                best_sg = max(votes, key=lambda k: votes[k])
-                partitions[best_sg].append(chrom)
+        # 目标染色体数 = post-WGD染色体数 / 倍性
+        target = max(len(list(leaf_graph.chromosomes)) // ploidy, 1)
 
-        if has_suffix:
-            result = {}
-            for sg, chroms in partitions.items():
-                if not chroms:
-                    continue
-                sg_graph = AncestralAdjacencyGraph(node_id="{}_sub{}".format(graph.node_id, sg))
-                sg_graph.species_set = set(graph.species_set)
-                for chrom in chroms:
-                    for i, node in enumerate(chrom):
-                        if node not in sg_graph.graph:
-                            sg_graph.graph.add_node(node, **dict(graph.graph.nodes[node]))
-                            if node not in graph.telomeres:
-                                sg_graph.gene_nodes.add(node)
-                            else:
-                                sg_graph.telomeres.add(node)
-                        if i > 0:
-                            prev = chrom[i - 1]
-                            sg_graph.graph.add_edge(prev, node, **dict(graph.graph[prev][node]))
-                sg_graph.hog_map = dict(graph.hog_map)
-                result[sg] = sg_graph
-            return result
+        # 将整个post-WGD图作为单个子图，映射到父节点HOG
+        # 支持计数自然区分：亚基因组内保守邻接 support=ploidy，
+        # 亚基因组间假邻接 support=1
+        pre_id = "pre-WGD {}".format(leaf_id)
+        pre_graph = self._reconstruct(
+            target_node_id=pre_id,
+            child_graphs=[leaf_graph],
+            child_source_ids=[leaf_id],
+            hog_level=parent_id,
+            outgroup_graphs=None,   # 多倍体叶子无外类群
+            target_chromosomes=target,
+            is_pre_wgd=True
+        )
 
-        # 无后缀时，使用基于HOG重叠的染色体配对法
-        return self._infer_subgenomes_by_pairing(graph, ploidy)
-
-    def _infer_subgenomes_by_pairing(self, graph, ploidy):
-        """
-        不依赖染色体名称后缀的亚基因组推断。
-        核心假设：WGD后每个祖先染色体产生ploidy个拷贝，拷贝间保留较多共享HOG。
-        1. 构建染色体间的HOG重叠矩阵
-        2. 贪婪最大配对：每次选重叠度最高的未配对染色体对
-        3. 同一对内的染色体分属不同亚基因组
-        返回 dict{subgenome_index: AncestralAdjacencyGraph}。
-        """
-        chroms = [c for c in graph.chromosomes if c]
-        if not chroms:
-            return {}
-
-        # 计算每条染色体的HOG集合（排除端粒）
-        chrom_hogs = []
-        for chrom in chroms:
-            hogs = set()
-            for node in chrom:
-                if node in graph.telomeres:
-                    continue
-                # 使用hog_id作为标识
-                hid = getattr(node, 'hog_id', str(node))
-                hogs.add(hid)
-            chrom_hogs.append(hogs)
-
-        n = len(chroms)
-        paired = [False] * n
-        pairs = []
-
-        # 贪婪最大配对
-        while True:
-            best_i, best_j, best_score = -1, -1, -1.0
-            for i in range(n):
-                if paired[i]:
-                    continue
-                for j in range(i + 1, n):
-                    if paired[j]:
-                        continue
-                    inter = len(chrom_hogs[i] & chrom_hogs[j])
-                    union = len(chrom_hogs[i] | chrom_hogs[j])
-                    if union == 0:
-                        continue
-                    score = inter / union
-                    if score > best_score:
-                        best_score = score
-                        best_i, best_j = i, j
-            if best_i < 0 or best_score < 0.05:  # 最小相似度阈值
-                break
-            pairs.append((best_i, best_j))
-            paired[best_i] = True
-            paired[best_j] = True
-
-        # 未配对的染色体单独处理（可能发生了染色体丢失或高度重排）
-        unpaired = [i for i in range(n) if not paired[i]]
-
-        # 将染色体分配到亚基因组
-        # ploidy=2时，每对中的两个染色体分属不同亚基因组
-        # 策略：每对中，HOG数量多的分配给subgenome_1（任意但一致）
-        # 为保持一致性，按染色体索引排序后分配
-        assignments = {}  # chrom_idx -> subgenome_index
-        for idx1, idx2 in pairs:
-            # 按索引排序确保确定性分配
-            if idx1 < idx2:
-                assignments[idx1] = 1
-                assignments[idx2] = 2
-            else:
-                assignments[idx1] = 2
-                assignments[idx2] = 1
-
-        # 未配对的染色体：每个独立成"对"，分配到subgenome_1
-        for idx in unpaired:
-            assignments[idx] = 1
-
-        partitions = {i: [] for i in range(1, ploidy + 1)}
-        for idx, sg in assignments.items():
-            if sg <= ploidy:
-                partitions[sg].append(chroms[idx])
-            else:
-                partitions[1].append(chroms[idx])
-
-        result = {}
-        for sg, chrom_list in partitions.items():
-            if not chrom_list:
-                continue
-            sg_graph = AncestralAdjacencyGraph(node_id="{}_sub{}".format(graph.node_id, sg))
-            sg_graph.species_set = set(graph.species_set)
-            for chrom in chrom_list:
-                for i, node in enumerate(chrom):
-                    if node not in sg_graph.graph:
-                        sg_graph.graph.add_node(node, **dict(graph.graph.nodes[node]))
-                        if node in graph.telomeres:
-                            sg_graph.telomeres.add(node)
-                        else:
-                            sg_graph.gene_nodes.add(node)
-                    if i > 0:
-                        prev = chrom[i - 1]
-                        sg_graph.graph.add_edge(prev, node, **dict(graph.graph[prev][node]))
-            sg_graph.hog_map = dict(graph.hog_map)
-            result[sg] = sg_graph
-
-        logger.info("  Subgenome inference for {}: {} chromosomes -> {} pairs, {} unpaired".format(
-            graph.node_id, n, len(pairs), len(unpaired)))
-        return result
-
-    def _merge_graphs_standard(self, node_id, graphs, target_chromosomes=None):
-        """
-        标准merge逻辑：映射 -> 逐对合并 -> 线性化。
-        无外类群冲突解决，用于亚基因组合并。
-        """
-        if not graphs:
-            return None
-        if len(graphs) == 1:
-            mapped = self._map_to_parent_hogs(node_id, graphs[0])
-            mapped._add_telomeres()
-            return mapped
-
-        # 映射所有图
-        mapped_list = []
-        for g in graphs:
-            mapped = self._map_to_parent_hogs(node_id, g)
-            if mapped.gene_nodes:
-                mapped_list.append(mapped)
-
-        if not mapped_list:
-            return None
-
-        # 逐对合并
-        merged = mapped_list[0]
-        for i in range(1, len(mapped_list)):
-            merged = self._merge_two_graphs(node_id, merged, mapped_list[i])
-
-        # 线性化
-        if target_chromosomes is None:
-            target_chromosomes = max(1, len(merged.gene_nodes) // 500)
-        merged = self._linearize_graph(merged, target_chromosomes=target_chromosomes)
-        merged._add_telomeres()
-        return merged
+        pre_graph.node_id = "{}_pre".format(leaf_id)
+        self.pre_wgd_graphs[leaf_id] = pre_graph
+        n_pre = len(list(pre_graph.chromosomes))
+        logger.info("Leaf {} pre-WGD: {} post chroms -> {} pre chroms (target={})".format(
+            leaf_id, len(list(leaf_graph.chromosomes)), n_pre, target))
 
     def _collapse_wgd(self, node):
         """
         将WGD节点的post-WGD基因组推断为pre-WGD基因组。
-        核心洞察：WGD相当于亚基因组作为假物种发生分化。
-        pre-WGD = 各亚基因组的MRCA，使用与常规祖先重建相同的完整pipeline重建
-        （映射 -> 合并 -> 外类群冲突解决 -> 分支修剪 -> 线性化 -> indel解决）。
+        直接将post-WGD图映射到父节点HOG，由support计数自然区分
+        亚基因组内保留邻接与亚基因组间假邻接，
+        无需亚基因组拆分。
         """
         node_id = node.name
         post_graph = self.anc_graphs.get(node_id)
@@ -2028,85 +2159,26 @@ class AKR:
         parent_id = parent.name
         ploidy = self.ploidy_map.get(node_id, 2)
 
-        # 1. 收集WGD节点下的所有叶子图
-        leaf_names = node.get_leaf_names()
-        leaf_graphs = []
-        for leaf_name in leaf_names:
-            if leaf_name in self.leaf_graphs:
-                leaf_graphs.append(self.leaf_graphs[leaf_name])
+        # 目标染色体数 = post-WGD染色体数 / 倍性
+        target = max(len(list(post_graph.chromosomes)) // ploidy, 1)
 
-        if not leaf_graphs:
-            logger.warning("No leaf graphs under WGD node {}".format(node_id))
-            return
-
-        # 2. 按亚基因组分区
-        subgenome_graphs = {i: [] for i in range(1, ploidy + 1)}
-        for lg in leaf_graphs:
-            partitioned = self._partition_graph_by_subgenome(lg, ploidy)
-            for i, pg in partitioned.items():
-                subgenome_graphs[i].append(pg)
-
-        # 获取外类群（使用WGD节点的外类群，映射到父节点HOG）
-        outgroup_graphs = self._get_outgroup_graphs(node)
-        mapped_outgroups = [(self._map_outgroup_to_current_hogs(parent_id, og), weight)
-                            for og, weight in outgroup_graphs]
-
-        # 3. 对每个亚基因组，跨物种merge（使用完整pipeline）
-        ancestral_subgenomes = []
-        for i in range(1, ploidy + 1):
-            graphs = subgenome_graphs[i]
-            if not graphs:
-                continue
-            # 映射到父节点HOG
-            mapped = [self._map_to_parent_hogs(parent_id, g) for g in graphs]
-            mapped = [m for m in mapped if m.gene_nodes]
-            if not mapped:
-                continue
-            # 逐对合并
-            merged = mapped[0]
-            for j in range(1, len(mapped)):
-                merged = self._merge_two_graphs(parent_id, merged, mapped[j])
-            # 完整pipeline：冲突解决 -> 分支修剪 -> 线性化 -> indel
-            merged = self._resolve_merge_conflicts(merged, mapped, mapped_outgroups)
-            merged = self._prune_branches(merged, mapped_outgroups)
-            target = max(1, len(list(post_graph.chromosomes)) // ploidy)
-            if self.use_ilp_sa:
-                merged = self._linearize_graph_ilp_sa(merged, target_chromosomes=target)
-            else:
-                merged = self._linearize_graph(merged, target_chromosomes=target)
-            merged._add_telomeres()
-            merged = self._resolve_indels(merged, mapped, mapped_outgroups)
-            if merged.gene_nodes:
-                ancestral_subgenomes.append(merged)
-
-        if not ancestral_subgenomes:
-            logger.warning("WGD node {}: no ancestral subgenomes could be reconstructed".format(node_id))
-            return
-
-        # 4. 合并各亚基因组得到pre-WGD（再次使用完整pipeline）
-        target_pre = max(len(list(post_graph.chromosomes)) // ploidy, 1)
-        if len(ancestral_subgenomes) == 1:
-            pre_graph = ancestral_subgenomes[0]
-        else:
-            merged = self._merge_two_graphs(parent_id, ancestral_subgenomes[0], ancestral_subgenomes[1])
-            merged = self._resolve_merge_conflicts(merged, ancestral_subgenomes, mapped_outgroups)
-            merged = self._prune_branches(merged, mapped_outgroups)
-            if self.use_ilp_sa:
-                merged = self._linearize_graph_ilp_sa(merged, target_chromosomes=target_pre)
-            else:
-                merged = self._linearize_graph(merged, target_chromosomes=target_pre)
-            merged._add_telomeres()
-            merged = self._resolve_indels(merged, ancestral_subgenomes, mapped_outgroups)
-            pre_graph = merged
-
-        if pre_graph is None:
-            return
+        # 将整个post-WGD图作为单个子图，映射到父节点HOG
+        pre_id = "pre-WGD {}".format(node_id)
+        pre_graph = self._reconstruct(
+            target_node_id=pre_id,
+            child_graphs=[post_graph],
+            child_source_ids=[node_id],
+            hog_level=parent_id,
+            outgroup_graphs=None,   # pre-WGD无外类群
+            target_chromosomes=target,
+            is_pre_wgd=True
+        )
 
         pre_graph.node_id = "{}_pre".format(node_id)
         self.pre_wgd_graphs[node_id] = pre_graph
         n_pre = len(list(pre_graph.chromosomes))
-        logger.info("WGD pre-WGD for {}: {} subgenomes -> {} pre chroms (target={})".format(
-            node_id, len(ancestral_subgenomes), n_pre, target_pre))
+        logger.info("WGD pre-WGD for {}: {} post chroms -> {} pre chroms (target={})".format(
+            node_id, len(list(post_graph.chromosomes)), n_pre, target))
 
     # =====================
     # ILP + SA 混合线性化
@@ -2131,6 +2203,7 @@ class AKR:
             result.species_set = aag.species_set
             result.hog_map = dict(aag.hog_map)
             result.graph = nx.DiGraph()
+            result.events = list(aag.events)
             return result
 
         # 计算边权重
@@ -2414,6 +2487,7 @@ class AKR:
         result.hog_map = dict(aag.hog_map)
         result.graph = new_graph
         result.gene_nodes = set(new_graph.nodes())
+        result.events = list(aag.events)
         for n in new_graph.nodes():
             if hasattr(n, 'chrom'):
                 result.chrom_map[n] = n.chrom

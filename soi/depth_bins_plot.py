@@ -67,54 +67,81 @@ def bin_plot(Xs, Ys, labels, label_x, vlines, height_width_ratio=None,
              outplot=None, vis_labels=None, vvlines=None, ylab=None, yfold=2,
              chr_color="black", arm_color="grey", point_size=None, title=None,
              csize=None, size=None, alpha=None,
-             cmap=None, ax=None, wsize=50, figsize=5, ymax=None, **kargs):
+             cmap=None, ax=None, wsize=50, figsize=5, ymax=None,
+             axis='x', pos_lim=None, **kargs):
+    '''Plot position vs value scatter + smoothed line.
+    axis='x': position on x-axis, value on y-axis (default)
+    axis='y': position on y-axis, value on x-axis (rotated)
+    pos_lim: tuple (min, max) to override position axis limits
+    '''
     Y1s = []
     # plot dots and smooth lines
     for x, y in zip(Xs, Ys):
+        if axis == 'y':
+            pos, val = list(y), list(x)
+        else:
+            pos, val = list(x), list(y)
+        # scatter
         plt.scatter(x, y, marker=',', s=point_size,
-                    c=y, cmap=cmap, alpha=alpha)
+                    c=val, cmap=cmap, alpha=alpha)
         if ymax is None:
-            Y1s += y
-        if len(x) > wsize:
-            xy = [(_x, _y) for _x, _y in zip(x, y) if _x is not None]
-            x, y = zip(*sorted(xy))
-
-            X, Y = [], []
-            for i in range(len(x)):
-                X += [x[i]]
-                s = int(max(0, i-wsize/2))
-                e = int(min(i+wsize/2, len(x)))
-                Y += [np.median(y[s:e])]
-            plt.plot(X, Y, ls='--', lw=2, color="black")
+            Y1s += val
+        # smoothed median line
+        if len(pos) > wsize:
+            pv = [(_p, _v) for _p, _v in zip(pos, val) if _p is not None]
+            pv.sort(key=lambda p: p[0])
+            _pos, _val = zip(*pv)
+            P_smooth, V_smooth = [], []
+            for i in range(len(_pos)):
+                P_smooth.append(_pos[i])
+                s = int(max(0, i - wsize // 2))
+                e = int(min(i + wsize // 2, len(_pos)))
+                V_smooth.append(np.median(_val[s:e]))
+            if axis == 'y':
+                plt.plot(V_smooth, P_smooth, ls='--', lw=2, color="black")
+            else:
+                plt.plot(P_smooth, V_smooth, ls='--', lw=2, color="black")
     if ymax is None:
         ylim = (np.median(Y1s)+0.01) * yfold
         ymax = ylim
     # plot chrom boundary
+    _lines = plt.hlines if axis == 'y' else plt.vlines
     for v in vlines:
-        plt.vlines(v, 0, ymax, color=chr_color)
-    # plot chrom label
-    for x, label in zip(label_x, labels):
-        if vis_labels and not label in vis_labels:
-            continue
-        y = -ymax/30
-        label = label.replace('chr', '')
-        plt.text(x, y, label, horizontalalignment='center',
-                 verticalalignment='top', fontsize=csize)  # , rotation=30)
-
-    # custom vlines
+        _lines(v, 0, ymax, color=chr_color)
+    # plot chrom label (skip for axis='y' — redundant with main plot)
+    if axis != 'y':
+        for x, label in zip(label_x, labels):
+            if vis_labels is not None and label not in vis_labels:
+                continue
+            y = -ymax/30
+            label = label.replace('chr', '')
+            plt.text(x, y, label, horizontalalignment='center',
+                     verticalalignment='top', fontsize=csize)
+    # custom vlines / hlines
     if vvlines is not None:
-        plt.vlines(vvlines, 0, ymax, color=arm_color,
-                   lw=0.5, linestyle='dashed')
-
-    # ylab and ylim
-    ylabel = ylab if ylab is not None else 'Depth'
-    plt.ylabel(ylabel, fontsize=csize)
-    plt.ylim(0, ymax)
-    xlim = max(vlines)
-    plt.xlim(0, xlim)
-    ax.xaxis.tick_top()
+        _lines(vvlines, 0, ymax, color=arm_color,
+               lw=0.5, linestyle='dashed')
+    # axis labels and limits
+    _val_lab = ylab if ylab is not None else 'Depth'
+    if axis == 'y':
+        plt.xlabel(_val_lab, fontsize=csize)
+        plt.xlim(0, ymax)
+        if pos_lim is not None:
+            plt.ylim(pos_lim)
+        else:
+            plt.ylim(0, max(vlines))
+        ax.yaxis.tick_right()
+        ax.set_yticks([])
+    else:
+        plt.ylabel(_val_lab, fontsize=csize)
+        plt.ylim(0, ymax)
+        if pos_lim is not None:
+            plt.xlim(pos_lim)
+        else:
+            plt.xlim(0, max(vlines))
+        ax.xaxis.tick_top()
+        ax.set_xticks([])
     plt.title(title, fontsize=size)
-    ax.set_xticks([])
     ax.minorticks_on()
     return ax
 

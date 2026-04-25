@@ -314,6 +314,7 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	xsize = ysize = fontsize * 2.5	 # species labels
 	labsize = fontsize * lfont_scale	# x/y labels of b-d plots
 	lsize = fontsize * 1.7		# a-d labels
+	ax_xbin = ax_ybin = None
 	if xlabel is not None and xlabels is not None and remove_prefix:
 		logger.info('trying to remove the same prefix for X chromosome labels: {}...'.format(xlabels[:100]))
 		xlabels = _remove_prefix(xlabels)
@@ -442,15 +443,6 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 		if has_lab:
 			ylabelpad += ycsize * 0.75
 
-	# species labels
-	if xlabel:
-		ax.set_xlabel(xlabel, ha='center', fontsize=xsize, labelpad=xlabelpad, style='italic')
-		ax.xaxis.set_label_position('top')
-	if ylabel:
-		ax.set_ylabel(ylabel, rotation='vertical', ha='center', fontsize=ysize, style='italic', 
-					  labelpad=ylabelpad)
-		ax.yaxis.set_label_position('right')
-
 	tot_lenx, tot_leny = xlim, ylim
 	chr_color, arm_color = "dimgrey", 'silver'  # c0c0c0, "grey":808080
 	# X chromosome labels and lines
@@ -491,12 +483,26 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	ax.spines['left'].set_color('none')
 	ax.spines['bottom'].set_color('none')
 
+	# integrated x/y ~ Ks bin plots (before color bars and species labels)
+	# tlabel must be set first
+	tlabel = 'OrthoIndex' if of_color else '$K_{\mathrm{S}}$'
+	if plot_bin:
+		ax_xbin, ax_ybin = plot_collapse(ax, kXs, kYs, Ks, xelines, yelines, xclines, yclines,
+					  max_ks, tlabel, "dimgrey", 'silver', labsize, point_size, cmap)
+	# species labels
+	if xlabel:
+		_ax = ax_xbin if plot_bin else ax
+		_ax.set_xlabel(xlabel, ha='center', fontsize=xsize, labelpad=xlabelpad, style='italic')
+		_ax.xaxis.set_label_position('top')
+	if ylabel:
+		_ax = ax_ybin if plot_bin else ax
+		_ax.set_ylabel(ylabel, rotation='vertical', ha='center', fontsize=ysize, style='italic',
+					  labelpad=ylabelpad)
+		_ax.yaxis.set_label_position('right')
 	if number_plots and (ks_hist or ploidy):
 		label = '(a)'
-		plot_label(ax, label, fontsize=lsize)
-
-	#tlabel = 'OrthoIndex' if of_color else 'Ks'  # histogram x label
-	tlabel = 'OrthoIndex' if of_color else '$K_{\mathrm{S}}$'
+		_ax = ax_xbin if plot_bin else ax
+		plot_label(_ax, label, fontsize=lsize)
 	if not ks is None and ks_hist is None and cbar:  # color map only
 		ax = plt.subplot2grid((21, 20), (20, 0), colspan=5)
 		plt.axis('off')
@@ -561,35 +567,44 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	for outplot in outplots:
 		plt.savefig(outplot, bbox_inches='tight', dpi=400, transparent=True, )
 
-	# x/y ~ Ks
-	if plot_bin:
-		outfig = os.path.splitext(outplots[0])[0] + '.bin.png'
-		ymax = min(max_ks, np.percentile(Ks, 95) * 1.0)
-		_kargs = dict(point_size=point_size, cmap=cmap, chr_color=chr_color, arm_color=arm_color,
-					  ymax=ymax, figwidth=figwidth, outfig=outfig, ylab=tlabel, alpha=0.3,
-					  csize=xcsize, size=xsize, wsize=kargs['window_size'])
-		plot_collapse(kXs, kYs, Ks, xlabels, ylabels, xpositions, ypositions,
-					  xelines, yelines, xclines, yclines, xlabel, ylabel, **_kargs)
-
 	logging.disable(logging.NOTSET)
 
-def plot_collapse(kXs, kYs, Ks, xlabels, ylabels, xpositions, ypositions,
-				  xelines, yelines, xclines, yclines, xlabel, ylabel,
-				  figwidth, outfig, **kargs):
+def plot_collapse(ax, kXs, kYs, Ks, xelines, yelines, xclines, yclines,
+				  max_ks, tlabel, chr_color, arm_color, labsize, point_size, cmap,
+				  wsize=50, alpha=0.3, **kargs):
+	'''Plot Ks bin panels integrated above and to the right of the dotplot.
+	Returns (ax_xbin, ax_ybin) or (None, None) if no valid data.
+	'''
+	from mpl_toolkits.axes_grid1 import make_axes_locatable
 	from .depth_bins_plot import bin_plot
-	height = figwidth/4
-	plt.figure(figsize=(figwidth, height))
-	# x
-	ax = plt.subplot(2, 1, 1)
-	bin_plot(Xs=[kXs], Ys=[Ks], labels=xlabels, label_x=xpositions, vlines=xelines,
-			 vvlines=xclines, title=xlabel, ax=ax, **kargs)
-	# y
-	ax = plt.subplot(2, 1, 2)
-	bin_plot(Xs=[kYs], Ys=[Ks], labels=ylabels, label_x=ypositions, vlines=yelines,
-			 vvlines=yclines, title=ylabel, ax=ax, **kargs)
-
-	plt.subplots_adjust(hspace=0.6)
-	plt.savefig(outfig, bbox_inches='tight')
+	# filter None values (appended for Ks scale unification)
+	valid = [(x, y, k) for x, y, k in zip(kXs, kYs, Ks)
+			 if x is not None and y is not None and k is not None]
+	if not valid:
+		return None, None
+	bx, by, bk = zip(*valid)
+	bx, by, bk = list(bx), list(by), list(bk)
+	if not bk:
+		return None, None
+	_ymax = min(max_ks, np.percentile(bk, 95) * 1.0)
+	xmin, xmax = ax.get_xlim()
+	ymin, ymax = ax.get_ylim()
+	divider = make_axes_locatable(ax)
+	# X-bin: above dotplot, x-position vs Ks (axis='x')
+	ax_xbin = divider.append_axes("top", size="8%", pad=0.05)
+	bin_plot(Xs=[bx], Ys=[bk], labels=[], label_x=[], vlines=xelines,
+			 vvlines=xclines, ylab=tlabel, chr_color=chr_color, arm_color=arm_color,
+			 point_size=point_size, cmap=cmap, alpha=alpha, ax=ax_xbin,
+			 ymax=_ymax, csize=labsize * 0.8, wsize=wsize, axis='x',
+			 pos_lim=(xmin, xmax))
+	# Y-bin: right of dotplot, y-position vs Ks (axis='y', rotated)
+	ax_ybin = divider.append_axes("right", size="8%", pad=0.05)
+	bin_plot(Xs=[bk], Ys=[by], labels=[], label_x=[], vlines=yelines,
+			 vvlines=yclines, ylab=tlabel, chr_color=chr_color, arm_color=arm_color,
+			 point_size=point_size, cmap=cmap, alpha=alpha, ax=ax_ybin,
+			 ymax=_ymax, csize=labsize * 0.8, wsize=wsize, axis='y',
+			 pos_lim=(ymin, ymax))
+	return ax_xbin, ax_ybin
 
 
 def plot_label(ax, label, **kargs):
@@ -650,7 +665,7 @@ def _histgram(ax, allKs, cmap=None, xlim=None, ylim=None, bins=100, normed=False
 	ax.set_xlabel(xlabel, fontsize=fontsize*1.5)  # Ks/OrthoIndex; fontsize
 	ax.set_ylabel(ylabel, fontsize=fontsize*0.9)	# y lab; fontsize
 	ax.minorticks_on()
-	cbar = plt.colorbar(ax=ax)
+	cbar = plt.colorbar(point, ax=ax)
 	return xlim, ylim
 
 

@@ -156,29 +156,27 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
 
     logger.info("=== Event-driven reconstruction v2 (ColoredGraph) ===")
     t0 = time.time()
-
-    # WGD collapse for polyploid leaves
-    for leaf_name, ploidy in akr.ploidy_map.items():
-        if leaf_name not in akr.leaf_graphs or ploidy <= 1:
-            continue
-        if leaf_name in akr.pre_wgd_graphs:
-            continue
-        leaf_node = akr.tree.search_nodes(name=leaf_name)
-        if not leaf_node or not leaf_node[0].up:
-            continue
-        parent_id = leaf_node[0].up.name
-        leaf_g = akr.leaf_graphs[leaf_name]
-        mapped = akr._map_to_parent_hogs(parent_id, leaf_g, source_id=leaf_name)
-        G_leaf = ColoredGraph(hog_level=leaf_name)
-        G_leaf.add_child(leaf_name, mapped)
-        pre_anc, events = _wgd_collapse(G_leaf, leaf_name, ploidy)
-        akr.pre_wgd_graphs[leaf_name] = pre_anc
-
     og_graphs_cache = {}
     for node in akr.tree.traverse(strategy="postorder"):
-        if node.is_leaf():
-            continue
         node_id = node.name
+        ploidy = akr.ploidy_map.get(node_id, 1)
+        if node.is_leaf() and ploidy > 1 and node_id in akr.leaf_graphs:
+            if node_id in akr.pre_wgd_graphs:
+                continue
+            # Polyploid leaf: collapse to pre-WGD before parent uses it
+            leaf_node_s = akr.tree.search_nodes(name=node_id)
+            if not leaf_node_s or not leaf_node_s[0].up:
+                continue
+            parent_id = leaf_node_s[0].up.name
+            mapped = akr._map_to_parent_hogs(parent_id, akr.leaf_graphs[node_id], source_id=node_id)
+            G_leaf = ColoredGraph(hog_level=node_id)
+            G_leaf.add_child(node_id, mapped)
+            pre_anc, events = _wgd_collapse(G_leaf, node_id, ploidy)
+            akr.pre_wgd_graphs[node_id] = pre_anc
+            continue
+        elif node.is_leaf():
+            continue
+        # Internal node
         logger.info("Reconstructing node %s [v2 ColoredGraph]", node_id)
         t_node = time.time()
         child_graphs, child_source_ids = [], []
@@ -225,7 +223,6 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         n_chrom = len(list(ancestor.chromosomes))
         logger.info("  Done: %d chroms, %d events (%.1fs)",
                      n_chrom, len(ancestor.events), time.time() - t_node)
-        ploidy = akr.ploidy_map.get(node_id, 1)
         if ploidy > 1:
             # WGD collapse uses the ORIGINAL multi-child graph (pre-resolution)
             # to detect inter-subgenome differences as cross-child conflicts

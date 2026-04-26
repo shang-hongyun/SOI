@@ -207,136 +207,147 @@ def _detect_branch_events(ancestor, mc, branch, src, min_hogs):
 
 def _detect_inversions(ancestor, ancest_adj_set, mc, child_adj_set,
                        branch, src, min_hogs):
-    """Detect inversions via paired breakpoints.
+    """Detect inversions by comparing child HOG order against consensus.
 
-    An inversion of block X..Y means:
-    - Edges F-X and Y-G (involving block boundaries) are broken
-    - Edges F-Y and X-G appear instead
-    - The block X..Y appears reversed in the child
+    Key insight: Inversion means a block of HOGs appears reversed
+    in the child relative to the ancestor. The ancestral order is
+    determined from consensus adjacency relationships:
 
-    Detection:
-    1. Find all ancest_only edges
-    2. Group them by child chrom
-    3. For each chrom, check if boundary edges form consecutive breakpoints
-    4. The HOGs between consecutive breakpoints = inversion block
+    For each adjacency A-B in the consensus, A comes before B in
+    the ancestral order (assuming no other constraints). We build
+    the ancestral order by topological sorting of consensus adjacencies.
+
+    Then compare child's HOG order against this ancestral order
+    to find reversed segments.
     """
     from .takr_events import TAKREvent
 
     events = []
-    ancest_only = ancest_adj_set - child_adj_set
-    if not ancest_only:
-        return events
 
-    # Build chromosome HOG lists (child)
-    mc_chrom_hogs = []
-    for chrom in mc.chromosomes:
-        hog_list = [h for h in chrom if h not in mc.telomeres]
-        if hog_list:
-            mc_chrom_hogs.append(hog_list)
+    # Build the consensus adjacency graph as a simple direction map
+    # Adjacency edges give us (h1, h2) pairs where h1 is linked to h2
+    # For a simple path graph, we can extract the order by following edges
+    consensus_adjs = list(ancestor.get_adjacencies(include_telomere=False))
 
-    # Build child position map: hog -> (chrom_idx, position)
-    mc_pos = {}
-    for ci, hogs in enumerate(mc_chrom_hogs):
-        for j, h in enumerate(hogs):
-            mc_pos[h] = (ci, j)
+    # Build adjacency-based ordering: start from nodes with in-degree 0
+    in_degree = {}
+    out_degree = {}
+    adj_set = set()
+    for h1, h2 in consensus_adjs:
+        key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+        adj_set.add(key)
+        in_degree[h2] = in_degree.get(h2, 0) + 1
+        in_degree.setdefault(h1, 0)
+        out_degree[h1] = out_degree.get(h1, 0) + 1
+        out_degree.setdefault(h2, 0)
 
-    # For each ancest_only edge, collect breakpoints per child chromosome
-    for (h1, h2) in ancest_only:
-        if h1 not in mc_pos or h2 not in mc_pos:
-            continue
-        c1, p1 = mc_pos[h1]
-        c2, p2 = mc_pos[h2]
-        if c1 != c2:
-            continue  # different chroms = not an inversion (more like translocation)
+    # Find start nodes (in-degree 0)
+    starts = [h for h in in_degree if in_degree[h] == 0]
 
-        # h1-h2 were adjacent in ancestor, now separated in child
-        # The HOGs between them in ancestor = inversion candidate
-        # Find positions in ancestor
-        anc_hogs = []
-        for chrom in ancestor.chromosomes:
-            anc_hogs = [h for h in chrom if h not in ancestor.telomeres]
-            break
-
-        anc_idx = {h: i for i, h in enumerate(anc_hogs)}
-        if h1 not in anc_idx or h2 not in anc_idx:
-            continue
-
-        ai1, ai2 = anc_idx[h1], anc_idx[h2]
-        start, end = min(ai1, ai2), max(ai1, ai2)
-        block = anc_hogs[start:end + 1]
-
-        # The inversion block is the INTERNAL part (between h1 and h2)
-        if len(block) < 2:
-            continue
-
-        # Check if block is reversed in child by comparing order
-        mc_order = []
-        seen = set()
-        mc_hog_set = set(mc_chrom_hogs[c1])
-        for h in block:
-            if h in mc_hog_set:
-                pos = mc_pos[h][1]
-                mc_order.append((h, pos))
-                seen.add(h)
-
-        # If less than min_hogs survived, skip
-        if len(mc_order) < min_hogs and len(mc_order) < len(block):
-            continue
-
-        # Check if MC order is reversed relative to ancestor
-        # For a real inversion, the order is fully or partially reversed
-        ancestor_order = [pos for h in block if h in mc_hog_set]
-        mc_order_only = [p for h, p in mc_order]
-        if not mc_order_only:
-            continue
-
-        # An inversion means mc_order is different from ancestor order
-        # Simplest check: first HOG in ancestor is NOT first in child
-        first_anc = block[0]
-        is_reversed = False
-        if first_anc in mc_hog_set:
-            mc_first_pos = mc_pos.get(first_anc, (0, -1))[1]
-            # Check if any ancestor-before-first HOG appears AFTER first_anc in child
-            for h in block[1:min(len(block), 5)]:
-                if h in mc_hog_set and mc_pos[h][1] < mc_first_pos:
-                    is_reversed = True
+    # Build ancestral order by walking consensus graph
+    anc_order = []
+    visited = set()
+    for start in starts:
+        curr = start
+        while curr and curr not in visited:
+            if curr not in ancestor.telomeres:
+                anc_order.append(curr)
+            visited.add(curr)
+            # Find the next HOG (outgoing edge)
+            found_next = False
+            for h1, h2 in consensus_adjs:
+                if h1 == curr and h2 not in visited:
+                    curr = h2
+                    found_next = True
                     break
-
-        if not is_reversed:
-            continue
-
-        # Classify: telomere_inversion if block endpoint at telomere
-        is_telomere = False
-        if mc_chrom_hogs[c1]:
-            first_gene = mc_chrom_hogs[c1][0]
-            last_gene = mc_chrom_hogs[c1][-1]
-            if block[0] == first_gene or block[-1] == last_gene:
-                is_telomere = True
-
-        # Also check if block endpoints reach telomeres
-        if p1 == 0 or p2 == len(mc_chrom_hogs[c1]) - 1:
-            is_telomere = True
-
-        inv_type = 'telomere_inversion' if is_telomere else 'internal_inversion'
-
-        # Deduplicate: check if this block was already detected
-        block_set = set(block)
-        is_dup = False
-        for ev in events:
-            if ev.event_type.startswith('inversion') and set(ev.genes_involved) == block_set:
-                is_dup = True
+                if h2 == curr and h1 not in visited:
+                    curr = h1
+                    found_next = True
+                    break
+            if not found_next:
                 break
-        if is_dup:
+
+    anc_idx = {h: i for i, h in enumerate(anc_order)}
+
+    # For each child chromosome, map HOGs to ancestor order
+    for chrom in mc.chromosomes:
+        hogs = [h for h in chrom if h not in mc.telomeres]
+        if len(hogs) < min_hogs:
             continue
 
-        events.append(TAKREvent(
-            event_type=inv_type,
-            branch=branch,
-            genes_involved=block,
-            desc="%s: %d HOGs [%s..%s] in %s" % (
-                inv_type, len(block), block[0].hog_id, block[-1].hog_id, src),
-            support=len(block),
-        ))
+        # Map positions in ancestor
+        positions = [anc_idx.get(h, -1) for h in hogs]
+        valid = [(i, positions[i]) for i in range(len(positions)) if positions[i] >= 0]
+        if len(valid) < min_hogs:
+            continue
+
+        # Find the longest reversed segment
+        # A reversed segment means positions in child are decreasing
+        # when they should be increasing (in ancestor order)
+
+        # Simple approach: find all decreasing consecutive pairs
+        # and merge them into blocks
+        rev_blocks = []
+        i = 0
+        while i < len(valid) - 1:
+            j = i
+            # Look for decreasing subsequence
+            while j < len(valid) - 1 and valid[j][1] > valid[j + 1][1]:
+                j += 1
+            if j - i >= min_hogs - 1:  # at least min_hogs HOGs
+                start_idx = valid[i][0]
+                end_idx = valid[j][0]
+                rev_hogs = hogs[start_idx:end_idx + 1]
+                # Verify: check the whole segment is reversed
+                seg_pos = [p for _, p in valid[i:j + 1]]
+                if seg_pos == sorted(seg_pos, reverse=True) and seg_pos != sorted(seg_pos):
+                    rev_blocks.append(rev_hogs)
+            i = max(i + 1, j)
+            if i >= len(valid):
+                break
+
+        # Also do sliding window for long contiguous segments
+        if not rev_blocks:
+            hog_pos_in_anc = [(h, anc_idx.get(h, -1)) for h in hogs if h in anc_idx]
+            positions_list = [p for h, p in hog_pos_in_anc]
+            if len(positions_list) >= min_hogs:
+                sorted_pos = sorted(positions_list)
+                for seg_len in range(len(positions_list), min_hogs - 1, -1):
+                    found = False
+                    for start in range(len(positions_list) - seg_len + 1):
+                        seg = positions_list[start:start + seg_len]
+                        if seg == sorted(seg, reverse=True) and seg != sorted(seg):
+                            rev_hogs = [h for h, p in hog_pos_in_anc[start:start + seg_len]]
+                            rev_blocks.append(rev_hogs)
+                            found = True
+                            break
+                    if found:
+                        break
+
+        # Deduplicate and add events
+        seen_blocks = set()
+        for block_hogs in rev_blocks:
+            block_set = frozenset(block_hogs)
+            if block_set in seen_blocks or len(block_hogs) < min_hogs:
+                continue
+            seen_blocks.add(block_set)
+
+            # Classify telomere vs internal
+            is_tel = False
+            if hogs:
+                if block_hogs[0] == hogs[0] or block_hogs[-1] == hogs[-1]:
+                    is_tel = True
+
+            inv_type = 'telomere_inversion' if is_tel else 'internal_inversion'
+            events.append(TAKREvent(
+                event_type=inv_type,
+                branch=branch,
+                genes_involved=block_hogs,
+                desc="%s: %d HOGs [%s..%s] in %s" % (
+                    inv_type, len(block_hogs),
+                    block_hogs[0].hog_id, block_hogs[-1].hog_id, src),
+                support=len(block_hogs),
+            ))
 
     return events
 
@@ -382,15 +393,31 @@ def _detect_unidir_trans(ancestor, ancest_adj_set, mc, child_adj_set,
 
 
 def _detect_eej(ancestor, mc, branch, src):
-    """Detect EEJ: telomeres adjacent in ancestor but not in child."""
+    """Detect EEJ: telomeres adjacent in ancestor but NOT in child,
+    AND the two telomeres are on DIFFERENT chromosomes in the child
+    (EEJ fuses two chromosomes into one)."""
     from .takr_events import TAKREvent
 
     events = []
     anc_tel_adjs = set(ancestor.get_telomere_adjacencies())
     mc_tel_adjs = set(mc.get_telomere_adjacencies())
 
+    # Build child's mapping: telomere → which chromosome it's part of
+    mc_tel_to_chrom = {}
+    for ci, chrom in enumerate(mc.chromosomes):
+        for node in chrom:
+            if node in mc.telomeres:
+                mc_tel_to_chrom[node] = ci
+
     lost = anc_tel_adjs - mc_tel_adjs
     for (t1, t2) in lost:
+        # EEJ requires the two telomeres to be on different chromosomes
+        # in the child (because EEJ fused them in the ancestor direction)
+        c1 = mc_tel_to_chrom.get(t1)
+        c2 = mc_tel_to_chrom.get(t2)
+        if c1 is not None and c2 is not None and c1 == c2:
+            continue  # same chromosome = not EEJ
+
         events.append(TAKREvent(
             event_type='eej',
             branch=branch,

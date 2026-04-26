@@ -23,6 +23,8 @@ import time
 from collections import defaultdict
 from typing import Dict, List, Optional
 
+import networkx as nx
+
 logger = logging.getLogger(__name__)
 
 
@@ -402,38 +404,50 @@ def _detect_unidir_trans(ancestor, ancest_adj_set, mc, child_adj_set,
 
 
 def _detect_eej(ancestor, mc, branch, src):
-    """Detect EEJ: telomeres adjacent in ancestor but NOT in child,
-    AND the two telomeres are on DIFFERENT chromosomes in the child
-    (EEJ fuses two chromosomes into one)."""
+    """Detect EEJ via connected-component comparison.
+
+    Key insight: EEJ fuses two chromosomes. If two HOGs are on DIFFERENT
+    chromosomes in the consensus (separate connected components), but
+    ADJACENT in the child, then the two chromosomes were fused in the
+    child's lineage = EEJ on this branch.
+
+    This avoids dependency on telomere markers entirely — uses graph
+    connectivity instead.
+    """
     from .takr_events import TAKREvent
 
     events = []
-    anc_tel_adjs = set(ancestor.get_telomere_adjacencies())
-    mc_tel_adjs = set(mc.get_telomere_adjacencies())
 
-    # Build child's mapping: telomere → which chromosome it's part of
-    mc_tel_to_chrom = {}
-    for ci, chrom in enumerate(mc.chromosomes):
-        for node in chrom:
-            if node in mc.telomeres:
-                mc_tel_to_chrom[node] = ci
+    # Build consensus connected components from adjacency graph
+    # Two HOGs are in the same component if connected by shared adjacencies
+    consensus_graph = nx.Graph()
+    for h1, h2 in ancestor.get_adjacencies(include_telomere=False):
+        key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+        consensus_graph.add_edge(h1, h2)
 
-    lost = anc_tel_adjs - mc_tel_adjs
-    for (t1, t2) in lost:
-        # EEJ requires the two telomeres to be on different chromosomes
-        # in the child (because EEJ fused them in the ancestor direction)
-        c1 = mc_tel_to_chrom.get(t1)
-        c2 = mc_tel_to_chrom.get(t2)
-        if c1 is not None and c2 is not None and c1 == c2:
-            continue  # same chromosome = not EEJ
+    # Map each HOG to its component ID
+    hog_to_comp = {}
+    for ci, comp in enumerate(nx.connected_components(consensus_graph)):
+        for h in comp:
+            hog_to_comp[h] = ci
 
-        events.append(TAKREvent(
-            event_type='eej',
-            branch=branch,
-            genes_involved=[t1, t2],
-            desc="EEJ: %s-%s in %s" % (t1, t2, src),
-            support=1,
-        ))
+    # For each child adjacency, check if the two HOGs are in
+    # DIFFERENT consensus components → EEJ
+    for h1, h2 in mc.get_adjacencies(include_telomere=False):
+        key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+        c1 = hog_to_comp.get(h1)
+        c2 = hog_to_comp.get(h2)
+        if c1 is not None and c2 is not None and c1 != c2:
+            # These two HOGs are from different ancestral chromosomes
+            # but adjacent in the child → EEJ
+            events.append(TAKREvent(
+                event_type='eej',
+                branch=branch,
+                genes_involved=[h1, h2],
+                desc="EEJ: %s-%s (comp %d+%d) in %s" % (
+                    h1.hog_id, h2.hog_id, c1, c2, src),
+                support=1,
+            ))
 
     return events
 

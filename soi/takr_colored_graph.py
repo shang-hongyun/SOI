@@ -386,8 +386,17 @@ class ColoredGraph:
 
     # ==================== 结构重排 resolved ====================
 
-    def resolve_structural_events(self):
-        """循环: find_cycles → classify_cycle → 移除冲突边。"""
+    def resolve_structural_events(self, outgroup_adjacency: Set = None):
+        """循环: find_cycles → classify_cycle → 移除外类群确认的衍生方边。
+
+        Outgroup voting 确定极性:
+        对环中每条边 (hi, hj), 映射到 parent HOG level 查外类群邻接集。
+        - 外类群有该邻接 → 祖先状态 → 保存该边的孩子是祖先方
+        - 外类群无该邻接 → 衍生状态 → 有该边的孩子是衍生方
+        - 衍生方 = 事件发生方 → 移除该孩子的边
+
+        无外类群 (root): 沿用最少颜色出现次数的启发式。
+        """
         iteration = 0
         max_iterations = 100  # 防止无限循环
         while iteration < max_iterations:
@@ -403,27 +412,63 @@ class ColoredGraph:
                 if etype is None or not conflict_edges:
                     continue
 
-                # 找到冲突边的颜色 (来自最少出现的 child)
-                # 对于 inversion/RT: 移除单色边
-                for h1, h2 in conflict_edges:
-                    colors = self.get_colors(h1, h2)
-                    if len(colors) == 1:
-                        self.remove_edge_color(h1, h2, next(iter(colors)))
+                # 构建环的边序列（用于外类群投票和回退模式）
+                n_cycle = len(cycle)
+                cycle_edges = [(cycle[i], cycle[(i + 1) % n_cycle])
+                               for i in range(n_cycle)]
+
+                # 用外类群投票确定衍生方（事件发生分支）
+                if outgroup_adjacency is not None and etype in (
+                    'inversion', 'telomere_inversion',
+                    'reciprocal_translocation',
+                    'unbalanced_reciprocal_translocation',
+                ):
+                    cycle_colors = [self.get_colors(u, v) for u, v in cycle_edges]
+
+                    # 对每条边，映射到 parent HOG level 查外类群
+                    child_derived_count = defaultdict(int)
+                    child_ancestral_count = defaultdict(int)
+                    for (u, v), colors in zip(cycle_edges, cycle_colors):
+                        u_parent = getattr(u, 'parent',
+                                           u.hog_id if hasattr(u, 'hog_id') else str(u))
+                        v_parent = getattr(v, 'parent',
+                                           v.hog_id if hasattr(v, 'hog_id') else str(v))
+                        key = (u_parent, v_parent) if u_parent < v_parent else (v_parent, u_parent)
+                        is_ancestral = key in outgroup_adjacency
+                        for cid, _ in colors:
+                            if is_ancestral:
+                                child_ancestral_count[cid] += 1
+                            else:
+                                child_derived_count[cid] += 1
+
+                    # 出现衍生边的孩子 = 事件发生方
+                    if child_derived_count:
+                        derived_child_id = max(child_derived_count,
+                                               key=child_derived_count.get)
                     else:
-                        # 共享边 → 移除最少出现的 child 的颜色
-                        # 统计各 child 在环中的出现次数
-                        child_count = {}
-                        for i_c in range(len(cycle)):
-                            u, v = cycle[i_c], cycle[(i_c + 1) % len(cycle)]
-                            for cid, chrom in self.get_colors(u, v):
-                                child_count[(cid, chrom)] = child_count.get((cid, chrom), 0) + 1
-                        # 找到出现最少的颜色
-                        min_child = min(child_count, key=child_count.get)
-                        if min_child in colors:
-                            self.remove_edge_color(h1, h2, min_child)
-                        else:
-                            # 该边没有该 child 的颜色 → 移除任何一个
-                            self.remove_edge_color(h1, h2, next(iter(colors)))
+                        derived_child_id = None
+
+                    logger.debug("  [structural] cycle %s: og-derived=%s, "
+                                 "ancestral=%s, derived=%s",
+                                 cycle, derived_child_id,
+                                 dict(child_ancestral_count),
+                                 dict(child_derived_count))
+
+                    # 只移除衍生方的边
+                    if derived_child_id:
+                        for h1, h2 in conflict_edges:
+                            colors = self.get_colors(h1, h2)
+                            for cid, chrom in list(colors):
+                                if cid == derived_child_id:
+                                    self.remove_edge_color(h1, h2, (cid, chrom))
+                    else:
+                        # 所有边都是祖先状态？回退到最少颜色出现次数的启发式
+                        for h1, h2 in conflict_edges:
+                            self._remove_rare_color_edge(h1, h2, cycle, cycle_edges)
+                else:
+                    # 无外类群 (root) 或 unclassified 环 → 启发式
+                    for h1, h2 in conflict_edges:
+                        self._remove_rare_color_edge(h1, h2, cycle, cycle_edges)
 
                 # 记录事件
                 event = TAKREvent(
@@ -461,6 +506,28 @@ class ColoredGraph:
                     desc=f"force-break: {len(cycle)} HOGs",
                     support=1,
                 ))
+
+    # ==================== 边移除辅助 ====================
+
+    def _remove_rare_color_edge(self, h1, h2, cycle, cycle_edges):
+        """移除冲突边上出现次数最少的颜色（回退启发式）。"""
+        colors = self.get_colors(h1, h2)
+        if len(colors) == 1:
+            self.remove_edge_color(h1, h2, next(iter(colors)))
+        else:
+            # 统计各 (cid, chrom) 在环中的出现次数
+            child_count = {}
+            for (u, v) in cycle_edges:
+                for cid, chrom in self.get_colors(u, v):
+                    child_count[(cid, chrom)] = child_count.get((cid, chrom), 0) + 1
+            if child_count:
+                min_child = min(child_count, key=child_count.get)
+                if min_child in colors:
+                    self.remove_edge_color(h1, h2, min_child)
+                else:
+                    self.remove_edge_color(h1, h2, next(iter(colors)))
+            elif colors:
+                self.remove_edge_color(h1, h2, next(iter(colors)))
 
     # ==================== 路径覆盖 ====================
 
@@ -710,17 +777,22 @@ class ColoredGraph:
 
     # ==================== 桥接冲突检测 (EEJ/NCF) ====================
 
-    def resolve_bridge_events(self):
-        """检测桥接冲突: unique edge 连接两个共享边连通分量 = EEJ/NCF.
+    def resolve_bridge_events(self, outgroup_adjacency: Set = None):
+        """检测桥接冲突: unique edge 连接两个共享边连通分量。
 
-        EEJ: 一条 unique edge 连接了两个在共享图中不连通的端点
-        NCF: 同 EEJ, 但一端在共享图的染色体内部（不是端粒候选）
+        外类群投票区分 fission vs fusion (EEJ/NCF):
+        - 外类群 (parent HOG level) 有 (h1, h2) → 祖先有该连接
+          → 保存的孩子有边，丢失的孩子没有 → fission on 丢失方的分支
+        - 外类群无 (h1, h2) → 祖先无该连接
+          → 有边的孩子是融合方 → EEJ/NCF on 有边方的分支
+        - 无外类群 (root): 记录为 bridge_unclassified (需上游处理)
 
         算法:
         1. 建共享边图 (edges with >1 color → ≥2 children)
         2. 找连通分量
         3. 对每条 unique edge (1 color):
-           两端在不同分量 → 桥接冲突 → 移除并记录事件
+           两端在不同分量 → 桥接冲突
+           → 用外类群投票分类 → 移除并记录事件
         """
         # Build shared-edge graph
         shared_G = nx.Graph()
@@ -745,40 +817,60 @@ class ColoredGraph:
             c1 = hog_to_comp.get(h1)
             c2 = hog_to_comp.get(h2)
             if c1 is not None and c2 is not None and c1 != c2:
-                # Bridge: connects two different shared components → EEJ or NCF
+                # Bridge: connects two different shared components
                 color = next(iter(data['colors']))
                 child_id = color[0]
                 comp1_size = len(components[c1])
                 comp2_size = len(components[c2])
 
-                # Classify: both components are large → EEJ; one small → NCF;
-                # endpoint has degree 1 in component → fission
-                in_shared_g = h1 in shared_G and h2 in shared_G
-                deg1_in_component = False
-                if in_shared_g:
-                    deg1_h1 = shared_G.degree(h1) == 1
-                    deg1_h2 = shared_G.degree(h2) == 1
-                    deg1_in_component = deg1_h1 or deg1_h2
-                min_comp = min(comp1_size, comp2_size)
+                # === 外类群投票分类 ===
+                if outgroup_adjacency is not None:
+                    # 将 h1, h2 映射到 parent HOG level 用于外类群查询
+                    h1_parent = getattr(h1, 'parent', h1.hog_id if hasattr(h1, 'hog_id') else str(h1))
+                    h2_parent = getattr(h2, 'parent', h2.hog_id if hasattr(h2, 'hog_id') else str(h2))
+                    if isinstance(h1_parent, tuple) or isinstance(h1_parent, (int, float)):
+                        # HOGrecord 的 parent 是 hog_id string
+                        h1_pid = str(h1_parent) if not isinstance(h1_parent, str) else h1_parent
+                        h2_pid = str(h2_parent) if not isinstance(h2_parent, str) else h2_parent
+                    else:
+                        h1_pid = h1_parent
+                        h2_pid = h2_parent
+                    key = (h1_pid, h2_pid) if h1_pid < h2_pid else (h2_pid, h1_pid)
 
-                if deg1_in_component:
-                    etype = 'fission'
-                elif min_comp < 10:
-                    etype = 'ncf'
+                    if key in outgroup_adjacency:
+                        # 外类群有该邻接 → 祖先有连接 → 另一孩子丢失了它 → fission
+                        etype = 'fission'
+                        branch_suffix = f" (outgroup confirms {child_id} preserved)"
+                    else:
+                        # 外类群无该邻接 → 祖先无连接 → 当前孩子融合了它 → EEJ/NCF
+                        # NCF: 一端在共享图的端粒位置
+                        in_shared_g = h1 in shared_G and h2 in shared_G
+                        deg1 = False
+                        if in_shared_g:
+                            deg1 = shared_G.degree(h1) == 1 or shared_G.degree(h2) == 1
+                        if deg1 or min(comp1_size, comp2_size) < 10:
+                            etype = 'ncf'
+                        else:
+                            etype = 'eej'
+                        branch_suffix = f" (outgroup: derived in {child_id})"
                 else:
-                    etype = 'eej'
+                    # 无外类群 (root) → 记录为 unclassified_bridge
+                    etype = 'bridge_unclassified'
+                    branch_suffix = " (no outgroup, root node)"
 
                 self.events.append(TAKREvent(
                     event_type=etype,
                     branch=self.hog_level,
                     genes_involved=[h1, h2],
-                    desc="{} bridge: comp{} ({} HOGs) + comp{} ({} HOGs) via {} in {}".format(
-                        etype, c1, comp1_size, c2, comp2_size, child_id, color),
+                    desc=f"{etype} bridge: comp{c1} ({comp1_size} HOGs)"
+                         f" + comp{c2} ({comp2_size} HOGs)"
+                         f" via {child_id} in {color}{branch_suffix}",
                     support=1,
                 ))
                 self.remove_edge_color(h1, h2, color)
 
     def resolve_all_events(self, outgroups: Dict = None,
+                           outgroup_adjacency: Set = None,
                            min_hogs: int = 3) -> List[TAKREvent]:
         """按优先级解决所有冲突。
 
@@ -793,13 +885,13 @@ class ColoredGraph:
                      self.hog_level, self.node_count(), self.edge_count())
 
         # Step 1: 结构重排 (环检测 + 分类) — 先处理, 需要完整的图
-        self.resolve_structural_events()
+        self.resolve_structural_events(outgroup_adjacency=outgroup_adjacency)
         logger.info("  [colored] after structural: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 
         # Step 2: 桥接冲突 (unique edge 跨共享连通分量 = EEJ/NCF/fission)
         n_before_bridge = len(self.events)
-        self.resolve_bridge_events()
+        self.resolve_bridge_events(outgroup_adjacency=outgroup_adjacency)
         n_bridges = len(self.events) - n_before_bridge
         if n_bridges:
             logger.info("  [colored] bridges: %d events", n_bridges)
@@ -812,7 +904,8 @@ class ColoredGraph:
         # 过滤小事件 (min_hogs) — 跳过桥接事件（EEJ/NCF/fission 都是小事件）
         kept = []
         for e in self.events:
-            if e.event_type in ('eej', 'ncf', 'fission', 'reciprocal_translocation',
+            if e.event_type in ('eej', 'ncf', 'fission', 'bridge_unclassified',
+                                'reciprocal_translocation',
                                 'unbalanced_reciprocal_translocation',
                                 'inversion', 'telomere_inversion'):
                 kept.append(e)

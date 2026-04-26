@@ -19,6 +19,13 @@ def _sorted_chr_ids(karyo):
     return sorted(karyo.keys(), key=sort_key)
 
 
+def _gene_id(g):
+    """Extract gene ID string from a tuple (gid, orient) or plain string."""
+    if isinstance(g, tuple):
+        return g[0]
+    return g
+
+
 def _chr_boundaries(ax, chr_list, karyo, axis='x'):
     """Draw chromosome boundaries and return label positions."""
     pos = 0
@@ -80,7 +87,7 @@ def draw_dotplot(ref_karyo, query_karyo, outpath,
     sorted_ref_cids = _sorted_chr_ids(ref_karyo)
     for cid in sorted_ref_cids:
         for gid in ref_karyo[cid]:
-            ref_order[gid] = pos
+            ref_order[_gene_id(gid)] = pos
             pos += 1
     n_ref = pos
 
@@ -93,7 +100,7 @@ def draw_dotplot(ref_karyo, query_karyo, outpath,
         ref_chrom_of = {}
         for cid in sorted_ref_cids:
             for gid in ref_karyo[cid]:
-                ref_chrom_of[gid] = cid
+                ref_chrom_of[_gene_id(gid)] = cid
 
     sorted_query_cids = _sorted_chr_ids(query_karyo)
     fig, ax = plt.subplots(figsize=(7, 7))
@@ -102,7 +109,7 @@ def draw_dotplot(ref_karyo, query_karyo, outpath,
 
     for cid in sorted_query_cids:
         for gid in query_karyo[cid]:
-            ref_gene = gene_mapping(gid)
+            ref_gene = gene_mapping(_gene_id(gid))
             if ref_gene in ref_order:
                 xs.append(ref_order[ref_gene])
                 ys.append(q_pos)
@@ -257,6 +264,105 @@ def draw_ancestor_dotplots(tree, node_karyotypes, outdir,
                      dpi=dpi)
 
 
+def _make_branch_mapping(gene_parent, parent_gene_set):
+    """Build a gene mapping function for a parent→child branch dotplot.
+
+    For each child gene, tries to find the corresponding gene in the
+    direct parent:
+    1. Direct match (same gene ID in parent)
+    2. gene_parent chain (WGD/duplicate copies)
+    3. Fallback to root ancestor mapping
+
+    Parameters
+    ----------
+    gene_parent : dict
+        {gene_id: immediate_parent_gene_id}
+    parent_gene_set : set
+        Set of gene IDs present in the parent karyotype.
+
+    Returns
+    -------
+    callable
+        Mapping function: child_gene_id -> parent_gene_id or None.
+    """
+    def _mapping(gid):
+        # 1. Direct match
+        if gid in parent_gene_set:
+            return gid
+        # 2. Follow gene_parent chain
+        cur = gid
+        visited = set()
+        while cur in gene_parent:
+            if cur in visited:
+                break
+            visited.add(cur)
+            cur = gene_parent[cur]
+            if cur in parent_gene_set:
+                return cur
+        # 3. No match
+        return None
+    return _mapping
+
+
+def draw_branch_dotplots(tree, node_karyotypes, outdir, gene_parent,
+                         dpi=200):
+    """Draw dotplots for each parent→child branch in the tree.
+
+    For every branch (parent, child), draws a dotplot with the parent
+    karyotype as reference (x-axis) and the child karyotype as query
+    (y-axis). This reveals the chromosome changes at each evolutionary
+    step.
+
+    Parameters
+    ----------
+    tree : ete3.Tree
+        Species tree.
+    node_karyotypes : dict
+        {node_name: {chrom_id: [gene_id, ...]}}
+    outdir : str
+        Output directory for branch dotplot PNGs.
+    gene_parent : dict
+        {gene_id: immediate_parent_gene_id} from GeneTracker.
+        Used to map child genes back to parent genes.
+    dpi : int
+        Output resolution.
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    for node in tree.traverse("preorder"):
+        if node.is_root():
+            continue
+        parent = node.up
+        if parent is None:
+            continue
+        # Use actual node.name for karyotype lookup, display name for labels
+        parent_key = parent.name
+        child_key = node.name
+        if parent_key not in node_karyotypes or child_key not in node_karyotypes:
+            continue
+        parent_label = parent_key if parent_key else "root"
+        child_label = child_key if child_key else "unnamed"
+
+        parent_karyo = node_karyotypes[parent_key]
+        child_karyo = node_karyotypes[child_key]
+
+        # Build set of parent gene IDs for mapping
+        parent_gene_set = set()
+        for cid in parent_karyo:
+            for g in parent_karyo[cid]:
+                parent_gene_set.add(_gene_id(g))
+
+        branch_mapping = _make_branch_mapping(gene_parent, parent_gene_set)
+
+        outpath = os.path.join(
+            outdir, "dotplot_{}_{}.png".format(parent_label, child_label))
+        draw_dotplot(parent_karyo, child_karyo, outpath,
+                     ref_name=parent_label,
+                     query_name=child_label,
+                     gene_mapping=branch_mapping,
+                     dpi=dpi)
+
+
 def aag_to_karyo(aag):
     """Convert AncestralAdjacencyGraph to plain karyotype dict.
 
@@ -344,8 +450,8 @@ def draw_akr_dotplots(akr, outdir, dpi=200):
         if node_id != root_name:
             outpath = os.path.join(
                 outdir,
-                "dotplot_root_vs_{}.png".format(node_id))
+                "dotplot_{}_vs_{}.png".format(root_name, node_id))
             draw_dotplot(all_karyos[root_name], node_karyo, outpath,
-                         ref_name="Root ({})".format(root_name),
+                         ref_name=root_name,
                          query_name=node_id,
                          dpi=dpi)

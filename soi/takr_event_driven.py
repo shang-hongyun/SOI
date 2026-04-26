@@ -21,7 +21,7 @@ import copy
 import logging
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import networkx as nx
 
@@ -222,6 +222,28 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
     logger.info("=== Event-driven reconstruction v2 (ColoredGraph) ===")
     t0 = time.time()
     og_graphs_cache = {}
+
+    # Precompute: for each internal node, find its outgroup (sibling subtree leaves)
+    # outgroup_leaves_map: node_id -> [leaf_name, ...]
+    outgroup_leaves_map = {}
+    for node in akr.tree.traverse(strategy="postorder"):
+        if node.is_leaf():
+            continue
+        node_id = node.name
+        if not node.up:
+            # Root node has no outgroup
+            continue
+        # Find the sibling: another child of parent that is not this node
+        sibling_leaves = []
+        for sibling in node.up.children:
+            if sibling.name == node_id:
+                continue
+            # Collect all leaves under sibling
+            for leaf in sibling.iter_leaves():
+                sibling_leaves.append(leaf.name)
+        if sibling_leaves:
+            outgroup_leaves_map[node_id] = sibling_leaves
+
     for node in akr.tree.traverse(strategy="postorder"):
         node_id = node.name
         ploidy = akr.ploidy_map.get(node_id, 1)
@@ -273,6 +295,37 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         G = ColoredGraph(hog_level=node_id)
         for mc, cid in zip(mapped_children, child_source_ids):
             G.add_child(cid, mc)
+
+        # === 收集外类群邻接信息 ===
+        # 外类群在 parent HOG level, 用于 bridge 事件极性判定
+        outgroup_adjacency = None
+        if node_id in outgroup_leaves_map and node.up:
+            parent_hog_level = node.up.name
+            og_adj_set = set()
+            og_leaves = outgroup_leaves_map[node_id]
+            logger.debug("  [outgroup] %s: sibling leaves %s -> mapping to %s",
+                         node_id, og_leaves, parent_hog_level)
+            for leaf_name in og_leaves:
+                if leaf_name in akr.leaf_graphs:
+                    try:
+                        mapped = akr._map_to_parent_hogs(
+                            parent_hog_level,
+                            akr.leaf_graphs[leaf_name],
+                            source_id=leaf_name)
+                        for h1, h2 in mapped.get_adjacencies(include_telomere=False):
+                            h1_id = h1.hog_id if hasattr(h1, 'hog_id') else str(h1)
+                            h2_id = h2.hog_id if hasattr(h2, 'hog_id') else str(h2)
+                            key = (h1_id, h2_id) if h1_id < h2_id else (h2_id, h1_id)
+                            og_adj_set.add(key)
+                        logger.debug("  [outgroup]   %s: %d adjacencies at %s level",
+                                     leaf_name, len(og_adj_set), parent_hog_level)
+                    except Exception as e:
+                        logger.debug("  [outgroup]   %s: skip (%s)", leaf_name, e)
+            if og_adj_set:
+                outgroup_adjacency = og_adj_set
+                logger.info("  [outgroup] %s: %d adjacencies from %d leaves at %s level",
+                            node_id, len(og_adj_set), len(og_leaves), parent_hog_level)
+
         outgroup_hogs = {}
         if node_id in og_graphs_cache:
             for og_graph, _weight in og_graphs_cache[node_id]:
@@ -282,7 +335,9 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                     for h1, h2 in og_graph.get_adjacencies(include_telomere=False):
                         outgroup_hogs[cid].add(h1)
                         outgroup_hogs[cid].add(h2)
-        G.resolve_all_events(outgroups=outgroup_hogs, min_hogs=min_hogs)
+        G.resolve_all_events(outgroups=outgroup_hogs,
+                             outgroup_adjacency=outgroup_adjacency,
+                             min_hogs=min_hogs)
         ancestor = G.to_ancestral_graph()
         akr.anc_graphs[node_id] = ancestor
         n_chrom = len(list(ancestor.chromosomes))

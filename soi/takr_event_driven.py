@@ -145,14 +145,16 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         mapped = akr._map_to_parent_hogs(parent_id, leaf_g, source_id=leaf_name)
         G_leaf = ColoredGraph(hog_level=leaf_name)
         G_leaf.add_child(leaf_name, mapped)
-        G_leaf.resolve_all_events(outgroups=None, min_hogs=min_hogs)
+        # Skip resolve_all_events: single-species graph has no cross-child conflicts.
+        # HOG mapping already merges subgenome copies. Calling event detection
+        # would remove real post-WGD rearrangements as 'conflicts', breaking the graph.
         pre_anc = G_leaf.to_ancestral_graph()
         pre_anc.node_id = "{}_pre".format(leaf_name)
         akr.pre_wgd_graphs[leaf_name] = pre_anc
         n_post = len(list(leaf_g.chromosomes))
         n_pre = len(list(pre_anc.chromosomes))
-        logger.info("  Done: %d -> %d chroms, %d events (%.1fs)",
-                     n_post, n_pre, len(G_leaf.events), time.time() - t_leaf)
+        logger.info("  Done: %d -> %d chroms (HOG merge, %.1fs)",
+                     n_post, n_pre, time.time() - t_leaf)
 
     og_graphs_cache = {}
     for node in akr.tree.traverse(strategy="postorder"):

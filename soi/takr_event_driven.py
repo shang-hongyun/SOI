@@ -128,6 +128,25 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
     from .takr_colored_graph import ColoredGraph
     logger.info("=== Event-driven reconstruction v2 (ColoredGraph) ===")
     t0 = time.time()
+
+    # Collapse polyploid leaves using ColoredGraph (replace old ILP+SA)
+    for leaf_name, ploidy in akr.ploidy_map.items():
+        if leaf_name not in akr.leaf_graphs or ploidy <= 1:
+            continue
+        if leaf_name in akr.pre_wgd_graphs:
+            continue
+        leaf_g = akr.leaf_graphs[leaf_name]
+        G_leaf = ColoredGraph(hog_level=leaf_name)
+        G_leaf.add_child(leaf_name, leaf_g)
+        pre_G = G_leaf.collapse_wgd(ploidy)
+        pre_anc = pre_G.to_ancestral_graph()
+        pre_anc.node_id = "{}_pre".format(leaf_name)
+        akr.pre_wgd_graphs[leaf_name] = pre_anc
+        n_post = len(list(leaf_g.chromosomes))
+        n_pre = len(list(pre_anc.chromosomes))
+        logger.info("  Leaf %s pre-WGD [v2 ColoredGraph]: %d -> %d chroms",
+                     leaf_name, n_post, n_pre)
+
     og_graphs_cache = {}
     for node in akr.tree.traverse(strategy="postorder"):
         if node.is_leaf():

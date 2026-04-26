@@ -678,8 +678,12 @@ class ColoredGraph:
         # 过滤小事件 (min_hogs)
         self.events = [e for e in self.events
                        if len(e.genes_involved) >= min_hogs]
-        logger.info("  [colored] done: %d events (after min_hogs=%d)",
-                     len(self.events), min_hogs)
+        # 按类型统计
+        from collections import Counter
+        type_counts = Counter(e.event_type for e in self.events)
+        type_str = ', '.join(f"{t}={c}" for t, c in sorted(type_counts.items()))
+        logger.info("  [colored] done: %d events %s (after min_hogs=%d)",
+                     len(self.events), type_str, min_hogs)
 
         return self.events
 

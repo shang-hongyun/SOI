@@ -291,7 +291,7 @@ class AKR:
                  sa_iterations=5000,
                  use_v3=True,
                  use_v4=False,
-                 reconstruction_algorithm='v4',
+                 reconstruction_algorithm='v4_colored',
                  **kargs):
 
         self.ogfile = ogfile
@@ -374,10 +374,11 @@ class AKR:
         self._parse_ploidy_map()
         self._build_leaf_graphs()
 
-        # Handle polyploid leaves: generate pre-WGD graphs for ancestral reconstruction
-        for leaf_name, ploidy in self.ploidy_map.items():
-            if leaf_name in self.leaf_graphs and ploidy > 1:
-                self._collapse_polyploid_leaf(leaf_name)
+        # Handle polyploid leaves (v4_colored handles this internally)
+        if not self.use_v4_colored:
+            for leaf_name, ploidy in self.ploidy_map.items():
+                if leaf_name in self.leaf_graphs and ploidy > 1:
+                    self._collapse_polyploid_leaf(leaf_name)
 
         # Post-order traversal: reconstruct speciation nodes first, then pre-WGD pseudo-nodes
         for node in self.tree.traverse(strategy="postorder"):

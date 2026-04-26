@@ -135,9 +135,16 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             continue
         if leaf_name in akr.pre_wgd_graphs:
             continue
+        # Find parent node for HOG mapping
+        leaf_node = akr.tree.search_nodes(name=leaf_name)
+        if not leaf_node or not leaf_node[0].up:
+            continue
+        parent_id = leaf_node[0].up.name
         leaf_g = akr.leaf_graphs[leaf_name]
+        # Map to parent HOG level so subgenome copies share HOG IDs
+        mapped = akr._map_to_parent_hogs(parent_id, leaf_g, source_id=leaf_name)
         G_leaf = ColoredGraph(hog_level=leaf_name)
-        G_leaf.add_child(leaf_name, leaf_g)
+        G_leaf.add_child(leaf_name, mapped)
         pre_G = G_leaf.collapse_wgd(ploidy)
         pre_anc = pre_G.to_ancestral_graph()
         pre_anc.node_id = "{}_pre".format(leaf_name)

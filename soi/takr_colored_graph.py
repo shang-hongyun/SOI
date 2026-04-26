@@ -21,6 +21,24 @@ from .takr_events import TAKREvent
 logger = logging.getLogger(__name__)
 
 
+def _merge_chromosome_paths(path_a, path_b):
+    """Merge two subgenome chromosome paths into one pre-WGD path.
+    
+    Strategy: union of HOGs, keep path_a order first, append unique from path_b.
+    """
+    seen = set()
+    merged = []
+    for h in path_a:
+        if h not in seen:
+            merged.append(h)
+            seen.add(h)
+    for h in path_b:
+        if h not in seen:
+            merged.append(h)
+            seen.add(h)
+    return merged
+
+
 class ColoredGraph:
     """彩色邻接图 — 一条边可有多色 (child_id, chrom_idx)。"""
 
@@ -595,15 +613,16 @@ class ColoredGraph:
     def collapse_wgd(self, ploidy: int):
         """ColoredGraph-based WGD collapse: post-WGD → pre-WGD.
 
+        post-WGD 图有 ploidy×pre 条染色体，它们是天然分开的（无跨染色体边）。
+        WGD collapse = 染色体配对：用 HOG 内容相似度找亚基因组同位染色体。
+
         Pipeline:
-        1. Path_cover on post-WGD graph → 获得 N2 自身的染色体
-        2. 新建 ColoredGraph, 每条边按 (染色体ID) 重新着色
-           - 同染色体边 = 正常邻接（单色）
-           - 跨染色体边 = 潜在 post-WGD 重排（双色 = 共享）
-        3. resolve_all_events() → 跨染色体冲突边被移除 → pre-WGD
+        1. Path_cover → 获取 N 条染色体
+        2. 染色体配对: 每对染色体的 HOG Jaccard 相似度 → 找最佳匹配
+        3. 每对合并为一条 pre-WGD 染色体（HOG 去重）
 
         Args:
-            ploidy: 倍性 (用于日志, 不参与阈值判断)
+            ploidy: 倍性 (2=四倍体, 3=六倍体, ...)
 
         Returns:
             ColoredGraph — pre-WGD 图
@@ -614,40 +633,83 @@ class ColoredGraph:
             logger.warning("  [collapse_wgd] no paths found, returning original graph")
             return self
 
+        n_chrom = len(paths)
         logger.debug("  [collapse_wgd] %s: %d post-WGD chromosomes (ploidy=%d)",
-                      self.hog_level, len(paths), ploidy)
+                      self.hog_level, n_chrom, ploidy)
 
-        # Step 2: 按染色体重新着色
+        if n_chrom < ploidy:
+            logger.warning("  [collapse_wgd] fewer chroms (%d) than ploidy (%d), skipping",
+                           n_chrom, ploidy)
+            return self
+
+        # Step 2: 构建染色体 × HOG 矩阵
+        chrom_hogs = []  # [{hog_id}, ...] per chromosome
+        for path in paths:
+            chrom_hogs.append(set(path))
+
+        # 计算所有染色体对的 Jaccard 相似度
+        n = len(chrom_hogs)
+        import itertools
+        pairs = []
+        for i, j in itertools.combinations(range(n), 2):
+            inter = len(chrom_hogs[i] & chrom_hogs[j])
+            union = len(chrom_hogs[i] | chrom_hogs[j])
+            jaccard = inter / union if union > 0 else 0.0
+            if inter > 0:
+                pairs.append((jaccard, inter, i, j))
+
+        # Step 3: 贪心匹配 — 从相似度最高的对开始
+        pairs.sort(reverse=True)
+        paired = set()
+        pre_chroms = []  # [(path_i, path_j), ...]
+
+        for jaccard, inter, i, j in pairs:
+            if i in paired or j in paired:
+                continue
+            pre_chroms.append((paths[i], paths[j]))
+            paired.add(i)
+            paired.add(j)
+
+        # 未配对的染色体作为单条保留
+        for i in range(n):
+            if i not in paired:
+                pre_chroms.append((paths[i],))
+
+        n_pre = len(pre_chroms)
+        logger.debug("  [collapse_wgd] %s: %d post-WGD -> %d pre-WGD chroms (paired=%d)",
+                      self.hog_level, n_chrom, n_pre, len(pre_chroms))
+
+        # Step 4: 构建 pre-WGD 图（每对染色体合并）
         G2 = ColoredGraph(hog_level=f"{self.hog_level}_preWGD")
 
-        # 记录 HOG → 染色体映射
-        hog_to_chrom = {}
-        for chrom_idx, path in enumerate(paths):
-            for h in path:
-                hog_to_chrom.setdefault(h, set()).add(chrom_idx)
-            # 同染色体内部邻接 → 单色
-            for i in range(len(path) - 1):
-                G2.add_edge(path[i], path[i + 1], f"chr{chrom_idx}", chrom_idx)
-
-        # 添加剩余边（不在任何路径中的冲突边）
-        for h1, h2, data in self._graph.edges(data=True):
-            if not G2._graph.has_edge(h1, h2):
-                c1_set = hog_to_chrom.get(h1, set())
-                c2_set = hog_to_chrom.get(h2, set())
-                # 跨染色体边 → dual color（两个染色体都着色）
-                for c in c1_set:
-                    G2.add_edge(h1, h2, f"chr{c}", c)
-                for c in c2_set:
-                    G2.add_edge(h1, h2, f"chr{c}", c)
-                if not c1_set and not c2_set:
-                    G2.add_edge(h1, h2, "orphan", 0)
-
-        # Step 3: resolve 跨染色体冲突 = 逆转 post-WGD 重排
-        G2.resolve_all_events(outgroups=None, min_hogs=3)
-
-        n_pre = len(G2.path_cover())
-        logger.debug("  [collapse_wgd] %s: %d post-WGD -> %d pre-WGD chromosomes",
-                      self.hog_level, len(paths), n_pre)
+        # 记录事件
+        paired_count = 0
+        for chrom_pair in pre_chroms:
+            if len(chrom_pair) == 2:
+                # 一对亚基因组同位染色体 → 合并（HOG 去重）
+                path_a, path_b = chrom_pair
+                merged = _merge_chromosome_paths(path_a, path_b)
+                for i in range(len(merged) - 1):
+                    G2.add_edge(merged[i], merged[i + 1],
+                                f"pre_chr{paired_count}", paired_count)
+                paired_count += 1
+                # 记录配对事件
+                shared_hogs = set(path_a) & set(path_b)
+                if shared_hogs:
+                    G2.events.append(TAKREvent(
+                        event_type='wgd_collapse',
+                        branch=f"{self.hog_level}_preWGD-{self.hog_level}",
+                        genes_involved=list(shared_hogs),
+                        desc=f"wgd_collapse: paired chroms ({len(path_a)}+{len(path_b)} HOGs, {len(shared_hogs)} shared)",
+                        support=ploidy,
+                    ))
+            else:
+                # 未配对的单条染色体
+                path = chrom_pair[0]
+                for i in range(len(path) - 1):
+                    G2.add_edge(path[i], path[i + 1],
+                                f"pre_chr{paired_count}", paired_count)
+                paired_count += 1
 
         return G2
 

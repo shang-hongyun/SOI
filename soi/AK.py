@@ -291,7 +291,7 @@ class AKR:
                  sa_iterations=5000,
                  use_v3=True,
                  use_v4=False,
-                 reconstruction_algorithm=None,
+                 reconstruction_algorithm='v4',
                  **kargs):
 
         self.ogfile = ogfile
@@ -310,8 +310,9 @@ class AKR:
         self.use_ilp_sa = use_ilp_sa and pulp is not None  # 是否使用ILP+SA混合线性化
         self.sa_iterations = sa_iterations
         # Unified algorithm selector
-        # reconstruction_algorithm: 'v3' (CP-SAT), 'v4' (event-driven)
+        # reconstruction_algorithm: 'v3' (CP-SAT), 'v4' (event-driven), 'v4_colored' (ColoredGraph)
         # Falls back to use_v3/use_v4 for backward compatibility
+        self.use_v4_colored = False
         if reconstruction_algorithm is not None:
             if reconstruction_algorithm == 'v3':
                 self.use_v3 = True and ORTOOLS_AVAILABLE
@@ -319,8 +320,12 @@ class AKR:
             elif reconstruction_algorithm == 'v4':
                 self.use_v3 = False
                 self.use_v4 = True
+            elif reconstruction_algorithm == 'v4_colored':
+                self.use_v3 = False
+                self.use_v4 = False
+                self.use_v4_colored = True
             else:
-                raise ValueError("Unknown reconstruction_algorithm: %s (use 'v3' or 'v4')" % reconstruction_algorithm)
+                raise ValueError("Unknown reconstruction_algorithm: %s (use 'v3', 'v4', or 'v4_colored')" % reconstruction_algorithm)
         else:
             self.use_v3 = use_v3 and ORTOOLS_AVAILABLE
             self.use_v4 = use_v4
@@ -384,7 +389,13 @@ class AKR:
                     self.timeout, elapsed))
                 break
             # Speciation node reconstruction
-            if self.use_v4:
+            if self.use_v4_colored:
+                # ColoredGraph event-driven handles all nodes in one pass
+                from soi.takr_event_driven import reconstruct_event_driven_v2
+                anc_graphs = reconstruct_event_driven_v2(self)
+                self.anc_graphs = anc_graphs
+                break
+            elif self.use_v4:
                 # Event-driven reconstruction handles all nodes in one pass
                 from soi.takr_event_driven import reconstruct_event_driven
                 anc_graphs = reconstruct_event_driven(self)
@@ -402,8 +413,8 @@ class AKR:
                 else:
                     self._collapse_wgd(node)
 
-        # Skip optimization + top-down detection for v4 (handled internally)
-        if not self.use_v4:
+        # Skip optimization + top-down detection for v4/v4_colored (handled internally)
+        if not self.use_v4 and not self.use_v4_colored:
             for i in range(self.rounds):
                 logger.info('Optimization round {}'.format(i))
                 self._optimize_round()

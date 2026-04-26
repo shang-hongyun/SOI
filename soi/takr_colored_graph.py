@@ -606,40 +606,34 @@ class ColoredGraph:
         Returns:
             ColoredGraph — pre-WGD 图（已 resolve 所有冲突）
         """
-        # Step 1: 统计每条边的跨孩子共享度
-        # shared_by: edge -> set of child_ids
-        shared_by = {}  # (h1, h2) -> set of child_id
+        # Step 1: 统计每条边的总颜色数（跨全部孩子的 (child_id, chrom_idx) 对）
+        # p=2 → 每条 pre-WGD 保守边应出现至少 2 次（两个亚基因组）
+        # p=3 → 至少 3 次
+        threshold = max(ploidy, 1)
+        edge_color_counts = {}  # (h1, h2) -> total color count across all children
         for h1, h2, data in self._graph.edges(data=True):
-            child_set = set()
-            for child_id, chrom_idx in data['colors']:
-                child_set.add(child_id)
-            shared_by[(h1, h2)] = child_set
+            edge_color_counts[(h1, h2)] = len(data['colors'])
 
-        total_children = len(self.children())
-        # WGD collapse: 边必须在 ceil(children * 2/3) 个孩子中出现才算保守
-        # 2c→2, 3c→2, 4c→3, 5c→4, 6c→4
-        threshold = (total_children * 2 + 2) // 3 if total_children > 0 else 1
-
-        # Step 2: 构建 pre-WGD 图（仅保留跨孩子共享的边）
+        # Step 2: 构建 pre-WGD 图（仅保留颜色数 >= ploidy 的边）
         pre_G = ColoredGraph(hog_level=self.hog_level + "_preWGD")
 
         # 先添加所有节点
         for n in self._graph.nodes:
             pre_G._graph.add_node(n)
 
-        # 共享边 = 出现在 >= threshold 个孩子中的边 → pre-WGD 保守邻接
+        # 保留颜色数 >= ploidy 的边 → pre-WGD 保守邻接
         kept = 0
         removed = 0
-        for (h1, h2), child_set in shared_by.items():
+        for (h1, h2), color_count in edge_color_counts.items():
             if h1 not in pre_G._graph or h2 not in pre_G._graph:
                 continue
-            if len(child_set) >= threshold:
-                # 共享边 → 保留（用所有孩子着色）
-                for cid in child_set:
-                    pre_G.add_edge(h1, h2, cid, 0)
+            if color_count >= threshold:
+                # 保留
+                for child_id, chrom_idx in self._graph[h1][h2]['colors']:
+                    pre_G.add_edge(h1, h2, child_id, chrom_idx)
                 kept += 1
             else:
-                # 独有边 → 记录为 post-WGD 事件
+                # 颜色数不足 ploidy → post-WGD 衍生
                 removed += 1
                 event_type = 'post_wgd_rearrangement'
                 if len(pre_G.events) < 100:
@@ -647,12 +641,12 @@ class ColoredGraph:
                         event_type=event_type,
                         branch=self.hog_level + "_preWGD-" + self.hog_level,
                         genes_involved=[h1, h2],
-                        desc=f"{event_type}: unique to {child_set}",
+                        desc=f"{event_type}: {color_count} colors < {threshold}",
                         support=1,
                     ))
 
-        logger.debug("  [collapse_wgd] %s: %d shared kept, %d unique removed (threshold=%d/%d)",
-                      self.hog_level, kept, removed, threshold, total_children)
+        logger.debug("  [collapse_wgd] %s: %d shared kept, %d unique removed (threshold=%d)",
+                      self.hog_level, kept, removed, threshold)
 
         # Step 3: 路径覆盖 → 还原染色体
         # 如果 pre_G 为空图，回退到原图

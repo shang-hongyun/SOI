@@ -51,11 +51,15 @@ def reconstruct_event_driven(akr, min_hogs=3):
         logger.info("Reconstructing node %s [v4 event-driven]", node_id)
         t_node = time.time()
 
-        # Collect child graphs
+        # Collect child graphs (check for pre-WGD graphs first)
         child_graphs, child_source_ids = [], []
         for child in node.children:
             cid = child.name
-            if child.is_leaf():
+            # Use pre-WGD graph if available (post-WGD already collapsed)
+            if cid in akr.pre_wgd_graphs:
+                child_graphs.append(akr.pre_wgd_graphs[cid])
+                child_source_ids.append(cid)
+            elif child.is_leaf():
                 if cid in akr.leaf_graphs:
                     child_graphs.append(akr.leaf_graphs[cid])
                     child_source_ids.append(cid)
@@ -86,6 +90,11 @@ def reconstruct_event_driven(akr, min_hogs=3):
 
         ancestor.events = all_events
         akr.anc_graphs[node_id] = ancestor
+
+        # If this is a WGD node, collapse to pre-WGD and detect events
+        ploidy = akr.ploidy_map.get(node_id, 1)
+        if ploidy > 1:
+            _handle_wgd_node(akr, node, ploidy)
 
         n_chrom = len(list(ancestor.chromosomes))
         logger.info("  Done: %d chroms, %d events (%.1fs)",
@@ -540,6 +549,89 @@ def _detect_ncf(ancestor, mc, branch, src):
                             ))
 
     return events
+
+
+# =========================================================================
+#  Phase 3: WGD pre→post detection
+# =========================================================================
+
+def _handle_wgd_node(akr, node, ploidy):
+    """Handle WGD node: collapse post-WGD to pre-WGD, detect events.
+
+    1. Get the post-WGD ancestor graph (reconstructed from children)
+    2. Collapse it to pre-WGD (reduce chromosome count by ploidy)
+    3. Detect events between pre-WGD and post-WGD
+    4. Store events on virtual branch 'node_preWGD→node'
+    """
+    from .takr_events import TAKREvent, branch_id
+
+    node_id = node.name
+    post_graph = akr.anc_graphs.get(node_id)
+    if post_graph is None:
+        return
+
+    # Collapse post-WGD to pre-WGD using v3's method (reuse)
+    akr._collapse_wgd_v3(node)
+    pre_graph = akr.pre_wgd_graphs.get(node_id)
+    if pre_graph is None:
+        logger.warning("  WGD collapse failed for %s", node_id)
+        return
+
+    # Map both to the same HOG level for comparison
+    hog_level = node_id
+    pre_mapped = akr._map_to_parent_hogs(hog_level, pre_graph, source_id=node_id + "_pre")
+    post_mapped = akr._map_to_parent_hogs(hog_level, post_graph, source_id=node_id)
+
+    # Detect events between pre-WGD and post-WGD on virtual branch
+    virtual_branch = "%s_preWGD-%s" % (node_id, node_id)
+    events = []
+
+    # 1. WGD event
+    events.append(TAKREvent(
+        event_type='WGD',
+        branch=virtual_branch,
+        genes_involved=[],
+        desc="WGD %dx at %s" % (ploidy, node_id),
+        support=ploidy,
+    ))
+
+    # 2. Structural event detection (same algorithm as branch-level)
+    ancest_adj = set()
+    for h1, h2 in pre_mapped.get_adjacencies(include_telomere=False):
+        key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+        ancest_adj.add(key)
+
+    post_adj = set()
+    for h1, h2 in post_mapped.get_adjacencies(include_telomere=False):
+        key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+        post_adj.add(key)
+
+    wgd_events = _detect_branch_events(
+        pre_mapped, post_mapped, virtual_branch, node_id + "_post", 3)
+
+    # For WGD, also detect fractionation (gene loss between pre and post)
+    pre_hogs = set(pre_mapped.gene_nodes)
+    post_hogs = set(post_mapped.gene_nodes)
+    lost_hogs = pre_hogs - post_hogs
+    if lost_hogs:
+        wgd_events.append(TAKREvent(
+            event_type='fractionation',
+            branch=virtual_branch,
+            genes_involved=list(lost_hogs),
+            desc="fractionation: %d HOGs lost post-WGD in %s" % (len(lost_hogs), node_id),
+            support=len(lost_hogs),
+        ))
+
+    events.extend(wgd_events)
+
+    # Store events
+    if pre_graph.events is None:
+        pre_graph.events = []
+    pre_graph.events.extend(events)
+
+    logger.info("  WGD %s: %d post→%d pre chroms, %d events on %s",
+                node_id, len(list(post_graph.chromosomes)),
+                len(list(pre_graph.chromosomes)), len(events), virtual_branch)
 
 
 # =========================================================================

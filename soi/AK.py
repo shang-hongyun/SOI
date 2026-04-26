@@ -3307,7 +3307,11 @@ class AKR:
                 parent = parent_of.get(node_id, '?')
                 _write_events_from_graph(node_id, aag, parent)
 
-            # Leaf nodes (species) — detected by _detect_events_topdown
+            # Pre-WGD pseudo-nodes — events detected between pre and post
+            for pre_name, aag in self.pre_wgd_graphs.items():
+                if aag.events:
+                    parent = parent_of.get(pre_name, '?')
+                    _write_events_from_graph(pre_name, aag, parent)
             for leaf_name, aag in self.leaf_graphs.items():
                 if aag.events:
                     parent = parent_of.get(leaf_name, '?')

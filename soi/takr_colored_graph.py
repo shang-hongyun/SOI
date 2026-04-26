@@ -212,12 +212,7 @@ class ColoredGraph:
             return None
 
     def resolve_indels(self, outgroups: Dict = None):
-        """检测并解决 indel/loss 冲突。
-
-        外类群投票确定方向:
-        - 外类群有 HOG(spanning) → 祖先有这些 HOG → loss in this child
-        - 外类群无 HOG(spanning) → 祖先无这些 HOG → gain in this child
-        """
+        """检测并解决 indel/loss 冲突。移除所有跨越边，记录 events。"""
         while True:
             spanning = self.find_spanning_edges()
             if not spanning:
@@ -320,7 +315,7 @@ class ColoredGraph:
                     alternating = False
                     break
 
-            if alternating and n == 4:
+            if alternating and n >= 4:
                 # 交替模式 → inversion 或 RT/URT
                 # 检查是否涉及不同染色体
                 chroms = set()
@@ -756,13 +751,22 @@ class ColoredGraph:
                 comp1_size = len(components[c1])
                 comp2_size = len(components[c2])
 
-                # Classify: both components are large → EEJ; one small → NCF
+                # Classify: both components are large → EEJ; one small → NCF;
+                # endpoint has degree 1 in component → fission
+                in_shared_g = h1 in shared_G and h2 in shared_G
+                deg1_in_component = False
+                if in_shared_g:
+                    deg1_h1 = shared_G.degree(h1) == 1
+                    deg1_h2 = shared_G.degree(h2) == 1
+                    deg1_in_component = deg1_h1 or deg1_h2
                 min_comp = min(comp1_size, comp2_size)
-                if len(hog_to_comp) < len(shared_G):
-                    is_ncf = min_comp < 10  # small component → inserted
+
+                if deg1_in_component:
+                    etype = 'fission'
+                elif min_comp < 10:
+                    etype = 'ncf'
                 else:
-                    is_ncf = False
-                etype = 'ncf' if is_ncf else 'eej'
+                    etype = 'eej'
 
                 self.events.append(TAKREvent(
                     event_type=etype,
@@ -793,14 +797,26 @@ class ColoredGraph:
         logger.info("  [colored] after indel: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 
-        # Step 2: 结构重排
+        # Step 2: 桥接冲突 + 结构重排
+        n_before_bridge = len(self.events)
+        self.resolve_bridge_events()
+        n_bridges = len(self.events) - n_before_bridge
+        if n_bridges:
+            logger.info("  [colored] bridges: %d events", n_bridges)
         self.resolve_structural_events()
         logger.info("  [colored] after structural: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 
-        # 过滤小事件 (min_hogs)
-        self.events = [e for e in self.events
-                       if len(e.genes_involved) >= min_hogs]
+        # 过滤小事件 (min_hogs) — 跳过桥接事件（EEJ/NCF/fission 都是小事件）
+        kept = []
+        for e in self.events:
+            if e.event_type in ('eej', 'ncf', 'fission', 'reciprocal_translocation',
+                                'unbalanced_reciprocal_translocation',
+                                'inversion', 'telomere_inversion'):
+                kept.append(e)
+            elif len(e.genes_involved) >= min_hogs:
+                kept.append(e)
+        self.events = kept
         # 按类型统计
         from collections import Counter
         type_counts = Counter(e.event_type for e in self.events)

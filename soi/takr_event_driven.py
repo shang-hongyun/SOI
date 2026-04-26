@@ -146,7 +146,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                 child_set.add(cid)
         n_post = len(pre_wgd_graph.path_cover()) if hasattr(pre_wgd_graph, 'path_cover') else 0
         child_ids = sorted(child_set)
-        logger.info("  Sources: %d (%s), %d chroms", len(child_ids), ", ".join(child_ids), n_post)
+        logger.info("  Children: %d (%s), %d chroms", len(child_ids), ", ".join(child_ids), n_post)
         collapse_G = ColoredGraph(hog_level="{}_preWGD".format(node_id))
         # Rebuild with existing edges (colors already set by add_child/graph)
         for h1, h2, data in pre_wgd_graph._graph.edges(data=True):

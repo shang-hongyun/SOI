@@ -204,6 +204,12 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         G = ColoredGraph(hog_level=node_id)
         for mc, cid in zip(mapped_children, child_source_ids):
             G.add_child(cid, mc)
+        # Save snapshot of original multi-child graph for WGD collapse
+        # (resolve_all_events will remove cross-child conflicts)
+        pre_collapse_G = ColoredGraph(hog_level=node_id)
+        for h1, h2, data in G._graph.edges(data=True):
+            for cid, chrom in data['colors']:
+                pre_collapse_G.add_edge(h1, h2, cid, chrom)
         outgroup_hogs = {}
         if node_id in og_graphs_cache:
             for og_graph, _weight in og_graphs_cache[node_id]:
@@ -216,17 +222,19 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         G.resolve_all_events(outgroups=outgroup_hogs, min_hogs=min_hogs)
         ancestor = G.to_ancestral_graph()
         akr.anc_graphs[node_id] = ancestor
+        n_chrom = len(list(ancestor.chromosomes))
+        logger.info("  Done: %d chroms, %d events (%.1fs)",
+                     n_chrom, len(ancestor.events), time.time() - t_node)
         ploidy = akr.ploidy_map.get(node_id, 1)
         if ploidy > 1:
-            pre_anc, events = _wgd_collapse(G, node_id, ploidy)
+            # WGD collapse uses the ORIGINAL multi-child graph (pre-resolution)
+            # to detect inter-subgenome differences as cross-child conflicts
+            pre_anc, events = _wgd_collapse(pre_collapse_G, node_id, ploidy)
             akr.pre_wgd_graphs[node_id] = pre_anc
             virtual_branch = "{}_preWGD-{}".format(node_id, node_id)
             for e in events:
                 e.branch = virtual_branch
                 ancestor.events.append(e)
-        n_chrom = len(list(ancestor.chromosomes))
-        logger.info("  Done: %d chroms, %d events (%.1fs)",
-                     n_chrom, len(ancestor.events), time.time() - t_node)
     logger.info("=== Event-driven reconstruction v2 done (%.1fs) ===",
                 time.time() - t0)
     return akr.anc_graphs

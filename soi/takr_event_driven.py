@@ -87,7 +87,8 @@ def reconstruct_event_driven(akr, min_hogs=3):
         for ci, (mc, src) in enumerate(zip(mapped_children, child_source_ids)):
             branch = "%s-%s" % (node_id, src)
             events = _detect_branch_events(
-                ancestor, mc, branch, src, min_hogs)
+                ancestor, mc, branch, src, min_hogs,
+                mapped_children, child_source_ids)
             all_events.extend(events)
 
         ancestor.events = all_events
@@ -159,7 +160,8 @@ def _build_consensus_ancestor(node_id, mapped_children, child_source_ids):
 #  Branch-level event detection
 # =========================================================================
 
-def _detect_branch_events(ancestor, mc, branch, src, min_hogs):
+def _detect_branch_events(ancestor, mc, branch, src, min_hogs,
+                          all_mapped_children=None, all_child_ids=None):
     """Detect all events on one child branch: ancestor vs child (mc).
 
     Events detected:
@@ -186,6 +188,58 @@ def _detect_branch_events(ancestor, mc, branch, src, min_hogs):
     for h1, h2 in ancest_adj:
         key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
         ancest_adj_set.add(key)
+
+    # Gene-level events: compare HOG copy numbers across children
+    # After WGD or duplication, HOGs may have multiple copies.
+    # If another child has MORE copies of a HOG than this child → loss
+    # If this child has MORE copies than others → gain/duplication
+    consensus_hogs = set(ancestor.gene_nodes)
+    child_hogs = set(mc.gene_nodes)
+
+    if hasattr(mc, 'hog_map') and mc.hog_map and all_mapped_children:
+        # Build copy counts per HOG per child
+        child_copy_counts = []
+        for mc2 in all_mapped_children:
+            counts = defaultdict(int)
+            if hasattr(mc2, 'hog_map') and mc2.hog_map:
+                for gene, hog in mc2.hog_map.items():
+                    counts[hog] += 1
+            child_copy_counts.append(counts)
+
+        # For each HOG, find the max copy count across all children = ancestral state
+        max_copies = defaultdict(int)
+        for counts in child_copy_counts:
+            for hog, n in counts.items():
+                if n > max_copies[hog]:
+                    max_copies[hog] = n
+
+        # This child's copy count
+        this_idx = all_child_ids.index(src) if src in all_child_ids else -1
+        if this_idx >= 0:
+            this_counts = child_copy_counts[this_idx]
+            for hog, anc_n in max_copies.items():
+                child_n = this_counts.get(hog, 0)
+                if child_n < anc_n:
+                    # This child has fewer copies → fractionation/gene loss
+                    events.append(TAKREvent(
+                        event_type='fractionation',
+                        branch=branch,
+                        genes_involved=[hog],
+                        desc="fractionation: %s copies %d->%d in %s" % (
+                            hog.hog_id, anc_n, child_n, src),
+                        support=anc_n - child_n,
+                    ))
+
+    # Gain: HOG present in child but absent in consensus
+    gained_hogs = child_hogs - consensus_hogs
+    for h in gained_hogs:
+        events.append(TAKREvent(
+            event_type='gene_gain',
+            branch=branch,
+            genes_involved=[h],
+            desc="gene_gain: %s gained in %s" % (h.hog_id, src),
+            support=1,
+        ))
 
     # Inversion detection via adjacency comparison
     inversions = _detect_inversions(

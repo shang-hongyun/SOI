@@ -595,66 +595,61 @@ class ColoredGraph:
     def collapse_wgd(self, ploidy: int):
         """ColoredGraph-based WGD collapse: post-WGD → pre-WGD.
 
-        利用边颜色中的染色体来源 (child_id) 作为亚基因组标识：
-        - 跨孩子共享的边 = pre-WGD 保守邻接（保留）
-        - 单个孩子独有的边 = post-WGD 衍生（移除）
-        然后路径覆盖 → pre-WGD 图。
+        Pipeline:
+        1. Path_cover on post-WGD graph → 获得 N2 自身的染色体
+        2. 新建 ColoredGraph, 每条边按 (染色体ID) 重新着色
+           - 同染色体边 = 正常邻接（单色）
+           - 跨染色体边 = 潜在 post-WGD 重排（双色 = 共享）
+        3. resolve_all_events() → 跨染色体冲突边被移除 → pre-WGD
 
         Args:
-            ploidy: 倍性 (2=四倍体, 3=六倍体, ...)
+            ploidy: 倍性 (用于日志, 不参与阈值判断)
 
         Returns:
-            ColoredGraph — pre-WGD 图（已 resolve 所有冲突）
+            ColoredGraph — pre-WGD 图
         """
-        # Step 1: 统计每条边的总颜色数（跨全部孩子的 (child_id, chrom_idx) 对）
-        # p=2 → 每条 pre-WGD 保守边应出现至少 2 次（两个亚基因组）
-        # p=3 → 至少 3 次
-        threshold = max(ploidy, 1)
-        edge_color_counts = {}  # (h1, h2) -> total color count across all children
-        for h1, h2, data in self._graph.edges(data=True):
-            edge_color_counts[(h1, h2)] = len(data['colors'])
-
-        # Step 2: 构建 pre-WGD 图（仅保留颜色数 >= ploidy 的边）
-        pre_G = ColoredGraph(hog_level=self.hog_level + "_preWGD")
-
-        # 先添加所有节点
-        for n in self._graph.nodes:
-            pre_G._graph.add_node(n)
-
-        # 保留颜色数 >= ploidy 的边 → pre-WGD 保守邻接
-        kept = 0
-        removed = 0
-        for (h1, h2), color_count in edge_color_counts.items():
-            if h1 not in pre_G._graph or h2 not in pre_G._graph:
-                continue
-            if color_count >= threshold:
-                # 保留
-                for child_id, chrom_idx in self._graph[h1][h2]['colors']:
-                    pre_G.add_edge(h1, h2, child_id, chrom_idx)
-                kept += 1
-            else:
-                # 颜色数不足 ploidy → post-WGD 衍生
-                removed += 1
-                event_type = 'post_wgd_rearrangement'
-                if len(pre_G.events) < 100:
-                    pre_G.events.append(TAKREvent(
-                        event_type=event_type,
-                        branch=self.hog_level + "_preWGD-" + self.hog_level,
-                        genes_involved=[h1, h2],
-                        desc=f"{event_type}: {color_count} colors < {threshold}",
-                        support=1,
-                    ))
-
-        logger.debug("  [collapse_wgd] %s: %d shared kept, %d unique removed (threshold=%d)",
-                      self.hog_level, kept, removed, threshold)
-
-        # Step 3: 路径覆盖 → 还原染色体
-        # 如果 pre_G 为空图，回退到原图
-        if pre_G.edge_count() == 0:
-            logger.warning("  [collapse_wgd] no shared edges, using original graph")
+        # Step 1: 获取 post-WGD 染色体
+        paths = self.path_cover()
+        if not paths:
+            logger.warning("  [collapse_wgd] no paths found, returning original graph")
             return self
 
-        return pre_G
+        logger.debug("  [collapse_wgd] %s: %d post-WGD chromosomes (ploidy=%d)",
+                      self.hog_level, len(paths), ploidy)
+
+        # Step 2: 按染色体重新着色
+        G2 = ColoredGraph(hog_level=f"{self.hog_level}_preWGD")
+
+        # 记录 HOG → 染色体映射
+        hog_to_chrom = {}
+        for chrom_idx, path in enumerate(paths):
+            for h in path:
+                hog_to_chrom.setdefault(h, set()).add(chrom_idx)
+            # 同染色体内部邻接 → 单色
+            for i in range(len(path) - 1):
+                G2.add_edge(path[i], path[i + 1], f"chr{chrom_idx}", chrom_idx)
+
+        # 添加剩余边（不在任何路径中的冲突边）
+        for h1, h2, data in self._graph.edges(data=True):
+            if not G2._graph.has_edge(h1, h2):
+                c1_set = hog_to_chrom.get(h1, set())
+                c2_set = hog_to_chrom.get(h2, set())
+                # 跨染色体边 → dual color（两个染色体都着色）
+                for c in c1_set:
+                    G2.add_edge(h1, h2, f"chr{c}", c)
+                for c in c2_set:
+                    G2.add_edge(h1, h2, f"chr{c}", c)
+                if not c1_set and not c2_set:
+                    G2.add_edge(h1, h2, "orphan", 0)
+
+        # Step 3: resolve 跨染色体冲突 = 逆转 post-WGD 重排
+        G2.resolve_all_events(outgroups=None, min_hogs=3)
+
+        n_pre = len(G2.path_cover())
+        logger.debug("  [collapse_wgd] %s: %d post-WGD -> %d pre-WGD chromosomes",
+                      self.hog_level, len(paths), n_pre)
+
+        return G2
 
     def resolve_all_events(self, outgroups: Dict = None,
                            min_hogs: int = 3) -> List[TAKREvent]:

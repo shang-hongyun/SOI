@@ -136,10 +136,10 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         t_collapse = time.time()
 
         # 桥接检测：跨染色体边 = post-WGD 融合/嵌入
+        n_before = len(post_graph.events)
         post_graph.resolve_bridge_events()
-        n_bridges = len(post_graph.events)
-        if n_bridges:
-            logger.info("  [colored] bridges: %d events", n_bridges)
+        n_bridges = len(post_graph.events) - n_before
+        logger.info("  [colored] bridges: %d events", n_bridges)
 
         paths = post_graph.path_cover()
         n_post = len(paths)

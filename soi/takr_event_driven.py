@@ -135,6 +135,12 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         logger.info("Reconstructing node %s_preWGD [v2 ColoredGraph]", node_id)
         t_collapse = time.time()
 
+        # 桥接检测：跨染色体边 = post-WGD 融合/嵌入
+        post_graph.resolve_bridge_events()
+        n_bridges = len(post_graph.events)
+        if n_bridges:
+            logger.info("  [colored] bridges: %d events", n_bridges)
+
         paths = post_graph.path_cover()
         n_post = len(paths)
         logger.info("  Children: %s=%d", node_id, n_post)
@@ -198,19 +204,20 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                                "pre_chr{}".format(chrom_idx), chrom_idx)
 
         pre_G.resolve_all_events(outgroups=None, min_hogs=min_hogs)
+        all_events = post_graph.events + pre_G.events
         pre_anc = pre_G.to_ancestral_graph()
         pre_anc.node_id = "{}_pre".format(node_id)
         n_pre = len(list(pre_anc.chromosomes))
         # Map to parent HOG level
         if parent_hog_level != node_id:
-            saved_events = list(pre_anc.events)
+            saved_events = list(all_events)
             pre_anc = akr._map_to_parent_hogs(parent_hog_level, pre_anc,
                                                source_id="{}_pre".format(node_id))
             pre_anc.events = saved_events
         pre_anc.node_id = "{}_pre".format(node_id)
-        logger.info("  Done: %d -> %d chroms, 0 events (%.1fs)",
-                     n_post, n_pre, time.time() - t_collapse)
-        return pre_anc, []
+        logger.info("  Done: %d -> %d chroms, %d events (%.1fs)",
+                     n_post, n_pre, len(all_events), time.time() - t_collapse)
+        return pre_anc, all_events
 
     logger.info("=== Event-driven reconstruction v2 (ColoredGraph) ===")
     t0 = time.time()

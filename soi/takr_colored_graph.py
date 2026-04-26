@@ -793,13 +793,6 @@ class ColoredGraph:
         logger.info("  [colored] after indel: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 
-        # Step 1.5: 桥接冲突 (unique edge 跨共享连通分量 = EEJ/NCF)
-        n_before_bridge = len(self.events)
-        self.resolve_bridge_events()
-        n_bridges = len(self.events) - n_before_bridge
-        if n_bridges:
-            logger.info("  [colored] bridges: %d events", n_bridges)
-
         # Step 2: 结构重排
         self.resolve_structural_events()
         logger.info("  [colored] after structural: %d nodes, %d edges, %d events",

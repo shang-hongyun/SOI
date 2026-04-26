@@ -172,7 +172,20 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         akr.anc_graphs[node_id] = ancestor
         ploidy = akr.ploidy_map.get(node_id, 1)
         if ploidy > 1:
-            _handle_wgd_node(akr, node, ploidy)
+            # Use ColoredGraph-based WGD collapse instead of CP-SAT
+            pre_G = G.collapse_wgd(ploidy)
+            pre_ancestor = pre_G.to_ancestral_graph()
+            pre_ancestor.node_id = f"{node_id}_pre"
+            akr.pre_wgd_graphs[node_id] = pre_ancestor
+            n_post = len(list(ancestor.chromosomes))
+            n_pre = len(list(pre_ancestor.chromosomes))
+            logger.info("  WGD Colored collapse for %s: %d post -> %d pre chroms (ploidy=%d)",
+                         node_id, n_post, n_pre, ploidy)
+            # Store pre-WGD events on virtual branch
+            virtual_branch = f"{node_id}_preWGD-{node_id}"
+            for e in pre_G.events:
+                e.branch = virtual_branch
+                ancestor.events.append(e)
         n_chrom = len(list(ancestor.chromosomes))
         logger.info("  Done: %d chroms, %d events (%.1fs)",
                      n_chrom, len(ancestor.events), time.time() - t_node)

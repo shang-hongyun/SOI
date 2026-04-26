@@ -21,6 +21,33 @@ from .takr_events import TAKREvent
 logger = logging.getLogger(__name__)
 
 
+def _extract_subgenome(hog_id: str, ploidy: int) -> Optional[int]:
+    """从 HOG ID 中提取亚基因组编号。
+
+    HOG ID 格式: "SOG1.N2.hog0" → 返回 0
+                  "SOG1.N2.hog1" → 返回 1
+                  "SOG1.N2"    → 返回 None (无亚基因组)
+
+    Args:
+        hog_id: HOG ID 字符串
+        ploidy: 倍性 (用于验证)
+
+    Returns:
+        亚基因组编号 (0..ploidy-1)，或 None
+    """
+    suffix = '.hog'
+    idx = hog_id.rfind(suffix)
+    if idx < 0:
+        return None
+    try:
+        num = int(hog_id[idx + len(suffix):])
+        if 0 <= num < ploidy:
+            return num
+        return None
+    except (ValueError, IndexError):
+        return None
+
+
 class ColoredGraph:
     """彩色邻接图 — 一条边可有多色 (child_id, chrom_idx)。"""
 
@@ -591,6 +618,57 @@ class ColoredGraph:
         return result
 
     # ==================== 一键执行 ====================
+
+    def collapse_wgd(self, ploidy: int):
+        """ColoredGraph-based WGD collapse: post-WGD → pre-WGD.
+
+        利用 HOG 后缀 (.hog0, .hog1, ...) 将基因分配到各亚基因组，
+        将 post-WGD 图的边按亚基因组着色，然后解决亚基因组间的冲突
+        → 得到 pre-WGD 图。
+
+        Args:
+            ploidy: 倍性 (2=四倍体, 3=六倍体, ...)
+
+        Returns:
+            ColoredGraph — pre-WGD 图（已 resolve 所有冲突）
+        """
+        # Step 1: 为每个 HOG 分配亚基因组 ID
+        hog_subgenome = {}  # hog_node -> subgenome_id (0..ploidy-1)
+        for node in self._graph.nodes:
+            if not isinstance(node, str):
+                continue
+            # HOG ID like "SOG1.N2.hog0" → subgenome 0
+            # or "SOG1.N2.hog1" → subgenome 1
+            sid = _extract_subgenome(str(node), ploidy)
+            if sid is not None:
+                hog_subgenome[node] = sid
+
+        if not hog_subgenome:
+            logger.warning("  [collapse_wgd] no subgenome info found, using original graph")
+            return self
+
+        # Step 2: 构建亚基因组着色图
+        pre_G = ColoredGraph(hog_level=self.hog_level + "_preWGD")
+
+        # 对每条边，确定亚基因组颜色
+        for h1, h2, data in self._graph.edges(data=True):
+            sg1 = hog_subgenome.get(h1)
+            sg2 = hog_subgenome.get(h2)
+            if sg1 is not None and sg2 is not None and sg1 == sg2:
+                # 同一亚基因组内的边 → 该亚基因组着色
+                pre_G.add_edge(h1, h2, f"subgenome_{sg1}", sg1)
+            elif sg1 is not None and sg2 is not None:
+                # 跨亚基因组的边 → 两个亚基因组都着色（共享边 = pre-WGD 保守）
+                pre_G.add_edge(h1, h2, f"subgenome_{sg1}", sg1)
+                pre_G.add_edge(h1, h2, f"subgenome_{sg2}", sg2)
+            else:
+                # 无亚基因组信息 → 假定 pre-WGD 保守
+                pre_G.add_edge(h1, h2, "ancestral", 0)
+
+        # Step 3: resolve 亚基因组间的冲突 → pre-WGD
+        pre_G.resolve_all_events(outgroups=None, min_hogs=3)
+
+        return pre_G
 
     def resolve_all_events(self, outgroups: Dict = None,
                            min_hogs: int = 3) -> List[TAKREvent]:

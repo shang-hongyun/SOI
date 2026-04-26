@@ -278,7 +278,7 @@ def _detect_branch_events(ancestor, mc, branch, src, min_hogs,
     ncf = _detect_ncf(ancestor, mc, branch, src)
     events.extend(ncf)
 
-    # RT/URT: use sibling edges (not consensus) for cross-connection detection
+    # RT/URT: use sibling edges with outgroup polarity
     sibling_adj_set = set()
     if all_mapped_children:
         for ci2, mc2 in enumerate(all_mapped_children):
@@ -287,7 +287,7 @@ def _detect_branch_events(ancestor, mc, branch, src, min_hogs,
             for h1, h2 in mc2.get_adjacencies(include_telomere=False):
                 key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
                 sibling_adj_set.add(key)
-    rt = _detect_rt(ancestor, sibling_adj_set, mc, child_adj_set, branch, src)
+    rt = _detect_rt(ancestor, sibling_adj_set, mc, child_adj_set, branch, src, og_adj_set)
     events.extend(rt)
 
     return events
@@ -579,20 +579,18 @@ def _detect_fission(ancestor, ancest_adj_set, mc, branch, src, og_adj_set=None):
     return events
 
 
-def _detect_rt(ancestor, ancest_adj_set, mc, child_adj_set, branch, src):
-    """Detect RT/URT via cross-connection pattern.
+def _detect_rt(ancestor, ancest_adj_set, mc, child_adj_set, branch, src, og_adj_set=None):
+    """Detect RT/URT via cross-connection pattern with outgroup polarity.
 
     RT: A-B + C-D → A-D + C-B
-    Detection: compares child adjacencies against ALL other children
-    (sibling edges = ancestral state for this branch).
 
-    Uses child_adj_set (this child) vs ancest_adj_set (edges from siblings).
+    Sibling comparison finds the cross pattern. Outgroup determines which
+    side is derived: the child whose pattern DIFFERS from the outgroup
+    is the branch where RT occurred.
     """
     from .takr_events import TAKREvent
 
     events = []
-    # ancestral = edges in other children(s) but not this one
-    # derived = edges in this child but not in others
     ancest_only = ancest_adj_set - child_adj_set
     mc_only = child_adj_set - ancest_adj_set
 
@@ -603,26 +601,35 @@ def _detect_rt(ancestor, ancest_adj_set, mc, child_adj_set, branch, src):
         for (c, d) in ancest_only:
             if a == c and b == d:
                 continue
-            # Check for cross in child
             cross1 = (a, d) if a.hog_id < d.hog_id else (d, a)
             cross2 = (c, b) if c.hog_id < b.hog_id else (b, c)
             if cross1 in mc_only and cross2 in mc_only:
-                # Determine URT: one breakpoint at telomere
+                # Cross-connection pattern found
+                # Outgroup polarity check:
+                # If outgroup has the SAME pattern as THIS child → ancestral,
+                # the SIBLING has the derived pattern → RT is NOT on this branch
+                if og_adj_set:
+                    mc_cross = {cross1, cross2}
+                    if mc_cross & og_adj_set:
+                        # This child's pattern matches outgroup = ancestral
+                        continue
+
+                # Check for URT: one breakpoint at telomere
                 mc_ends = set()
                 for chrom in mc.chromosomes:
                     genes = [n for n in chrom if n not in mc.telomeres]
                     if genes:
                         mc_ends.add(genes[0])
                         mc_ends.add(genes[-1])
-
                 has_tel = sum(1 for h in (a, b, c, d) if h in mc_ends)
                 rt_type = 'unbalanced_reciprocal_translocation' if has_tel else 'reciprocal_translocation'
-                hog_ids = ','.join(str(h.hog_id) for h in (a, b, c, d))
+
                 events.append(TAKREvent(
                     event_type=rt_type,
                     branch=branch,
                     genes_involved=[a, b, c, d],
-                    desc="%s: %s cross in %s" % (rt_type, hog_ids, src),
+                    desc="reciprocal_translocation: %s,%s,%s,%s cross in %s" % (
+                        a.hog_id, b.hog_id, c.hog_id, d.hog_id, src),
                     support=2,
                 ))
 

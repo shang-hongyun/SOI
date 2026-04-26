@@ -622,9 +622,10 @@ class ColoredGraph:
     def collapse_wgd(self, ploidy: int):
         """ColoredGraph-based WGD collapse: post-WGD → pre-WGD.
 
-        利用 HOG 后缀 (.hog0, .hog1, ...) 将基因分配到各亚基因组，
-        将 post-WGD 图的边按亚基因组着色，然后解决亚基因组间的冲突
-        → 得到 pre-WGD 图。
+        利用边颜色中的染色体来源 (child_id) 作为亚基因组标识：
+        - 跨孩子共享的边 = pre-WGD 保守邻接（保留）
+        - 单个孩子独有的边 = post-WGD 衍生（移除）
+        然后路径覆盖 → pre-WGD 图。
 
         Args:
             ploidy: 倍性 (2=四倍体, 3=六倍体, ...)
@@ -632,41 +633,58 @@ class ColoredGraph:
         Returns:
             ColoredGraph — pre-WGD 图（已 resolve 所有冲突）
         """
-        # Step 1: 为每个 HOG 分配亚基因组 ID
-        hog_subgenome = {}  # hog_node -> subgenome_id (0..ploidy-1)
-        for node in self._graph.nodes:
-            if not isinstance(node, str):
-                continue
-            # HOG ID like "SOG1.N2.hog0" → subgenome 0
-            # or "SOG1.N2.hog1" → subgenome 1
-            sid = _extract_subgenome(str(node), ploidy)
-            if sid is not None:
-                hog_subgenome[node] = sid
+        # Step 1: 统计每条边的跨孩子共享度
+        # shared_by: edge -> set of child_ids
+        shared_by = {}  # (h1, h2) -> set of child_id
+        for h1, h2, data in self._graph.edges(data=True):
+            child_set = set()
+            for child_id, chrom_idx in data['colors']:
+                child_set.add(child_id)
+            shared_by[(h1, h2)] = child_set
 
-        if not hog_subgenome:
-            logger.warning("  [collapse_wgd] no subgenome info found, using original graph")
-            return self
+        total_children = len(self.children())
+        # WGD collapse 需要严格共识：边必须在所有孩子中都出现才算是 pre-WGD 保守邻接
+        threshold = total_children
 
-        # Step 2: 构建亚基因组着色图
+        # Step 2: 构建 pre-WGD 图（仅保留跨孩子共享的边）
         pre_G = ColoredGraph(hog_level=self.hog_level + "_preWGD")
 
-        # 对每条边，确定亚基因组颜色
-        for h1, h2, data in self._graph.edges(data=True):
-            sg1 = hog_subgenome.get(h1)
-            sg2 = hog_subgenome.get(h2)
-            if sg1 is not None and sg2 is not None and sg1 == sg2:
-                # 同一亚基因组内的边 → 该亚基因组着色
-                pre_G.add_edge(h1, h2, f"subgenome_{sg1}", sg1)
-            elif sg1 is not None and sg2 is not None:
-                # 跨亚基因组的边 → 两个亚基因组都着色（共享边 = pre-WGD 保守）
-                pre_G.add_edge(h1, h2, f"subgenome_{sg1}", sg1)
-                pre_G.add_edge(h1, h2, f"subgenome_{sg2}", sg2)
-            else:
-                # 无亚基因组信息 → 假定 pre-WGD 保守
-                pre_G.add_edge(h1, h2, "ancestral", 0)
+        # 先添加所有节点
+        for n in self._graph.nodes:
+            pre_G._graph.add_node(n)
 
-        # Step 3: resolve 亚基因组间的冲突 → pre-WGD
-        pre_G.resolve_all_events(outgroups=None, min_hogs=3)
+        # 共享边 = 出现在 >= threshold 个孩子中的边 → pre-WGD 保守邻接
+        kept = 0
+        removed = 0
+        for (h1, h2), child_set in shared_by.items():
+            if h1 not in pre_G._graph or h2 not in pre_G._graph:
+                continue
+            if len(child_set) >= threshold:
+                # 共享边 → 保留（用所有孩子着色）
+                for cid in child_set:
+                    pre_G.add_edge(h1, h2, cid, 0)
+                kept += 1
+            else:
+                # 独有边 → 记录为 post-WGD 事件
+                removed += 1
+                event_type = 'post_wgd_rearrangement'
+                if len(pre_G.events) < 100:
+                    pre_G.events.append(TAKREvent(
+                        event_type=event_type,
+                        branch=self.hog_level + "_preWGD-" + self.hog_level,
+                        genes_involved=[h1, h2],
+                        desc=f"{event_type}: unique to {child_set}",
+                        support=1,
+                    ))
+
+        logger.debug("  [collapse_wgd] %s: %d shared kept, %d unique removed (threshold=%d/%d)",
+                      self.hog_level, kept, removed, threshold, total_children)
+
+        # Step 3: 路径覆盖 → 还原染色体
+        # 如果 pre_G 为空图，回退到原图
+        if pre_G.edge_count() == 0:
+            logger.warning("  [collapse_wgd] no shared edges, using original graph")
+            return self
 
         return pre_G
 

@@ -731,6 +731,14 @@ print(f'Event type consistency OK ({len(EVENT_TYPES)} types)')
 
 ---
 
-**文档版本**: v3.0
+## 5. Changelog
+
+| 日期 | 版本 | 变更 |
+|------|------|------|
+| 2026-04-26 | v1.1 | **Outgroup voting for all event types**: `resolve_structural_events()` and `resolve_bridge_events()` now use outgroup adjacency at parent HOG level for polarity. Bridge: outgroup-has-adjacency→fission, else→EEJ/NCF, no-outgroup→bridge_unclassified. Structural: per-edge outgroup count replaces min-count heuristic. `_remove_rare_color_edge()` extracted. `takr_event_driven.py`: `outgroup_leaves_map` precomputation, maps sibling leaves to parent HOG level. |
+
+---
+
+**文档版本**: v1.1
 **更新日期**: 2026-04-26
-**下次更新**: 迭代 10.0 完成后
+**下次更新**: 迭代 10.3 完成后

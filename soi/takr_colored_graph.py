@@ -775,6 +775,632 @@ class ColoredGraph:
 
         return G2
 
+    # ==================== 共线性块压缩 ====================
+
+    def _build_synteny_blocks(self, min_block_size: int = 2):
+        """构建共线性块：最大连续共享边路径。
+
+        块 = 一段 HOG 序列，其中每对相邻 HOG 之间都有共享边（≥2 孩子共有）。
+        块间边界 = 唯一边或断裂点。
+
+        self._blocks: {block_id: [hog1, hog2, ...]} — 块内 HOG 顺序
+        self._hog_to_block: {hog: block_id} — HOG 到块的映射
+        self._block_adj: {bid: set(bid_j)} — 块间邻接关系（用于构建块级图）
+        """
+        # 共享边图
+        shared_G = nx.Graph()
+        for h1, h2, data in self._graph.edges(data=True):
+            if len(data['colors']) >= 2:
+                shared_G.add_edge(h1, h2)
+
+        blocks = {}
+        hog_to_block = {}
+        assigned = set()
+
+        # 对共享边图的每个连通分量找线性路径
+        for comp in nx.connected_components(shared_G):
+            sub = shared_G.subgraph(comp)
+            deg = dict(sub.degree())
+
+            # 找断面（度 ≠ 2 的节点）作为路径起点
+            breakpoints = {n for n, d in deg.items() if d != 2}
+            if not breakpoints:
+                # 环状分量：任选一个节点打断
+                breakpoints = {list(comp)[0]}
+
+            # 从每个断面出发，沿度=2的节点行走
+            for bp in list(breakpoints):
+                if bp in assigned:
+                    continue
+                # 向两个方向行走
+                for start in (bp,):
+                    if start in assigned:
+                        continue
+                    path = [start]
+                    assigned.add(start)
+                    # 向前走到下一个断面或末端
+                    curr = start
+                    prev = None
+                    while True:
+                        deg2_neighbors = [
+                            n for n in sub.neighbors(curr)
+                            if n != prev and n not in assigned
+                            and deg.get(n, 0) == 2
+                        ]
+                        if not deg2_neighbors:
+                            break
+                        nxt = deg2_neighbors[0]
+                        assigned.add(nxt)
+                        path.append(nxt)
+                        prev, curr = curr, nxt
+
+                    if len(path) >= min_block_size:
+                        bid = "blk_{}".format(len(blocks))
+                        blocks[bid] = path
+                        for h in path:
+                            hog_to_block[h] = bid
+                    elif len(path) > 0:
+                        # 小块（1个HOG）也记录为块
+                        bid = "blk_{}".format(len(blocks))
+                        blocks[bid] = path
+                        for h in path:
+                            hog_to_block[h] = bid
+
+        # 不在共享图中的 HOG → 单例块
+        for h in self.all_hogs():
+            if h not in hog_to_block:
+                bid = "blk_{}".format(len(blocks))
+                blocks[bid] = [h]
+                hog_to_block[h] = bid
+
+        self._blocks = blocks
+        self._hog_to_block = hog_to_block
+
+        n_blk = len(blocks)
+        n_multi = sum(1 for p in blocks.values() if len(p) >= 2)
+        n_single = sum(1 for p in blocks.values() if len(p) == 1)
+        logger.debug("  [blocks] %d blocks (%d multi-HOG, %d singleton)",
+                     n_blk, n_multi, n_single)
+        return blocks
+
+    def _compress_to_block_level(self):
+        """将 HOG 级图压缩为块级图。
+
+        block_graph: nx.Graph
+          - 节点 = block_id
+          - 边 = 块间邻接，colors = 所有跨块 HOG 边颜色的并集
+
+        block_order: {block_id: [block_id, ...]}
+          块之间的顺序关系（每个孩子中相邻块的关系）
+        """
+        if not hasattr(self, '_blocks') or not self._blocks:
+            self._build_synteny_blocks()
+
+        block_G = nx.Graph()
+        for bid in self._blocks:
+            block_G.add_node(bid)
+
+        # 块间边：聚合所有跨块 HOG 边
+        for h1, h2, data in self._graph.edges(data=True):
+            b1 = self._hog_to_block.get(h1)
+            b2 = self._hog_to_block.get(h2)
+            if b1 and b2 and b1 != b2:
+                if block_G.has_edge(b1, b2):
+                    block_G[b1][b2]['colors'].update(data['colors'])
+                else:
+                    block_G.add_edge(b1, b2, colors=set(data['colors']))
+
+        self._block_graph = block_G
+
+        # 清理无颜色的块间边
+        empty_edges = [(b1, b2) for b1, b2, data in block_G.edges(data=True)
+                       if not data.get('colors', set())]
+        for b1, b2 in empty_edges:
+            block_G.remove_edge(b1, b2)
+        if empty_edges:
+            logger.debug("  [blocks] removed %d empty-colored block edges",
+                         len(empty_edges))
+
+        # 块间顺序：对每个孩子，统计相邻块
+        child_block_order = defaultdict(list)
+        for cid in self.children():
+            seen_blocks = set()
+            chrom_path = []
+            # 收集该孩子所有 HOG → 块 + 顺序
+            child_hogs = sorted(self._child_hogs.get(cid, []),
+                                key=lambda h: str(h.hog_id if hasattr(h, 'hog_id') else h))
+            # 用边顺序重建块序列
+            for h1, h2, data in self._graph.edges(data=True):
+                if any(c == cid for c, _ in data['colors']):
+                    b1 = self._hog_to_block.get(h1)
+                    b2 = self._hog_to_block.get(h2)
+                    if b1 and b2 and b1 != b2:
+                        order = (b1, b2)
+                        if order not in child_block_order[cid]:
+                            child_block_order[cid].append(order)
+
+        self._child_block_order = dict(child_block_order)
+
+        logger.debug("  [blocks] block graph: %d nodes, %d edges",
+                     block_G.number_of_nodes(), block_G.number_of_edges())
+        return block_G
+
+    def _find_block_cycles(self) -> List[List]:
+        """在块级图上找环。"""
+        if not hasattr(self, '_block_graph'):
+            return []
+        try:
+            return nx.cycle_basis(self._block_graph)
+        except Exception:
+            return []
+
+    def _classify_block_cycle(self, cycle: List) -> Tuple[Optional[str], List, Dict]:
+        """分析块级环的颜色模式，判断事件类型。
+
+        块级环 vs HOG 级环：
+        - 环节点 = 块（block_id），而不是 HOG
+        - 无需考虑块内 HOG 的顺序差异
+        - 块间边的颜色 = 两个孩子对该块间邻接的贡献
+
+        Returns:
+            (event_type, conflict_block_edges, info)
+        """
+        n = len(cycle)
+        if n < 3:
+            return None, [], {}
+
+        bg = self._block_graph
+
+        # 构建环的边序列
+        edges = [(cycle[i], cycle[(i + 1) % n]) for i in range(n)]
+        edge_colors = []
+        for b1, b2 in edges:
+            if bg.has_edge(b1, b2):
+                edge_colors.append(set(bg[b1][b2].get('colors', set())))
+            else:
+                edge_colors.append(set())
+
+        info = {
+            'cycle': cycle,
+            'edges': edges,
+            'edge_colors': edge_colors,
+            'n_unique': sum(1 for c in edge_colors if len(c) == 1),
+            'n_shared': sum(1 for c in edge_colors if len(c) > 1),
+        }
+
+        # 统计每种颜色的出现次数
+        color_counts = Counter()
+        for colors in edge_colors:
+            for c in colors:
+                color_counts[c] += 1
+        info['color_counts'] = dict(color_counts)
+
+        if not color_counts:
+            return None, [], info
+
+        # 检查是否交替模式：edges[i] 和 edges[i+2] 应颜色相同
+        if n >= 4:
+            alternating = all(
+                edge_colors[i] == edge_colors[(i + 2) % n]
+                for i in range(n)
+            )
+
+            if alternating:
+                # 交替块边 → inversion 或 RT/URT
+                col_set = set()
+                for colors in edge_colors:
+                    col_set.update(colors)
+
+                if len(col_set) >= 3:
+                    # 3+ 种颜色 → 跨染色体 → RT/URT
+                    min_count = min(color_counts.values())
+                    rare_colors = {c for c, cnt in color_counts.items()
+                                   if cnt == min_count}
+                    conflict_edges = [(b1, b2) for (b1, b2), colors in zip(edges, edge_colors)
+                                      if rare_colors & colors]
+                    info['conflict_colors'] = rare_colors
+                    etype = 'reciprocal_translocation'
+                    return etype, conflict_edges, info
+                else:
+                    # 2 种颜色 → 染色体内块反转 → inversion
+                    min_count = min(color_counts.values())
+                    rare_colors = {c for c, cnt in color_counts.items()
+                                   if cnt == min_count}
+                    if len(rare_colors) > 1 and all(
+                            cnt == min_count for cnt in color_counts.values()):
+                        rare_colors = {next(iter(color_counts.keys()))}
+                    conflict_edges = [(b1, b2) for (b1, b2), colors in zip(edges, edge_colors)
+                                      if rare_colors & colors]
+                    info['conflict_colors'] = rare_colors
+                    etype = 'inversion'
+                    return etype, conflict_edges, info
+
+        # 3-cycle 在块级可能是 inversion：两条不同孩子颜色的唯一边 + 一条共享边
+        if n == 3:
+            # 检查：两条唯一边（颜色不同） + 一条共享边
+            unique_group = []
+            shared_group = []
+            for (b1, b2), colors in zip(edges, edge_colors):
+                if len(colors) == 1:
+                    unique_group.append((b1, b2, next(iter(colors))[0]))
+                else:
+                    shared_group.append(colors)
+
+            if len(unique_group) == 2 and len(shared_group) == 1:
+                # 两条唯一边来自不同孩子 → 块反转
+                c1, c2 = unique_group[0][2], unique_group[1][2]
+                if c1 != c2:
+                    # 3-cycle 中至少 2 个块是多 HOG 块才算 inversion
+                    block_sizes = [len(self._blocks.get(bid, [])) for bid in cycle]
+                    n_multi = sum(1 for s in block_sizes if s >= 2)
+                    if n_multi < 2:
+                        # 多为单例块 → 可能为 indel 边界混淆
+                        info['pattern'] = 'block_3cycle_inversion_filtered'
+                        return None, [], info
+                    # 两条唯一边各来自一个孩子 → 2 色交替 = inversion
+                    info['pattern'] = 'block_3cycle_inversion'
+                    # 根据唯一边确定冲突方：谁是衍生方由外类群判定
+                    # 冲突边 = 两条唯一边
+                    conflict_edges = [(b1, b2) for b1, b2, _ in unique_group]
+                    conflict_colors = {unique_group[0][2]: None, unique_group[1][2]: None}
+                    info['conflict_colors'] = conflict_colors
+                    etype = 'inversion'
+                    return etype, conflict_edges, info
+                elif len(unique_group[0]) == 1 and len(unique_group[1]) == 1:
+                    # 两条唯一边来自同一个孩子 → 可能是其他事件
+                    pass
+            elif len(unique_group) == 3:
+                # 三条唯一边 → indel 或错误
+                etype = 'gene_indel'
+                conflict_edges = [(b1, b2) for b1, b2, _ in unique_group]
+                info['pattern'] = 'block_3cycle_all_unique'
+                return etype, conflict_edges, info
+
+        # 无法分类的块级环
+        min_count = min(color_counts.values())
+        rare_colors = {c for c, cnt in color_counts.items() if cnt == min_count}
+        conflict_edges = [(b1, b2) for (b1, b2), colors in zip(edges, edge_colors)
+                          if rare_colors & colors]
+        info['fallback'] = True
+        info['fallback_reason'] = 'unclassified_block_cycle'
+        return 'unclassified', conflict_edges, info
+
+    def _resolve_block_structural_events(self, outgroup_adjacency: Set = None):
+        """在块级图上检测结构重排事件。
+
+        对每个块级环：
+        1. classify_cycle → 判断事件类型
+        2. outgroup voting → 确定衍生方
+        3. 移除衍生方的块间边
+        4. 记录事件
+
+        Returns: 检测到的事件数
+        """
+        if not hasattr(self, '_block_graph'):
+            self._compress_to_block_level()
+
+        iteration = 0
+        max_iterations = 100
+        events_found = 0
+
+        while iteration < max_iterations:
+            iteration += 1
+            cycles = self._find_block_cycles()
+            if not cycles:
+                break
+
+            # Step 1: 对所有环分类
+            classified = []
+            for cycle in cycles:
+                etype, conflict_edges, info = self._classify_block_cycle(cycle)
+                if etype is not None and conflict_edges:
+                    classified.append((etype, conflict_edges, info, cycle))
+
+            if not classified:
+                break
+
+            resolved = 0
+
+            # Step 2: 合并相邻 inversion 3-cycle（同一 inversion 的 N-1 个环）
+            inv_cycles = [(ce, info, cyc) for et, ce, info, cyc in classified
+                          if et == 'inversion']
+            other_cycles = [(et, ce, cyc) for et, ce, info, cyc in classified
+                            if et != 'inversion']
+
+            # 合并 inversion: 重叠块的环合并为一个事件
+            merged_inv_groups = []
+            used_inv = set()
+            for i, (ce_i, info_i, cyc_i) in enumerate(inv_cycles):
+                if i in used_inv:
+                    continue
+                group = [i]
+                blocks_set = set(cyc_i)
+                # 找到所有与当前环共享块的相邻环
+                changed = True
+                while changed:
+                    changed = False
+                    for j, (ce_j, info_j, cyc_j) in enumerate(inv_cycles):
+                        if j in used_inv or j in group:
+                            continue
+                        if blocks_set & set(cyc_j):
+                            group.append(j)
+                            blocks_set.update(cyc_j)
+                            changed = True
+                used_inv.update(group)
+                # 收集组内所有冲突边 + 块
+                all_conflict = []
+                all_blocks = set()
+                for g in group:
+                    all_conflict.extend(inv_cycles[g][0])
+                    all_blocks.update(inv_cycles[g][2])
+                merged_inv_groups.append((all_conflict, all_blocks))
+
+            # Step 3: 处理合并后的 inversion 组 + 其他事件
+            for conflict_edges, blocks_set in merged_inv_groups:
+                # 去重冲突边
+                conflict_edges = list(set(conflict_edges))
+                # 外类群投票：合并组只有一个极性
+                child_derived = defaultdict(int)
+                for (b1, b2) in conflict_edges:
+                    colors = self._block_graph[b1][b2].get('colors', set())
+                    if outgroup_adjacency is not None:
+                        hogs1 = self._blocks.get(b1, [])
+                        hogs2 = self._blocks.get(b2, [])
+                        any_ancestral = False
+                        for h1 in hogs1:
+                            for h2 in hogs2:
+                                if self._graph.has_edge(h1, h2):
+                                    u_p = getattr(h1, 'parent',
+                                                  h1.hog_id if hasattr(h1, 'hog_id') else str(h1))
+                                    v_p = getattr(h2, 'parent',
+                                                  h2.hog_id if hasattr(h2, 'hog_id') else str(h2))
+                                    key = (u_p, v_p) if u_p < v_p else (v_p, u_p)
+                                    if key in outgroup_adjacency:
+                                        any_ancestral = True
+                                        break
+                        for cid, _ in colors:
+                            if any_ancestral:
+                                pass  # 祖先方不计数
+                            else:
+                                child_derived[cid] += 1
+                    else:
+                        for c in colors:
+                            child_derived[c[0]] -= 1  # 无外类群回退
+
+                if child_derived:
+                    derived_cid = max(child_derived, key=child_derived.get)
+                else:
+                    # 回退：边上的颜色出现次数较少的
+                    cc = Counter()
+                    for (b1, b2) in conflict_edges:
+                        for c in self._block_graph[b1][b2].get('colors', set()):
+                            cc[c] += 1
+                    derived_cid = min(cc, key=cc.get)[0] if cc else None
+
+                if derived_cid is None:
+                    continue
+
+                # 移除衍生方在冲突边上的颜色
+                for (b1, b2) in conflict_edges:
+                    colors = self._block_graph[b1][b2].get('colors', set())
+                    remaining = set()
+                    for cid, chrom in colors:
+                        if cid != derived_cid:
+                            remaining.add((cid, chrom))
+                    if remaining:
+                        self._block_graph[b1][b2]['colors'] = remaining
+                    else:
+                        self._block_graph.remove_edge(b1, b2)
+
+                # 记录合并后的 inversion 事件
+                involved_hogs = []
+                for bid in blocks_set:
+                    involved_hogs.extend(self._blocks.get(bid, []))
+                involved_hogs = list(set(involved_hogs))
+
+                event = TAKREvent(
+                    event_type='inversion',
+                    branch=self.hog_level,
+                    genes_involved=involved_hogs,
+                    desc="inversion (block-level): {} blocks, {} HOGs".format(
+                        len(blocks_set), len(involved_hogs)),
+                    support=1,
+                )
+                self.events.append(event)
+                resolved += 1
+                events_found += 1
+
+                # 同步移除 HOG 级图中衍生方的边
+                for (b1, b2) in conflict_edges:
+                    for h1 in self._blocks.get(b1, []):
+                        for h2 in self._blocks.get(b2, []):
+                            if self._graph.has_edge(h1, h2):
+                                colors = self.get_colors(h1, h2)
+                                for cid, chrom in list(colors):
+                                    if cid == derived_cid:
+                                        self.remove_edge_color(h1, h2, (cid, chrom))
+
+            # 处理非 inversion 事件（逐环处理）
+            for etype, conflict_edges, cycle in other_cycles:
+                conflict_edges = list(set(conflict_edges))
+                # 检查冲突边是否还在块级图中
+                valid_edges = [(b1, b2) for b1, b2 in conflict_edges
+                               if self._block_graph.has_edge(b1, b2)]
+                if not valid_edges:
+                    continue
+                # 外类群投票
+                child_derived2 = defaultdict(int)
+                for (b1, b2) in valid_edges:
+                    colors = self._block_graph[b1][b2].get('colors', set())
+                    if outgroup_adjacency is not None:
+                        hogs1 = self._blocks.get(b1, [])
+                        hogs2 = self._blocks.get(b2, [])
+                        any_ancestral = False
+                        for h1 in hogs1:
+                            for h2 in hogs2:
+                                if self._graph.has_edge(h1, h2):
+                                    u_p = getattr(h1, 'parent',
+                                                  h1.hog_id if hasattr(h1, 'hog_id') else str(h1))
+                                    v_p = getattr(h2, 'parent',
+                                                  h2.hog_id if hasattr(h2, 'hog_id') else str(h2))
+                                    key = (u_p, v_p) if u_p < v_p else (v_p, u_p)
+                                    if key in outgroup_adjacency:
+                                        any_ancestral = True
+                                        break
+                        for cid, _ in colors:
+                            if not any_ancestral:
+                                child_derived2[cid] += 1
+                if child_derived2:
+                    derived_cid2 = max(child_derived2, key=child_derived2.get)
+                else:
+                    cc2 = Counter()
+                    for (b1, b2) in valid_edges:
+                        for c in self._block_graph[b1][b2].get('colors', set()):
+                            cc2[c] += 1
+                    derived_cid2 = min(cc2, key=cc2.get)[0] if cc2 else None
+
+                if derived_cid2 is None:
+                    continue
+
+                # 移除衍生方的边
+                for (b1, b2) in valid_edges:
+                    colors = self._block_graph[b1][b2].get('colors', set())
+                    remaining = set()
+                    for cid, chrom in colors:
+                        if cid != derived_cid2:
+                            remaining.add((cid, chrom))
+                    if remaining:
+                        self._block_graph[b1][b2]['colors'] = remaining
+                    else:
+                        self._block_graph.remove_edge(b1, b2)
+
+                # 记录事件
+                involved_hogs2 = []
+                for bid in cycle:
+                    involved_hogs2.extend(self._blocks.get(bid, []))
+                involved_hogs2 = list(set(involved_hogs2))
+
+                event = TAKREvent(
+                    event_type=etype,
+                    branch=self.hog_level,
+                    genes_involved=involved_hogs2,
+                    desc="{} (block-level): {} blocks, {} HOGs".format(
+                        etype, len(cycle), len(involved_hogs2)),
+                    support=1,
+                )
+                self.events.append(event)
+                resolved += 1
+                events_found += 1
+
+                # 同步移除 HOG 级边
+                for (b1, b2) in valid_edges:
+                    for h1 in self._blocks.get(b1, []):
+                        for h2 in self._blocks.get(b2, []):
+                            if self._graph.has_edge(h1, h2):
+                                colors = self.get_colors(h1, h2)
+                                for cid, chrom in list(colors):
+                                    if cid == derived_cid2:
+                                        self.remove_edge_color(h1, h2, (cid, chrom))
+
+            if resolved == 0:
+                break
+
+        return events_found
+
+    def _resolve_block_bridge_events(self, outgroup_adjacency: Set = None):
+        """在块级图上检测桥接事件。
+
+        块级桥接：块级唯一边连接两个块级共享分量。
+        """
+        if not hasattr(self, '_block_graph'):
+            self._compress_to_block_level()
+
+        bg = self._block_graph
+
+        # 块级共享边图
+        shared_bg = nx.Graph()
+        for b1, b2, data in bg.edges(data=True):
+            if len(data.get('colors', set())) > 1:
+                shared_bg.add_edge(b1, b2)
+
+        if shared_bg.number_of_edges() == 0:
+            return 0
+
+        components = list(nx.connected_components(shared_bg))
+        block_to_comp = {}
+        for ci, comp in enumerate(components):
+            for b in comp:
+                block_to_comp[b] = ci
+
+        events_found = 0
+        for b1, b2, data in list(bg.edges(data=True)):
+            colors = data.get('colors', set())
+            if len(colors) != 1:
+                continue
+            c1 = block_to_comp.get(b1)
+            c2 = block_to_comp.get(b2)
+            if c1 is not None and c2 is not None and c1 != c2:
+                # 块级桥接
+                color = next(iter(colors))
+                child_id = color[0]
+
+                if outgroup_adjacency is not None:
+                    # 检查跨块 HOG 对的 parent 级邻接
+                    hogs1 = self._blocks.get(b1, [])
+                    hogs2 = self._blocks.get(b2, [])
+                    any_ancestral = False
+                    for h1 in hogs1:
+                        for h2 in hogs2:
+                            if self._graph.has_edge(h1, h2):
+                                u_p = getattr(h1, 'parent',
+                                              h1.hog_id if hasattr(h1, 'hog_id') else str(h1))
+                                v_p = getattr(h2, 'parent',
+                                              h2.hog_id if hasattr(h2, 'hog_id') else str(h2))
+                                key = (u_p, v_p) if u_p < v_p else (v_p, u_p)
+                                if key in outgroup_adjacency:
+                                    any_ancestral = True
+                                    break
+
+                    if any_ancestral:
+                        etype = 'fission'
+                        suffix = f" (outgroup confirms {child_id} preserved)"
+                    else:
+                        # 检查 NCF 条件
+                        c_size = [len(components[c1]), len(components[c2])]
+                        if min(c_size) < 5:
+                            etype = 'ncf'
+                        else:
+                            etype = 'eej'
+                        suffix = f" (outgroup: derived in {child_id})"
+                else:
+                    etype = 'bridge_unclassified'
+                    suffix = " (no outgroup, root node)"
+
+                # 展开 HOG
+                involved_hogs = list(self._blocks.get(b1, [])) + list(self._blocks.get(b2, []))
+                involved_hogs = list(set(involved_hogs))
+
+                self.events.append(TAKREvent(
+                    event_type=etype,
+                    branch=self.hog_level,
+                    genes_involved=involved_hogs,
+                    desc="{} block-bridge: {} + {}{}".format(
+                        etype, b1, b2, suffix),
+                    support=1,
+                ))
+
+                # 移除 HOG 级图中对应边
+                for h1 in self._blocks.get(b1, []):
+                    for h2 in self._blocks.get(b2, []):
+                        if self._graph.has_edge(h1, h2):
+                            self.remove_edge_color(h1, h2, color)
+
+                # 移除块级图中的边
+                bg.remove_edge(b1, b2)
+                events_found += 1
+
+        return events_found
+
     # ==================== 桥接冲突检测 (EEJ/NCF) ====================
 
     def resolve_bridge_events(self, outgroup_adjacency: Set = None):
@@ -875,30 +1501,53 @@ class ColoredGraph:
         """按优先级解决所有冲突。
 
         Pipeline:
-        1. indel/loss resolve
-        2. 结构重排 (循环: find_cycles → classify_cycle → 移除冲突边)
-        3. 路径覆盖
+        1. 共线性块压缩 (synteny blocks from shared edges)
+        2. 块级结构重排 (block-graph cycle detection + classification)
+        3. 块级桥接检测 (block-level bridge = EEJ/NCF/fission)
+        4. HOG 级剩余结构重排 (remaining cycles after block resolution)
+        5. HOG 级桥接检测 (remaining bridge edges)
+        6. HOG 级 indel/loss (gene-level spanning edges)
+        7. 路径覆盖 (telomere walk)
 
         Returns: 所有检测到的事件
         """
         logger.info("  [colored] resolve_all_events for %s: %d nodes, %d edges",
                      self.hog_level, self.node_count(), self.edge_count())
 
-        # Step 1: 结构重排 (环检测 + 分类) — 先处理, 需要完整的图
+        # ====== Phase 1: 共线性块压缩 ======
+        self._build_synteny_blocks()
+        self._compress_to_block_level()
+        logger.info("  [colored] blocks: %d (%.1f HOG/block avg)",
+                     len(self._blocks),
+                     self.node_count() / max(len(self._blocks), 1))
+
+        # ====== Phase 2: 块级结构重排 ======
+        n_block_struct = self._resolve_block_structural_events(
+            outgroup_adjacency=outgroup_adjacency)
+        if n_block_struct:
+            logger.info("  [colored] block-structural: %d events", n_block_struct)
+
+        # ====== Phase 3: 块级桥接 ======
+        n_block_bridge = self._resolve_block_bridge_events(
+            outgroup_adjacency=outgroup_adjacency)
+        if n_block_bridge:
+            logger.info("  [colored] block-bridge: %d events", n_block_bridge)
+
+        # ====== Phase 4: HOG 级结构重排（残差） ======
         self.resolve_structural_events(outgroup_adjacency=outgroup_adjacency)
-        logger.info("  [colored] after structural: %d nodes, %d edges, %d events",
+        logger.info("  [colored] after hog-structural: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 
-        # Step 2: 桥接冲突 (unique edge 跨共享连通分量 = EEJ/NCF/fission)
+        # ====== Phase 5: HOG 级桥接（残差） ======
         n_before_bridge = len(self.events)
         self.resolve_bridge_events(outgroup_adjacency=outgroup_adjacency)
         n_bridges = len(self.events) - n_before_bridge
         if n_bridges:
-            logger.info("  [colored] bridges: %d events", n_bridges)
+            logger.info("  [colored] hog-bridge: %d events", n_bridges)
 
-        # Step 3: indel/loss (基因级差异)
+        # ====== Phase 6: indel/loss (基因级差异) ======
         self.resolve_indels(outgroups)
-        logger.info("  [colored] after structural: %d nodes, %d edges, %d events",
+        logger.info("  [colored] after indels: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 
         # 过滤小事件 (min_hogs) — 跳过桥接事件（EEJ/NCF/fission 都是小事件）

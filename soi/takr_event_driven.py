@@ -45,6 +45,8 @@ def reconstruct_event_driven(akr, min_hogs=3):
     logger.info("=== Event-driven reconstruction (v4) ===")
     t0 = time.time()
 
+    og_graphs_cache = {}
+
     for node in akr.tree.traverse(strategy="postorder"):
         if node.is_leaf():
             continue

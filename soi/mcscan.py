@@ -2072,18 +2072,19 @@ class ColinearGroups:
 		G = nx.Graph()
 		d_ks = {}
 		sp_pairs = set([])
-		for rc in XCollinearity(self.collinearity, kaks=self.kaks):
-			if rc.N < self.min_size:  # min length
-				continue
-			if set(rc.species) - set(self.sp_dict):  # both be in sp_dict
-				continue
-			if self.noparalog and len(set(rc.species)) == 1:  # discard paralog
-				continue
-			sp_pairs.add(rc.species)
-			for pair, ks in zip(rc.pairs, rc.ks):
-				G.add_edge(*pair)
-				key = tuple(sorted(pair))
-				d_ks[key] = ks
+		if self.collinearity is not None:
+			for rc in XCollinearity(self.collinearity, kaks=self.kaks):
+				if rc.N < self.min_size:  # min length
+					continue
+				if set(rc.species) - set(self.sp_dict):  # both be in sp_dict
+					continue
+				if self.noparalog and len(set(rc.species)) == 1:  # discard paralog
+					continue
+				sp_pairs.add(rc.species)
+				for pair, ks in zip(rc.pairs, rc.ks):
+					G.add_edge(*pair)
+					key = tuple(sorted(pair))
+					d_ks[key] = ks
 		# print sp_pairs
 		self.d_ks = d_ks
 		if self.orthologs is not None:  # Orthologs without synteny information

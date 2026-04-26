@@ -392,14 +392,25 @@ class ColoredGraph:
 
                 # 找到冲突边的颜色 (来自最少出现的 child)
                 # 对于 inversion/RT: 移除单色边
-                # 对于未分类: 移除 rare color 的边
                 for h1, h2 in conflict_edges:
                     colors = self.get_colors(h1, h2)
                     if len(colors) == 1:
                         self.remove_edge_color(h1, h2, next(iter(colors)))
                     else:
-                        # shared edge → 保留它
-                        pass
+                        # 共享边 → 移除最少出现的 child 的颜色
+                        # 统计各 child 在环中的出现次数
+                        child_count = {}
+                        for i_c in range(len(cycle)):
+                            u, v = cycle[i_c], cycle[(i_c + 1) % len(cycle)]
+                            for cid, chrom in self.get_colors(u, v):
+                                child_count[(cid, chrom)] = child_count.get((cid, chrom), 0) + 1
+                        # 找到出现最少的颜色
+                        min_child = min(child_count, key=child_count.get)
+                        if min_child in colors:
+                            self.remove_edge_color(h1, h2, min_child)
+                        else:
+                            # 该边没有该 child 的颜色 → 移除任何一个
+                            self.remove_edge_color(h1, h2, next(iter(colors)))
 
                 # 记录事件
                 event = TAKREvent(
@@ -418,7 +429,25 @@ class ColoredGraph:
                 break
 
         if iteration >= max_iterations:
-            logger.warning("  [structural] max iterations reached (%d)", max_iterations)
+            logger.warning("  [structural] max iterations reached (%d), force-breaking cycles",
+                           max_iterations)
+            # 强制打破剩余环：对每个环移除最少 child 的所有边
+            cycles = self.find_cycles()
+            for cycle in cycles:
+                etype, conflict_edges, info = self.classify_cycle(cycle)
+                for h1, h2 in conflict_edges:
+                    colors = self.get_colors(h1, h2)
+                    if len(colors) == 1:
+                        self.remove_edge_color(h1, h2, next(iter(colors)))
+                    elif colors:
+                        self.remove_edge_color(h1, h2, next(iter(colors)))
+                self.events.append(TAKREvent(
+                    event_type='unclassified',
+                    branch=self.hog_level,
+                    genes_involved=list(cycle),
+                    desc=f"force-break: {len(cycle)} HOGs",
+                    support=1,
+                ))
 
     # ==================== 路径覆盖 ====================
 

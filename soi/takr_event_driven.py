@@ -82,13 +82,26 @@ def reconstruct_event_driven(akr, min_hogs=3):
         # Build consensus ancestor
         ancestor = _build_consensus_ancestor(node_id, mapped_children, child_source_ids)
 
+        # Build outgroup adjacency set for polarity voting
+        og_adj_set = set()
+        og_weighted = set()
+        if node_id in og_graphs_cache:
+            total_og_weight = sum(w for _, w in og_graphs_cache[node_id])
+            og_threshold = total_og_weight / 3.0 if total_og_weight > 0 else 0
+            for og_graph, weight in og_graphs_cache[node_id]:
+                for h1, h2 in og_graph.get_adjacencies(include_telomere=False):
+                    key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+                    og_adj_set.add(key)
+                    if weight >= og_threshold:
+                        og_weighted.add(key)
+
         # Detect events on each child's branch
         all_events = []
         for ci, (mc, src) in enumerate(zip(mapped_children, child_source_ids)):
             branch = "%s-%s" % (node_id, src)
             events = _detect_branch_events(
                 ancestor, mc, branch, src, min_hogs,
-                mapped_children, child_source_ids)
+                mapped_children, child_source_ids, og_adj_set)
             all_events.extend(events)
 
         ancestor.events = all_events
@@ -162,7 +175,8 @@ def _build_consensus_ancestor(node_id, mapped_children, child_source_ids):
 # =========================================================================
 
 def _detect_branch_events(ancestor, mc, branch, src, min_hogs,
-                          all_mapped_children=None, all_child_ids=None):
+                          all_mapped_children=None, all_child_ids=None,
+                          og_adj_set=None):
     """Detect all events on one child branch: ancestor vs child (mc).
 
     Events detected:
@@ -252,12 +266,12 @@ def _detect_branch_events(ancestor, mc, branch, src, min_hogs,
         ancestor, ancest_adj_set, mc, child_adj_set, branch, src)
     events.extend(ut_events)
 
-    # EEJ: telomeres adjacent in ancestor but NOT in child
-    eej = _detect_eej(ancestor, mc, branch, src)
+    # EEJ
+    eej = _detect_eej(ancestor, mc, branch, src, og_adj_set)
     events.extend(eej)
 
     # Fission: internal adjacency in ancestor → chromosome endpoints in child
-    fission = _detect_fission(ancestor, ancest_adj_set, mc, branch, src)
+    fission = _detect_fission(ancestor, ancest_adj_set, mc, branch, src, og_adj_set)
     events.extend(fission)
 
     # NCF
@@ -466,43 +480,45 @@ def _detect_unidir_trans(ancestor, ancest_adj_set, mc, child_adj_set,
     return events
 
 
-def _detect_eej(ancestor, mc, branch, src):
-    """Detect EEJ via connected-component comparison.
+def _detect_eej(ancestor, mc, branch, src, og_adj_set=None):
+    """Detect EEJ with outgroup polarity voting.
 
-    Key insight: EEJ fuses two chromosomes. If two HOGs are on DIFFERENT
-    chromosomes in the consensus (separate connected components), but
-    ADJACENT in the child, then the two chromosomes were fused in the
-    child's lineage = EEJ on this branch.
+    EEJ = two separate chromosomes in the ancestor fused in the child.
 
-    This avoids dependency on telomere markers entirely — uses graph
-    connectivity instead.
+    Detection: For each child adjacency (h1, h2), check if h1 and h2 are
+    on DIFFERENT chromosomes in the consensus (separate connected components).
+
+    Polarity (outgroup): If outgroup also has h1,h2 separate → this child's
+    fusion is derived (true EEJ on this branch). If outgroup also has them
+    fused → ancestral state is fused, this branch maintained it.
     """
     from .takr_events import TAKREvent
 
     events = []
 
-    # Build consensus connected components from adjacency graph
-    # Two HOGs are in the same component if connected by shared adjacencies
+    # Build consensus connected components
     consensus_graph = nx.Graph()
     for h1, h2 in ancestor.get_adjacencies(include_telomere=False):
         key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
         consensus_graph.add_edge(h1, h2)
 
-    # Map each HOG to its component ID
     hog_to_comp = {}
     for ci, comp in enumerate(nx.connected_components(consensus_graph)):
         for h in comp:
             hog_to_comp[h] = ci
 
-    # For each child adjacency, check if the two HOGs are in
-    # DIFFERENT consensus components → EEJ
     for h1, h2 in mc.get_adjacencies(include_telomere=False):
-        key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
         c1 = hog_to_comp.get(h1)
         c2 = hog_to_comp.get(h2)
         if c1 is not None and c2 is not None and c1 != c2:
-            # These two HOGs are from different ancestral chromosomes
-            # but adjacent in the child → EEJ
+            # Different consensus components → potential EEJ
+            # Outgroup polarity check: confirm outgroup also has them separate
+            key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+            if og_adj_set and key in og_adj_set:
+                # Outgroup also has this cross-component adjacency
+                # → ancestral state IS fused, skip (not EEJ on this branch)
+                continue
+
             events.append(TAKREvent(
                 event_type='eej',
                 branch=branch,
@@ -515,8 +531,15 @@ def _detect_eej(ancestor, mc, branch, src):
     return events
 
 
-def _detect_fission(ancestor, ancest_adj_set, mc, branch, src):
-    """Detect fission: ancestral internal adjacency → child endpoints."""
+def _detect_fission(ancestor, ancest_adj_set, mc, branch, src, og_adj_set=None):
+    """Detect fission with outgroup polarity voting.
+
+    Fission = an internal adjacency in the ancestor becomes two chromosome
+    endpoints in the child.
+
+    Polarity: if outgroup also has the adjacency broken → ancestral state is
+    split, not fission. If outgroup maintains the adjacency → fission confirmed.
+    """
     from .takr_events import TAKREvent
 
     events = []
@@ -538,6 +561,13 @@ def _detect_fission(ancestor, ancest_adj_set, mc, branch, src):
 
     for (h1, h2) in ancest_only:
         if h1 in mc_ends and h2 in mc_ends:
+            # Both endpoints now split → potential fission
+            # Outgroup check: if outgroup maintains this adjacency → fission confirmed
+            key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+            if og_adj_set and key not in og_adj_set:
+                # Outgroup also lost this adjacency → ancestral state is split, skip
+                continue
+
             events.append(TAKREvent(
                 event_type='fission',
                 branch=branch,

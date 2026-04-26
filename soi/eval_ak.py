@@ -317,27 +317,37 @@ def evaluate_branches(
 
 
 def print_summary(results: Dict, global_metrics: Dict):
-    """Print evaluation summary to stdout."""
+    """Print evaluation summary as tables, split by event scale."""
     m = global_metrics['micro_F1']
-    print("=== Evaluation Report ===")
+    print()
     print(f"Micro F1: {m['F1']:.3f}  (TP={m['TP']}  FP={m['FP']}  FN={m['FN']})")
     print(f"  Precision: {m['Precision']:.3f}  Recall: {m['Recall']:.3f}")
     print()
 
-    for branch, r in sorted(results.items()):
-        m2 = r['metrics']
-        print(f"  {branch}")
-        print(f"    Total: truth={r['total_truth']} detected={r['total_detected']}  "
-              f"F1={m2['F1']:.3f} (P={m2['Precision']:.3f} R={m2['Recall']:.3f})")
-        for etype, bt in sorted(r.get('by_type', {}).items()):
-            total_t = bt['TP'] + bt['FN']
-            total_d = bt['TP'] + bt['FP']
-            print(f"    {etype:<30} truth={total_t:<3} detected={total_d:<3}  "
-                  f"F1={bt['F1']:.3f}")
+    # Group branches by scale
+    for scale_name, scale_label in [('large_scale', '[Large-Scale]'),
+                                     ('small_scale', '[Small-Scale]'),
+                                     ('gene_level', '[Gene-Level]')]:
+        rows = []
+        for branch, r in sorted(results.items()):
+            for etype, bt in sorted(r.get('by_type', {}).items()):
+                if _event_scale(etype) == scale_name:
+                    total_t = bt['TP'] + bt['FN']
+                    total_d = bt['TP'] + bt['FP']
+                    rows.append((branch, etype, total_t, total_d,
+                                 bt['TP'], bt['FP'], bt['FN'],
+                                 bt['Precision'], bt['Recall'], bt['F1']))
 
-    print()
-    print(f"Global Micro F1: {m['F1']:.3f}")
-    return m
+        if not rows:
+            continue
+
+        print(f"  {scale_label}")
+        print(f"  {'Branch':<15} {'Event Type':<30} {'Truth':>5} {'Det':>5} {'TP':>4} {'FP':>4} {'FN':>4} {'Prec':>6} {'Rec':>6} {'F1':>6}")
+        print(f"  {'-' * 85}")
+        for row in rows:
+            branch, etype, t, d, tp, fp, fn, prec, rec, f1 = row
+            print(f"  {branch:<15} {etype:<30} {t:>5} {d:>5} {tp:>4} {fp:>4} {fn:>4} {prec:>6.3f} {rec:>6.3f} {f1:>6.3f}")
+        print()
 
 
 def generate_report(results: Dict, global_metrics: Dict, outpath: str):
@@ -475,19 +485,25 @@ def compare_chrom_counts(truth_karyotype_file, lens_dir=None, akr_instance=None,
 # ===========================================================================
 
 def _event_scale(event_type):
-    """Categorize event as large-scale, small-scale, or gene-level."""
-    from .takr_events import CHROM_COUNT_EVENTS, CHROM_REARRANGEMENTS
+    """Categorize event as large-scale, small-scale, or gene-level.
+    
+    Large-scale: EEJ, NCF, fission, RT, URT, WGD (Phase 2 events)
+    Small-scale: inversion, unidir_trans (Phase 1 structural events)
+    Gene-level:  fractionation, duplication, gain/loss (no structural change)
+    """
     from .takr_events import canonicalize_event_type
 
     et = canonicalize_event_type(event_type)
 
-    # Large-scale: changes chromosome count
-    if et in CHROM_COUNT_EVENTS:
+    LARGE_SCALE = {'eej', 'ncf', 'fission', 'reciprocal_translocation',
+                   'unbalanced_reciprocal_translocation', 'WGD'}
+    SMALL_SCALE = {'inversion', 'internal_inversion', 'telomere_inversion',
+                   'unidir_trans'}
+
+    if et in LARGE_SCALE:
         return 'large_scale'
-    # Large-scale: changes structure but not count
-    if et in CHROM_REARRANGEMENTS:
+    if et in SMALL_SCALE:
         return 'small_scale'
-    # Gene-level
     return 'gene_level'
 
 
@@ -612,6 +628,8 @@ def main():
     parser.add_argument('--report', help='Output path for eval report TSV')
     parser.add_argument('--match-mode', choices=['type_only', 'genes'], default='type_only',
                         help='Matching mode (default: type_only)')
+    parser.add_argument('--detailed', action='store_true',
+                        help='Print per-event detailed comparison')
     args = parser.parse_args()
 
     from .takr_events import parse_tree
@@ -640,11 +658,12 @@ def main():
         match_mode=args.match_mode)
     print_summary(results, gm)
 
-    # Detailed comparison
-    print("\n" + "=" * 72)
-    print("  Detailed Event Comparison")
-    print("=" * 72)
-    print_event_comparison(truth, detected)
+    # Detailed comparison (optional)
+    if args.detailed:
+        print("\n" + "=" * 72)
+        print("  Detailed Event Comparison")
+        print("=" * 72)
+        print_event_comparison(truth, detected)
 
     # Report file
     if args.report:

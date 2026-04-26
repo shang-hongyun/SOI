@@ -122,14 +122,43 @@ def reconstruct_event_driven(akr, min_hogs=3):
                 time.time() - t0)
     return akr.anc_graphs
 
-
 def reconstruct_event_driven_v2(akr, min_hogs=3):
     """Event-driven reconstruction v2 -- ColoredGraph: colored graph + cycle detection + path cover."""
     from .takr_colored_graph import ColoredGraph
+
+    def _wgd_collapse(pre_wgd_graph, node_id, ploidy):
+        """Unified WGD collapse: build ColoredGraph, resolve conflicts, path cover.
+        
+        For leaf: post-WGD graph comes from leaf's own mapped graph (16 chroms).
+        Edges colored by (leaf_name, chrom_idx) → single child, chroms as source.
+        
+        For internal: post-WGD graph comes from resolved children (12 chroms).
+        Edges colored by (child_id, chrom_idx) → multiple children as source.
+        
+        Both cases: resolve_all_events detects inter-source conflicts → pre-WGD.
+        """
+        logger.info("Reconstructing node %s_preWGD [v2 ColoredGraph]", node_id)
+        t_collapse = time.time()
+        collapse_G = ColoredGraph(hog_level="{}_preWGD".format(node_id))
+        # Rebuild with existing edges (colors already set by add_child/graph)
+        for h1, h2, data in pre_wgd_graph._graph.edges(data=True):
+            for cid, chrom in data['colors']:
+                collapse_G.add_edge(h1, h2, cid, chrom)
+        collapse_G.resolve_all_events(outgroups=None, min_hogs=min_hogs)
+        pre_anc = collapse_G.to_ancestral_graph()
+        pre_anc.node_id = "{}_pre".format(node_id)
+        n_post = collapse_G.path_cover()
+        n_pre = pre_anc.path_cover()
+        logger.info("  Done: %d -> %d chroms, %d events (%.1fs)",
+                     len(n_post) if isinstance(n_post, list) else 0,
+                     len(n_pre) if isinstance(n_pre, list) else 0,
+                     len(collapse_G.events), time.time() - t_collapse)
+        return pre_anc, collapse_G.events
+
     logger.info("=== Event-driven reconstruction v2 (ColoredGraph) ===")
     t0 = time.time()
 
-    # Collapse polyploid leaves using ColoredGraph (replace old ILP+SA)
+    # WGD collapse for polyploid leaves
     for leaf_name, ploidy in akr.ploidy_map.items():
         if leaf_name not in akr.leaf_graphs or ploidy <= 1:
             continue
@@ -140,21 +169,11 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             continue
         parent_id = leaf_node[0].up.name
         leaf_g = akr.leaf_graphs[leaf_name]
-        logger.info("Reconstructing node %s [v2 ColoredGraph]", leaf_name)
-        t_leaf = time.time()
         mapped = akr._map_to_parent_hogs(parent_id, leaf_g, source_id=leaf_name)
         G_leaf = ColoredGraph(hog_level=leaf_name)
         G_leaf.add_child(leaf_name, mapped)
-        # Skip resolve_all_events: single-species graph has no cross-child conflicts.
-        # HOG mapping already merges subgenome copies. Calling event detection
-        # would remove real post-WGD rearrangements as 'conflicts', breaking the graph.
-        pre_anc = G_leaf.to_ancestral_graph()
-        pre_anc.node_id = "{}_pre".format(leaf_name)
+        pre_anc, events = _wgd_collapse(G_leaf, leaf_name, ploidy)
         akr.pre_wgd_graphs[leaf_name] = pre_anc
-        n_post = len(list(leaf_g.chromosomes))
-        n_pre = len(list(pre_anc.chromosomes))
-        logger.info("  Done: %d -> %d chroms (HOG merge, %.1fs)",
-                     n_post, n_pre, time.time() - t_leaf)
 
     og_graphs_cache = {}
     for node in akr.tree.traverse(strategy="postorder"):
@@ -200,27 +219,10 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         akr.anc_graphs[node_id] = ancestor
         ploidy = akr.ploidy_map.get(node_id, 1)
         if ploidy > 1:
-            # Collapse post-WGD to pre-WGD using child-source voting
-            logger.info("Reconstructing node %s_preWGD [v2 ColoredGraph]", node_id)
-            t_collapse = time.time()
-            # Build collapse graph: edges colored by which child they come from
-            collapse_G = ColoredGraph(hog_level=f"{node_id}_preWGD")
-            for h1, h2, data in G._graph.edges(data=True):
-                child_set = set(cid for cid, _ in data['colors'])
-                for cid in child_set:
-                    collapse_G.add_edge(h1, h2, cid, 0)
-            # Resolve inter-child differences → pre-WGD
-            collapse_G.resolve_all_events(outgroups=None, min_hogs=min_hogs)
-            pre_ancestor = collapse_G.to_ancestral_graph()
-            pre_ancestor.node_id = f"{node_id}_pre"
-            akr.pre_wgd_graphs[node_id] = pre_ancestor
-            n_post = len(list(ancestor.chromosomes))
-            n_pre = len(list(pre_ancestor.chromosomes))
-            logger.info("  Done: %d -> %d chroms, %d events (%.1fs)",
-                         n_post, n_pre, len(collapse_G.events),
-                         time.time() - t_collapse)
-            virtual_branch = f"{node_id}_preWGD-{node_id}"
-            for e in collapse_G.events:
+            pre_anc, events = _wgd_collapse(G, node_id, ploidy)
+            akr.pre_wgd_graphs[node_id] = pre_anc
+            virtual_branch = "{}_preWGD-{}".format(node_id, node_id)
+            for e in events:
                 e.branch = virtual_branch
                 ancestor.events.append(e)
         n_chrom = len(list(ancestor.chromosomes))

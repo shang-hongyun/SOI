@@ -171,7 +171,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             mapped = akr._map_to_parent_hogs(parent_id, akr.leaf_graphs[node_id], source_id=node_id)
             G_leaf = ColoredGraph(hog_level=node_id)
             G_leaf.add_child(node_id, mapped)
-            pre_anc, events = _wgd_collapse(G_leaf, node_id, ploidy)
+            pre_anc, _ = _wgd_collapse(G_leaf, node_id, ploidy)
             akr.pre_wgd_graphs[node_id] = pre_anc
             continue
         elif node.is_leaf():
@@ -224,14 +224,12 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         logger.info("  Done: %d chroms, %d events (%.1fs)",
                      n_chrom, len(ancestor.events), time.time() - t_node)
         if ploidy > 1:
-            # WGD collapse uses the ORIGINAL multi-child graph (pre-resolution)
-            # to detect inter-subgenome differences as cross-child conflicts
             pre_anc, events = _wgd_collapse(pre_collapse_G, node_id, ploidy)
             akr.pre_wgd_graphs[node_id] = pre_anc
+            # Set virtual branch on pre-WGD events (stored on pre_anc)
             virtual_branch = "{}_preWGD-{}".format(node_id, node_id)
-            for e in events:
+            for e in pre_anc.events:
                 e.branch = virtual_branch
-                ancestor.events.append(e)
     logger.info("=== Event-driven reconstruction v2 done (%.1fs) ===",
                 time.time() - t0)
     return akr.anc_graphs

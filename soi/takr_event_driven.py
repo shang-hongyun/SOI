@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 def reconstruct_event_driven(akr, min_hogs=3):
-    """Event-driven reconstruction — main entry.
+    """Event-driven reconstruction — main entry (v1: consensus ancestor + branch detection).
 
     Args:
         akr: AKR instance (tree, leaf_graphs, hog already built)
@@ -118,9 +118,72 @@ def reconstruct_event_driven(akr, min_hogs=3):
         logger.info("  Done: %d chroms, %d events (%.1fs)",
                      n_chrom, len(all_events), time.time() - t_node)
 
-    logger.info("=== Event-driven reconstruction done (%.1fs) ===",
+    logger.info("=== Event-driven reconstruction done (%.1fs) ====",
                 time.time() - t0)
     return akr.anc_graphs
+
+
+def reconstruct_event_driven_v2(akr, min_hogs=3):
+    """Event-driven reconstruction v2 -- ColoredGraph: colored graph + cycle detection + path cover."""
+    from .takr_colored_graph import ColoredGraph
+    logger.info("=== Event-driven reconstruction v2 (ColoredGraph) ===")
+    t0 = time.time()
+    og_graphs_cache = {}
+    for node in akr.tree.traverse(strategy="postorder"):
+        if node.is_leaf():
+            continue
+        node_id = node.name
+        logger.info("Reconstructing node %s [v2 ColoredGraph]", node_id)
+        t_node = time.time()
+        child_graphs, child_source_ids = [], []
+        for child in node.children:
+            cid = child.name
+            if cid in akr.pre_wgd_graphs:
+                child_graphs.append(akr.pre_wgd_graphs[cid])
+                child_source_ids.append(cid)
+            elif child.is_leaf():
+                if cid in akr.leaf_graphs:
+                    child_graphs.append(akr.leaf_graphs[cid])
+                    child_source_ids.append(cid)
+            elif cid in akr.anc_graphs:
+                child_graphs.append(akr.anc_graphs[cid])
+                child_source_ids.append(cid)
+        if len(child_graphs) < 2:
+            continue
+        hog_level = node_id
+        mapped_children = []
+        for cg, cid in zip(child_graphs, child_source_ids):
+            mc = akr._map_to_parent_hogs(hog_level, cg, source_id=cid)
+            mapped_children.append(mc)
+        G = ColoredGraph(hog_level=node_id)
+        for mc, cid in zip(mapped_children, child_source_ids):
+            G.add_child(cid, mc)
+        outgroup_hogs = {}
+        if node_id in og_graphs_cache:
+            for og_graph, _weight in og_graphs_cache[node_id]:
+                for cid in child_source_ids:
+                    if cid not in outgroup_hogs:
+                        outgroup_hogs[cid] = set()
+                    for h1, h2 in og_graph.get_adjacencies(include_telomere=False):
+                        outgroup_hogs[cid].add(h1)
+                        outgroup_hogs[cid].add(h2)
+        G.resolve_all_events(outgroups=outgroup_hogs, min_hogs=min_hogs)
+        ancestor = G.to_ancestral_graph()
+        akr.anc_graphs[node_id] = ancestor
+        ploidy = akr.ploidy_map.get(node_id, 1)
+        if ploidy > 1:
+            _handle_wgd_node(akr, node, ploidy)
+        n_chrom = len(list(ancestor.chromosomes))
+        logger.info("  Done: %d chroms, %d events (%.1fs)",
+                     n_chrom, len(ancestor.events), time.time() - t_node)
+    logger.info("=== Event-driven reconstruction v2 done (%.1fs) ===",
+                time.time() - t0)
+    return akr.anc_graphs
+
+
+# =========================================================================
+#  Consensus ancestor graph
+# =========================================================================
 
 
 # =========================================================================
@@ -674,6 +737,183 @@ def _detect_ncf(ancestor, mc, branch, src):
 # =========================================================================
 #  Phase 3: WGD pre→post detection
 # =========================================================================
+
+def _collapse_polyploid_event_driven(akr, leaf_id):
+    """Collapse a polyploid leaf to pre-WGD using event-driven approach.
+
+    Instead of CP-SAT (v3), split the polyploid graph into two subgenomes
+    by finding sister chromosome pairs via shared HOGs, then treat them
+    as two children for the standard event-driven pipeline.
+
+    Returns pre-WGD graph or None.
+    """
+    from .AK import AncestralAdjacencyGraph
+
+    post_graph = akr.leaf_graphs.get(leaf_id)
+    if post_graph is None:
+        return None
+
+    ploidy = akr.ploidy_map.get(leaf_id, 2)
+    if ploidy < 2:
+        return None
+
+    # Map to parent HOG level
+    parent_id = None
+    for node in akr.tree.traverse():
+        if node.name == leaf_id and not node.is_root():
+            parent_id = node.up.name
+            break
+    if parent_id is None:
+        return None
+
+    hog_level = parent_id
+    mapped = akr._map_to_parent_hogs(hog_level, post_graph, source_id=leaf_id)
+
+    # Build HOG copy → chromosome mapping
+    # hog_copies[hog] = list of (chrom_idx, position, original_gene)
+    hog_copies = {}
+    if hasattr(mapped, 'hog_map') and mapped.hog_map:
+        # Build chromosome index for each HOG record
+        hog_record_to_chrom = {}
+        for ci, chrom in enumerate(mapped.chromosomes):
+            for h in chrom:
+                if h not in mapped.telomeres:
+                    hog_record_to_chrom[h] = ci
+
+        for gene, hog in mapped.hog_map.items():
+            if hog not in hog_copies:
+                hog_copies[hog] = []
+            chrom = hog_record_to_chrom.get(hog, -1)
+            hog_copies[hog].append((chrom, gene))
+
+    # For HOGs with 2+ copies, build chromosome pairing graph
+    # chrom_pairs[chrA] = {chrB: count} where chrA and chrB share WGD pairs
+    chrom_pairs = {}
+    for hog, copies in hog_copies.items():
+        if len(copies) >= 2:
+            chroms = list(set(c for c, _ in copies))
+            for i in range(len(chroms)):
+                for j in range(i + 1, len(chroms)):
+                    c1, c2 = chroms[i], chroms[j]
+                    chrom_pairs.setdefault(c1, {})
+                    chrom_pairs.setdefault(c2, {})
+                    chrom_pairs[c1][c2] = chrom_pairs[c1].get(c2, 0) + 1
+                    chrom_pairs[c2][c1] = chrom_pairs[c2].get(c1, 0) + 1
+
+    # Greedy pairing: assign chromosomes to subgenomes
+    # For each pair (chrA, chrB) with shared HOGs, put chrA in SG1, chrB in SG2
+    sg1_chroms = set()
+    sg2_chroms = set()
+    assigned = set()
+
+    all_chroms = sorted(chrom_pairs.keys(), key=lambda c: -sum(chrom_pairs[c].values()))
+
+    for c in all_chroms:
+        if c in assigned:
+            continue
+        # Find best partner
+        partners = chrom_pairs.get(c, {})
+        unassigned_partners = [(p, w) for p, w in sorted(partners.items(), key=lambda x: -x[1])
+                               if p not in assigned]
+        if unassigned_partners:
+            best_p, _ = unassigned_partners[0]
+            sg1_chroms.add(c)
+            sg2_chroms.add(best_p)
+            assigned.add(c)
+            assigned.add(best_p)
+        else:
+            # No partner found, put in SG1
+            sg1_chroms.add(c)
+            assigned.add(c)
+
+    # Any remaining unassigned chroms go to SG1
+    for ci in range(len(list(mapped.chromosomes))):
+        if ci not in assigned:
+            sg1_chroms.add(ci)
+
+    # Split the mapped graph into two subgenomes
+    def _extract_subgenome(mapped, chrom_set):
+        """Build a subgenome graph containing only specified chromosomes."""
+        sg = AncestralAdjacencyGraph(node_id="%s_sg" % leaf_id)
+        for ci, chrom in enumerate(mapped.chromosomes):
+            if ci not in chrom_set:
+                continue
+            for h in chrom:
+                if h not in mapped.telomeres:
+                    sg.graph.add_node(h)
+                    sg.gene_nodes.add(h)
+            # Add edges within this chromosome
+            for i in range(len(chrom) - 1):
+                h1, h2 = chrom[i], chrom[i + 1]
+                if h1 not in mapped.telomeres and h2 not in mapped.telomeres:
+                    sg.graph.add_edge(h1, h2)
+        sg._add_telomeres()
+        return sg
+
+    sg1 = _extract_subgenome(mapped, sg1_chroms)
+    sg2 = _extract_subgenome(mapped, sg2_chroms)
+
+    if len(sg1.gene_nodes) < 3 or len(sg2.gene_nodes) < 3:
+        logger.warning("  Subgenomes too small for %s, falling back to v3", leaf_id)
+        akr._collapse_polyploid_leaf(leaf_id)
+        return akr.pre_wgd_graphs.get(leaf_id)
+
+    # Run event-driven: build consensus from two subgenomes
+    pre_wgd = _build_consensus_ancestor("pre-WGD " + leaf_id, [sg1, sg2],
+                                         [leaf_id + "_sg1", leaf_id + "_sg2"])
+
+    # Detect events between subgenomes (fractionation)
+    sg1_adj = set()
+    for h1, h2 in sg1.get_adjacencies(include_telomere=False):
+        key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+        sg1_adj.add(key)
+    sg2_adj = set()
+    for h1, h2 in sg2.get_adjacencies(include_telomere=False):
+        key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+        sg2_adj.add(key)
+
+    events = []
+    branch1 = "%s_preWGD-%s_sg1" % (leaf_id, leaf_id)
+    branch2 = "%s_preWGD-%s_sg2" % (leaf_id, leaf_id)
+
+    # Detect WGD event
+    from .takr_events import TAKREvent
+    events.append(TAKREvent(
+        event_type='WGD',
+        branch="%s_preWGD-%s" % (leaf_id, leaf_id),
+        desc="WGD %dx at %s" % (ploidy, leaf_id),
+        support=ploidy,
+    ))
+
+    # Fractionation: HOGs in one subgenome but not the other
+    sg1_hogs = set(sg1.gene_nodes)
+    sg2_hogs = set(sg2.gene_nodes)
+    lost_in_sg1 = sg2_hogs - sg1_hogs
+    for h in lost_in_sg1:
+        events.append(TAKREvent(
+            event_type='fractionation',
+            branch=branch1,
+            genes_involved=[h],
+            desc="fractionation: %s lost in sg1" % h.hog_id,
+            support=1,
+        ))
+    lost_in_sg2 = sg1_hogs - sg2_hogs
+    for h in lost_in_sg2:
+        events.append(TAKREvent(
+            event_type='fractionation',
+            branch=branch2,
+            genes_involved=[h],
+            desc="fractionation: %s lost in sg2" % h.hog_id,
+            support=1,
+        ))
+
+    pre_wgd.events = events
+    n_post = len(list(mapped.chromosomes))
+    n_pre = len(list(pre_wgd.chromosomes))
+    logger.info("  Polyploid leaf %s: %d post→%d pre chroms (event-driven)",
+                leaf_id, n_post, n_pre)
+
+    return pre_wgd, events
 
 def _handle_wgd_node(akr, node, ploidy):
     """Handle WGD node: collapse post-WGD to pre-WGD, detect events.

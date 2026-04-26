@@ -137,7 +137,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
 
         paths = post_graph.path_cover()
         n_post = len(paths)
-        logger.info("  Children: %s, %d chroms", node_id, n_post)
+        logger.info("  Children: %s=%d", node_id, n_post)
 
         # If ploidy==1 or fewer chroms than ploidy, no collapse needed
         if ploidy <= 1 or n_post < ploidy:

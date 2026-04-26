@@ -139,6 +139,14 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         """
         logger.info("Reconstructing node %s_preWGD [v2 ColoredGraph]", node_id)
         t_collapse = time.time()
+        # Extract children info from edge colors
+        child_set = set()
+        for _, _, data in pre_wgd_graph._graph.edges(data=True):
+            for cid, _ in data['colors']:
+                child_set.add(cid)
+        n_post = len(pre_wgd_graph.path_cover()) if hasattr(pre_wgd_graph, 'path_cover') else 0
+        child_ids = sorted(child_set)
+        logger.info("  Sources: %d (%s), %d chroms", len(child_ids), ", ".join(child_ids), n_post)
         collapse_G = ColoredGraph(hog_level="{}_preWGD".format(node_id))
         # Rebuild with existing edges (colors already set by add_child/graph)
         for h1, h2, data in pre_wgd_graph._graph.edges(data=True):
@@ -147,7 +155,6 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         collapse_G.resolve_all_events(outgroups=None, min_hogs=min_hogs)
         pre_anc = collapse_G.to_ancestral_graph()
         pre_anc.node_id = "{}_pre".format(node_id)
-        n_post = len(pre_wgd_graph.path_cover()) if hasattr(pre_wgd_graph, 'path_cover') else 0
         n_pre = len(list(pre_anc.chromosomes))
         logger.info("  Done: %d -> %d chroms, %d events (%.1fs)",
                      n_post, n_pre,

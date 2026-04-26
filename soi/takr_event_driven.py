@@ -194,6 +194,12 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                 child_source_ids.append(cid)
         if len(child_graphs) < 2:
             continue
+        # Log children info
+        child_info = []
+        for cg, cid in zip(child_graphs, child_source_ids):
+            n_ch = len(list(cg.chromosomes))
+            child_info.append("{}={}".format(cid, n_ch))
+        logger.info("  Children: %s", ", ".join(child_info))
         hog_level = node_id
         mapped_children = []
         for cg, cid in zip(child_graphs, child_source_ids):

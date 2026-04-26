@@ -147,11 +147,10 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         collapse_G.resolve_all_events(outgroups=None, min_hogs=min_hogs)
         pre_anc = collapse_G.to_ancestral_graph()
         pre_anc.node_id = "{}_pre".format(node_id)
-        n_post = collapse_G.path_cover()
-        n_pre = pre_anc.path_cover()
+        n_post = len(pre_wgd_graph.path_cover()) if hasattr(pre_wgd_graph, 'path_cover') else 0
+        n_pre = len(list(pre_anc.chromosomes))
         logger.info("  Done: %d -> %d chroms, %d events (%.1fs)",
-                     len(n_post) if isinstance(n_post, list) else 0,
-                     len(n_pre) if isinstance(n_pre, list) else 0,
+                     n_post, n_pre,
                      len(collapse_G.events), time.time() - t_collapse)
         return pre_anc, collapse_G.events
 

@@ -792,18 +792,20 @@ class ColoredGraph:
         logger.info("  [colored] resolve_all_events for %s: %d nodes, %d edges",
                      self.hog_level, self.node_count(), self.edge_count())
 
-        # Step 1: indel/loss
-        self.resolve_indels(outgroups)
-        logger.info("  [colored] after indel: %d nodes, %d edges, %d events",
+        # Step 1: 结构重排 (环检测 + 分类) — 先处理, 需要完整的图
+        self.resolve_structural_events()
+        logger.info("  [colored] after structural: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 
-        # Step 2: 桥接冲突 + 结构重排
+        # Step 2: 桥接冲突 (unique edge 跨共享连通分量 = EEJ/NCF/fission)
         n_before_bridge = len(self.events)
         self.resolve_bridge_events()
         n_bridges = len(self.events) - n_before_bridge
         if n_bridges:
             logger.info("  [colored] bridges: %d events", n_bridges)
-        self.resolve_structural_events()
+
+        # Step 3: indel/loss (基因级差异)
+        self.resolve_indels(outgroups)
         logger.info("  [colored] after structural: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 

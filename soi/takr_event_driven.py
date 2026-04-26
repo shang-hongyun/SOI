@@ -126,7 +126,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
     """Event-driven reconstruction v2 -- ColoredGraph: colored graph + cycle detection + path cover."""
     from .takr_colored_graph import ColoredGraph
 
-    def _wgd_collapse(post_graph, node_id, ploidy, parent_hog_level):
+    def _wgd_collapse(post_graph, node_id, ploidy, parent_hog_level, min_hogs=3):
         """WGD collapse: pair post-WGD chromosomes by HOG similarity → pre-WGD.
 
         post_graph: ColoredGraph (node's own genome, already at the correct HOG level).
@@ -197,6 +197,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                 pre_G.add_edge(merged[i], merged[i + 1],
                                "pre_chr{}".format(chrom_idx), chrom_idx)
 
+        pre_G.resolve_all_events(outgroups=None, min_hogs=min_hogs)
         pre_anc = pre_G.to_ancestral_graph()
         pre_anc.node_id = "{}_pre".format(node_id)
         n_pre = len(list(pre_anc.chromosomes))

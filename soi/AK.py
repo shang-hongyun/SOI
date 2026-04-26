@@ -291,6 +291,7 @@ class AKR:
                  sa_iterations=5000,
                  use_v3=True,
                  use_v4=False,
+                 reconstruction_algorithm=None,
                  **kargs):
 
         self.ogfile = ogfile
@@ -308,8 +309,21 @@ class AKR:
         self.node_timeout = node_timeout  # 单节点重建超时秒数
         self.use_ilp_sa = use_ilp_sa and pulp is not None  # 是否使用ILP+SA混合线性化
         self.sa_iterations = sa_iterations
-        self.use_v3 = use_v3 and ORTOOLS_AVAILABLE  # 是否使用v3 CP-SAT路径覆盖
-        self.use_v4 = use_v4
+        # Unified algorithm selector
+        # reconstruction_algorithm: 'v3' (CP-SAT), 'v4' (event-driven)
+        # Falls back to use_v3/use_v4 for backward compatibility
+        if reconstruction_algorithm is not None:
+            if reconstruction_algorithm == 'v3':
+                self.use_v3 = True and ORTOOLS_AVAILABLE
+                self.use_v4 = False
+            elif reconstruction_algorithm == 'v4':
+                self.use_v3 = False
+                self.use_v4 = True
+            else:
+                raise ValueError("Unknown reconstruction_algorithm: %s (use 'v3' or 'v4')" % reconstruction_algorithm)
+        else:
+            self.use_v3 = use_v3 and ORTOOLS_AVAILABLE
+            self.use_v4 = use_v4
         self._start_time = None
 
         self.hog = None

@@ -713,6 +713,67 @@ class ColoredGraph:
 
         return G2
 
+    # ==================== 桥接冲突检测 (EEJ/NCF) ====================
+
+    def resolve_bridge_events(self):
+        """检测桥接冲突: unique edge 连接两个共享边连通分量 = EEJ/NCF.
+
+        EEJ: 一条 unique edge 连接了两个在共享图中不连通的端点
+        NCF: 同 EEJ, 但一端在共享图的染色体内部（不是端粒候选）
+
+        算法:
+        1. 建共享边图 (edges with >1 color → ≥2 children)
+        2. 找连通分量
+        3. 对每条 unique edge (1 color):
+           两端在不同分量 → 桥接冲突 → 移除并记录事件
+        """
+        # Build shared-edge graph
+        shared_G = nx.Graph()
+        for h1, h2, data in self._graph.edges(data=True):
+            if len(data['colors']) > 1:  # shared by ≥2 children
+                shared_G.add_edge(h1, h2)
+
+        if shared_G.number_of_edges() == 0:
+            return
+
+        # Find connected components in shared graph
+        components = list(nx.connected_components(shared_G))
+        hog_to_comp = {}
+        for ci, comp in enumerate(components):
+            for h in comp:
+                hog_to_comp[h] = ci
+
+        # Check each unique edge for bridge pattern
+        for h1, h2, data in list(self._graph.edges(data=True)):
+            if len(data['colors']) != 1:
+                continue  # not a unique edge
+            c1 = hog_to_comp.get(h1)
+            c2 = hog_to_comp.get(h2)
+            if c1 is not None and c2 is not None and c1 != c2:
+                # Bridge: connects two different shared components → EEJ or NCF
+                color = next(iter(data['colors']))
+                child_id = color[0]
+                comp1_size = len(components[c1])
+                comp2_size = len(components[c2])
+
+                # Classify: both components are large → EEJ; one small → NCF
+                min_comp = min(comp1_size, comp2_size)
+                if len(hog_to_comp) < len(shared_G):
+                    is_ncf = min_comp < 10  # small component → inserted
+                else:
+                    is_ncf = False
+                etype = 'ncf' if is_ncf else 'eej'
+
+                self.events.append(TAKREvent(
+                    event_type=etype,
+                    branch=self.hog_level,
+                    genes_involved=[h1, h2],
+                    desc="{} bridge: comp{} ({} HOGs) + comp{} ({} HOGs) via {} in {}".format(
+                        etype, c1, comp1_size, c2, comp2_size, child_id, color),
+                    support=1,
+                ))
+                self.remove_edge_color(h1, h2, color)
+
     def resolve_all_events(self, outgroups: Dict = None,
                            min_hogs: int = 3) -> List[TAKREvent]:
         """按优先级解决所有冲突。
@@ -731,6 +792,13 @@ class ColoredGraph:
         self.resolve_indels(outgroups)
         logger.info("  [colored] after indel: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
+
+        # Step 1.5: 桥接冲突 (unique edge 跨共享连通分量 = EEJ/NCF)
+        n_before_bridge = len(self.events)
+        self.resolve_bridge_events()
+        n_bridges = len(self.events) - n_before_bridge
+        if n_bridges:
+            logger.info("  [colored] bridges: %d events", n_bridges)
 
         # Step 2: 结构重排
         self.resolve_structural_events()

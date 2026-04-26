@@ -290,6 +290,7 @@ class AKR:
                  use_ilp_sa=True,
                  sa_iterations=5000,
                  use_v3=True,
+                 use_v4=False,
                  **kargs):
 
         self.ogfile = ogfile
@@ -308,6 +309,7 @@ class AKR:
         self.use_ilp_sa = use_ilp_sa and pulp is not None  # 是否使用ILP+SA混合线性化
         self.sa_iterations = sa_iterations
         self.use_v3 = use_v3 and ORTOOLS_AVAILABLE  # 是否使用v3 CP-SAT路径覆盖
+        self.use_v4 = use_v4
         self._start_time = None
 
         self.hog = None
@@ -368,7 +370,13 @@ class AKR:
                     self.timeout, elapsed))
                 break
             # Speciation node reconstruction
-            if self.use_v3:
+            if self.use_v4:
+                # Event-driven reconstruction handles all nodes in one pass
+                from soi.takr_event_driven import reconstruct_event_driven
+                anc_graphs = reconstruct_event_driven(self)
+                self.anc_graphs = anc_graphs
+                break  # event-driven handles all nodes at once
+            elif self.use_v3:
                 self._reconstruct_node_v3(node)
             else:
                 self._reconstruct_node(node)
@@ -380,11 +388,13 @@ class AKR:
                 else:
                     self._collapse_wgd(node)
 
-        for i in range(self.rounds):
-            logger.info('Optimization round {}'.format(i))
-            self._optimize_round()
+        # Skip optimization + top-down detection for v4 (handled internally)
+        if not self.use_v4:
+            for i in range(self.rounds):
+                logger.info('Optimization round {}'.format(i))
+                self._optimize_round()
 
-        self._detect_events_topdown()
+            self._detect_events_topdown()
         self._export_results()
 
         logger.info("=== Ancestral Karyotype Reconstruction (AKR) completed ===")
@@ -3274,10 +3284,18 @@ class AKR:
 
             def _write_events_from_graph(node_id, aag, parent):
                 """Helper: write events from a single graph, compute branch."""
-                branch = "{}-{}".format(parent, node_id)
                 for ev in aag.events:
+                    # v4 events use TAKREvent with ev.branch, v3 uses node_id
+                    if hasattr(ev, 'branch') and ev.branch:
+                        branch = ev.branch
+                    else:
+                        branch = "{}-{}".format(parent, node_id)
                     genes = ','.join(str(g) for g in ev.genes_involved)
-                    chroms = ','.join(str(c) for c in ev.parent_chroms)
+                    # parent_chroms only exists on v3 RearrangementEvent
+                    if hasattr(ev, 'parent_chroms') and ev.parent_chroms:
+                        chroms = ','.join(str(c) for c in ev.parent_chroms)
+                    else:
+                        chroms = ''
                     cs = ev.child_source if hasattr(ev, 'child_source') and ev.child_source else ''
                     line = [branch, ev.event_type, genes, chroms, ev.desc, str(ev.support), cs]
                     f.write('\t'.join(line) + '\n')

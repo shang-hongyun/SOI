@@ -200,18 +200,27 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         akr.anc_graphs[node_id] = ancestor
         ploidy = akr.ploidy_map.get(node_id, 1)
         if ploidy > 1:
-            # Use ColoredGraph-based WGD collapse instead of CP-SAT
-            pre_G = G.collapse_wgd(ploidy)
-            pre_ancestor = pre_G.to_ancestral_graph()
+            # Collapse post-WGD to pre-WGD using child-source voting
+            logger.info("Reconstructing node %s_preWGD [v2 ColoredGraph]", node_id)
+            t_collapse = time.time()
+            # Build collapse graph: edges colored by which child they come from
+            collapse_G = ColoredGraph(hog_level=f"{node_id}_preWGD")
+            for h1, h2, data in G._graph.edges(data=True):
+                child_set = set(cid for cid, _ in data['colors'])
+                for cid in child_set:
+                    collapse_G.add_edge(h1, h2, cid, 0)
+            # Resolve inter-child differences → pre-WGD
+            collapse_G.resolve_all_events(outgroups=None, min_hogs=min_hogs)
+            pre_ancestor = collapse_G.to_ancestral_graph()
             pre_ancestor.node_id = f"{node_id}_pre"
             akr.pre_wgd_graphs[node_id] = pre_ancestor
             n_post = len(list(ancestor.chromosomes))
             n_pre = len(list(pre_ancestor.chromosomes))
-            logger.info("  WGD Colored collapse for %s: %d post -> %d pre chroms (ploidy=%d)",
-                         node_id, n_post, n_pre, ploidy)
-            # Store pre-WGD events on virtual branch
+            logger.info("  Done: %d -> %d chroms, %d events (%.1fs)",
+                         n_post, n_pre, len(collapse_G.events),
+                         time.time() - t_collapse)
             virtual_branch = f"{node_id}_preWGD-{node_id}"
-            for e in pre_G.events:
+            for e in collapse_G.events:
                 e.branch = virtual_branch
                 ancestor.events.append(e)
         n_chrom = len(list(ancestor.chromosomes))

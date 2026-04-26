@@ -375,3 +375,197 @@ def generate_report(results: Dict, global_metrics: Dict, outpath: str):
                     f"{m2['Precision']:.4f}\t{m2['Recall']:.4f}\t{m2['F1']:.4f}\n")
 
     print(f"Report written to {outpath}")
+
+
+# ===========================================================================
+#  Chromosome count comparison
+# ===========================================================================
+
+def compare_chrom_counts(truth_karyotype_file, lens_dir=None, akr_instance=None, outpre=None):
+    """Compare truth vs reconstructed chromosome counts.
+
+    Args:
+        truth_karyotype_file: Path to ancestors_karyotypes.txt (simulator output)
+        lens_dir: Directory containing AKR.*.lens files, or
+        akr_instance: AKR object (for anc_graphs), or
+        outpre: AKR output prefix (e.g. 'tests/AKR')
+    """
+    # Load truth counts
+    truth_counts = {}
+    with open(truth_karyotype_file) as f:
+        for line in f:
+            if line.startswith('>'):
+                parts = line.strip().split('\t')
+                node = parts[0][1:]
+                count = int(parts[1].split()[0])
+                truth_counts[node] = count
+
+    # Load reconstructed counts
+    recon_counts = {}
+    if lens_dir:
+        import glob, os
+        for f in glob.glob(os.path.join(lens_dir, '*.lens')):
+            fname = os.path.basename(f)
+            node = fname.replace('.lens', '')
+            # Remove prefix (e.g., 'AKR.N0' -> 'N0')
+            if '.' in node:
+                node = node.split('.', 1)[1]
+            with open(f) as fh:
+                recon_counts[node] = sum(1 for line in fh if line.strip())
+    elif akr_instance:
+        for node, aag in akr_instance.anc_graphs.items():
+            recon_counts[node] = len(list(aag.chromosomes))
+    elif outpre:
+        import glob, os
+        for f in glob.glob(f'{outpre}.*.lens'):
+            fname = os.path.basename(f)
+            node = fname.replace('.lens', '')
+            if '.' in node:
+                node = node.split('.', 1)[1]
+            with open(f) as fh:
+                recon_counts[node] = sum(1 for line in fh if line.strip())
+
+    # Also load GFF for leaf counts if available
+    gff_counts = {}
+    if lens_dir:
+        gff_path = os.path.join(os.path.dirname(lens_dir.rstrip('/')), 'all_species_gene.gff')
+        if os.path.exists(gff_path):
+            from collections import defaultdict as dd
+            chroms = dd(set)
+            with open(gff_path) as f:
+                for line in f:
+                    if line.startswith('#') or not line.strip():
+                        continue
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 5:
+                        chroms[parts[0]].add(parts[4])
+            for sp, c in chroms.items():
+                if sp not in truth_counts:
+                    truth_counts[sp] = len(c)
+
+    # Print comparison
+    all_nodes = sorted(set(list(truth_counts.keys()) + list(recon_counts.keys())))
+    print()
+    print("Chromosome Counts")
+    print(f"{'Node':<15} {'Truth':<8} {'Recon':<8} {'Match':<6} {'Type':<10}")
+    print("-" * 55)
+    for node in all_nodes:
+        t = truth_counts.get(node, '?')
+        r = recon_counts.get(node, 'N/A')
+        match = "✅" if t == r and r != 'N/A' else "❌" if r != 'N/A' else "?"
+        ntype = 'leaf' if node.startswith(('Sp', 'Species')) else 'internal'
+        print(f"{node:<15} {str(t):<8} {str(r):<8} {match:<6} {ntype:<10}")
+
+    return truth_counts, recon_counts
+
+
+# ===========================================================================
+#  Detailed event comparison
+# ===========================================================================
+
+def _event_scale(event_type):
+    """Categorize event as large-scale, small-scale, or gene-level."""
+    from .takr_events import CHROM_COUNT_EVENTS, CHROM_REARRANGEMENTS
+    from .takr_events import canonicalize_event_type
+
+    et = canonicalize_event_type(event_type)
+
+    # Large-scale: changes chromosome count
+    if et in CHROM_COUNT_EVENTS:
+        return 'large_scale'
+    # Large-scale: changes structure but not count
+    if et in CHROM_REARRANGEMENTS:
+        return 'small_scale'
+    # Gene-level
+    return 'gene_level'
+
+
+def print_event_comparison(truth_by_branch, detected_by_branch):
+    """Print detailed truth vs detected comparison per branch,
+    categorized by event scale (large_scale, small_scale, gene_level),
+    with per-type event listings."""
+    from collections import defaultdict
+    from .takr_events import canonicalize_event_type
+
+    all_branches = sorted(set(list(truth_by_branch.keys()) +
+                              list(detected_by_branch.keys())))
+
+    # Categorization titles
+    scale_titles = {
+        'large_scale': 'Large-Scale (chrom count change)',
+        'small_scale': 'Small-Scale (chrom structure change)',
+        'gene_level':  'Gene-Level',
+    }
+
+    for branch in all_branches:
+        print()
+        print(f"{'=' * 72}")
+        print(f"  Branch: {branch}")
+        print(f"{'=' * 72}")
+
+        t_events = truth_by_branch.get(branch, [])
+        d_events = detected_by_branch.get(branch, [])
+
+        # Categorize
+        by_scale = {'large_scale': {'T': [], 'D': []},
+                    'small_scale': {'T': [], 'D': []},
+                    'gene_level':  {'T': [], 'D': []}}
+        for e in t_events:
+            scale = _event_scale(e['event_type'])
+            by_scale[scale]['T'].append(e)
+        for e in d_events:
+            scale = _event_scale(e['event_type'])
+            by_scale[scale]['D'].append(e)
+
+        for scale in ('large_scale', 'small_scale', 'gene_level'):
+            t_list = by_scale[scale]['T']
+            d_list = by_scale[scale]['D']
+            if not t_list and not d_list:
+                continue
+
+            title = scale_titles[scale]
+            print(f"\n  [{title}]")
+            print(f"  {'─' * 66}")
+            print(f"  Truth ({len(t_list)})    Detected ({len(d_list)})")
+
+            # Group by type
+            t_by_type = defaultdict(list)
+            for e in t_list:
+                t_by_type[e['event_type']].append(e)
+            d_by_type = defaultdict(list)
+            for e in d_list:
+                d_by_type[e['event_type']].append(e)
+
+            all_types = sorted(set(list(t_by_type.keys()) + list(d_by_type.keys())))
+            for etype in all_types:
+                t_count = len(t_by_type[etype])
+                d_count = len(d_by_type[etype])
+                match = "✅" if t_count == d_count else (
+                        "≈" if 0 < min(t_count, d_count) / max(t_count, d_count) >= 0.5
+                        else "❌" if t_count == 0 or d_count == 0 else "⚠")
+                print(f"    {etype:<30} T={t_count:<4} D={d_count:<4}  {match}")
+
+                # Show first few event descriptions for each type
+                if t_count > 0 and d_count > 0:
+                    print(f"      Truth samples:")
+                    for e in t_by_type[etype][:3]:
+                        desc = e.get('desc', '')
+                        print(f"        {desc[:80]}")
+                    print(f"      Detected samples:")
+                    for e in d_by_type[etype][:3]:
+                        desc = e.get('desc', '')
+                        print(f"        {desc[:80]}")
+
+        # Summary for this branch
+        print()
+        total_t, total_d = len(t_events), len(d_events)
+        match = "EXACT" if total_t == total_d and total_t > 0 else (
+                "≈" if total_t > 0 and total_d > 0 else "FP" if total_d > 0 else "FN" if total_t > 0 else "-")
+        print(f"  Branch total: truth={total_t}  detected={total_d}  [{match}]")
+
+
+__all__ = [
+    'load_events', 'match_events_branch', 'evaluate_branches',
+    'calculate_metrics', 'print_summary', 'generate_report',
+    'compare_chrom_counts', 'print_event_comparison',
+]

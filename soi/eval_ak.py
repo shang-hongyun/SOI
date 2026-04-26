@@ -397,6 +397,7 @@ def compare_chrom_counts(truth_karyotype_file, lens_dir=None, akr_instance=None,
             if line.startswith('>'):
                 parts = line.strip().split('\t')
                 node = parts[0][1:]
+                # Only count whole genomes, not individual chroms
                 count = int(parts[1].split()[0])
                 truth_counts[node] = count
 
@@ -443,13 +444,23 @@ def compare_chrom_counts(truth_karyotype_file, lens_dir=None, akr_instance=None,
                 if sp not in truth_counts:
                     truth_counts[sp] = len(c)
 
-    # Print comparison
+    # Print comparison — only show nodes in tree or lens files
+    tree_nodes = set()
+    if akr_instance and hasattr(akr_instance, 'tree') and akr_instance.tree:
+        for n in akr_instance.tree.traverse():
+            tree_nodes.add(n.name)
+    elif outpre or lens_dir:
+        tree_nodes = set(recon_counts.keys())
+
     all_nodes = sorted(set(list(truth_counts.keys()) + list(recon_counts.keys())))
     print()
     print("Chromosome Counts")
     print(f"{'Node':<15} {'Truth':<8} {'Recon':<8} {'Match':<6} {'Type':<10}")
     print("-" * 55)
     for node in all_nodes:
+        # Skip individual chromosome entries (e.g., "Sp_1|1")
+        if '|' in node and node not in tree_nodes:
+            continue
         t = truth_counts.get(node, '?')
         r = recon_counts.get(node, 'N/A')
         match = "✅" if t == r and r != 'N/A' else "❌" if r != 'N/A' else "?"
@@ -569,3 +580,76 @@ __all__ = [
     'calculate_metrics', 'print_summary', 'generate_report',
     'compare_chrom_counts', 'print_event_comparison',
 ]
+
+
+# ===========================================================================
+#  CLI entry point
+# ===========================================================================
+
+def main():
+    """Command-line entry: run full evaluation and print summary.
+
+    Usage:
+        python3 -m soi.eval_ak \\
+            --truth events.tsv \\
+            --detected AKR.events.tsv \\
+            --tree species_tree.nwk \\
+            --karyotype ancestors_karyotypes.txt \\
+            --lens-dir . \\
+            [--report eval_report.tsv]
+
+    Or minimal (no chrom counts):
+        python3 -m soi.eval_ak --truth events.tsv --detected AKR.events.tsv --tree species_tree.nwk
+    """
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='TAKR v4 Evaluation: compare truth vs detected events')
+    parser.add_argument('--truth', required=True, help='Truth events.tsv (simulator output)')
+    parser.add_argument('--detected', required=True, help='Detected AKR.events.tsv')
+    parser.add_argument('--tree', required=True, help='Species tree .nwk file')
+    parser.add_argument('--karyotype', help='ancestors_karyotypes.txt (for chrom counts)')
+    parser.add_argument('--lens-dir', help='Directory with AKR.*.lens files')
+    parser.add_argument('--report', help='Output path for eval report TSV')
+    parser.add_argument('--match-mode', choices=['type_only', 'genes'], default='type_only',
+                        help='Matching mode (default: type_only)')
+    args = parser.parse_args()
+
+    from .takr_events import parse_tree
+
+    tree, parent_of, _ = parse_tree(args.tree)
+    truth = load_events(args.truth, parent_of=parent_of)
+    detected = load_events(args.detected, parent_of=parent_of, source='detected')
+
+    print("=" * 72)
+    print("  TAKR v4 Evaluation")
+    print("=" * 72)
+
+    # Chromosome counts
+    if args.karyotype:
+        compare_chrom_counts(args.karyotype, lens_dir=args.lens_dir)
+
+    # Event evaluation
+    common = set(truth.keys()) & set(detected.keys())
+    print()
+    print(f"Common branches: {sorted(common)}")
+    print()
+
+    results, gm = evaluate_branches(
+        {b: truth[b] for b in common},
+        {b: detected[b] for b in common},
+        match_mode=args.match_mode)
+    print_summary(results, gm)
+
+    # Detailed comparison
+    print("\n" + "=" * 72)
+    print("  Detailed Event Comparison")
+    print("=" * 72)
+    print_event_comparison(truth, detected)
+
+    # Report file
+    if args.report:
+        generate_report(results, gm, args.report)
+
+
+if __name__ == '__main__':
+    main()

@@ -21,33 +21,6 @@ from .takr_events import TAKREvent
 logger = logging.getLogger(__name__)
 
 
-def _extract_subgenome(hog_id: str, ploidy: int) -> Optional[int]:
-    """从 HOG ID 中提取亚基因组编号。
-
-    HOG ID 格式: "SOG1.N2.hog0" → 返回 0
-                  "SOG1.N2.hog1" → 返回 1
-                  "SOG1.N2"    → 返回 None (无亚基因组)
-
-    Args:
-        hog_id: HOG ID 字符串
-        ploidy: 倍性 (用于验证)
-
-    Returns:
-        亚基因组编号 (0..ploidy-1)，或 None
-    """
-    suffix = '.hog'
-    idx = hog_id.rfind(suffix)
-    if idx < 0:
-        return None
-    try:
-        num = int(hog_id[idx + len(suffix):])
-        if 0 <= num < ploidy:
-            return num
-        return None
-    except (ValueError, IndexError):
-        return None
-
-
 class ColoredGraph:
     """彩色邻接图 — 一条边可有多色 (child_id, chrom_idx)。"""
 
@@ -643,8 +616,9 @@ class ColoredGraph:
             shared_by[(h1, h2)] = child_set
 
         total_children = len(self.children())
-        # WGD collapse 需要严格共识：边必须在所有孩子中都出现才算是 pre-WGD 保守邻接
-        threshold = total_children
+        # WGD collapse: 边必须在 ceil(children * 2/3) 个孩子中出现才算保守
+        # 2c→2, 3c→2, 4c→3, 5c→4, 6c→4
+        threshold = (total_children * 2 + 2) // 3 if total_children > 0 else 1
 
         # Step 2: 构建 pre-WGD 图（仅保留跨孩子共享的边）
         pre_G = ColoredGraph(hog_level=self.hog_level + "_preWGD")

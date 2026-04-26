@@ -140,13 +140,14 @@ def _build_consensus_ancestor(node_id, mapped_children, child_source_ids):
             adjs.add(key)
         child_adj_sets.append(adjs)
 
-    # Consensus: adjacencies in >= ceil(n_children/2) children
-    threshold = max(n_children // 2, 1)
+    # Consensus: adjacencies shared by >= ceil(n_children/2) children
+    # This is the ancestral state estimate (majority rule)
     adj_counts = defaultdict(int)
     for adjs in child_adj_sets:
         for key in adjs:
             adj_counts[key] += 1
 
+    threshold = max(n_children // 2, 1)
     for (h1, h2), count in adj_counts.items():
         if count >= threshold:
             ancestor.graph.add_edge(h1, h2, support=count)
@@ -263,8 +264,16 @@ def _detect_branch_events(ancestor, mc, branch, src, min_hogs,
     ncf = _detect_ncf(ancestor, mc, branch, src)
     events.extend(ncf)
 
-    # RT/URT
-    rt = _detect_rt(ancestor, ancest_adj_set, mc, child_adj_set, branch, src)
+    # RT/URT: use sibling edges (not consensus) for cross-connection detection
+    sibling_adj_set = set()
+    if all_mapped_children:
+        for ci2, mc2 in enumerate(all_mapped_children):
+            if all_child_ids and all_child_ids[ci2] == src:
+                continue
+            for h1, h2 in mc2.get_adjacencies(include_telomere=False):
+                key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
+                sibling_adj_set.add(key)
+    rt = _detect_rt(ancestor, sibling_adj_set, mc, child_adj_set, branch, src)
     events.extend(rt)
 
     return events
@@ -544,12 +553,16 @@ def _detect_rt(ancestor, ancest_adj_set, mc, child_adj_set, branch, src):
     """Detect RT/URT via cross-connection pattern.
 
     RT: A-B + C-D → A-D + C-B
-    Detection: (A,B) in ancestor, (C,D) in ancestor
-               (A,D) in child,   (C,B) in child
+    Detection: compares child adjacencies against ALL other children
+    (sibling edges = ancestral state for this branch).
+
+    Uses child_adj_set (this child) vs ancest_adj_set (edges from siblings).
     """
     from .takr_events import TAKREvent
 
     events = []
+    # ancestral = edges in other children(s) but not this one
+    # derived = edges in this child but not in others
     ancest_only = ancest_adj_set - child_adj_set
     mc_only = child_adj_set - ancest_adj_set
 

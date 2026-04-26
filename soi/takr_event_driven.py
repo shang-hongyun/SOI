@@ -126,14 +126,11 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
     """Event-driven reconstruction v2 -- ColoredGraph: colored graph + cycle detection + path cover."""
     from .takr_colored_graph import ColoredGraph
 
-    def _wgd_collapse(post_graph, node_id, ploidy):
+    def _wgd_collapse(post_graph, node_id, ploidy, parent_hog_level):
         """WGD collapse: pair post-WGD chromosomes by HOG similarity → pre-WGD.
 
-        post_graph: post-resolution ColoredGraph (node's own genome).
-        Chromosome pairing based on HOG content Jaccard similarity.
-
-        For leaf: HOG mapping already merged subgenome copies,
-        path_cover gives correct count directly.
+        post_graph: ColoredGraph (node's own genome, already at the correct HOG level).
+        parent_hog_level: 父节点的 HOG 层级（结果映射到此层级）。
         """
         logger.info("Reconstructing node %s_preWGD [v2 ColoredGraph]", node_id)
         t_collapse = time.time()
@@ -148,6 +145,13 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             anc.node_id = "{}_pre".format(node_id)
             logger.info("  Done: %d -> %d chroms, 0 events (%.1fs)",
                          n_post, n_post, time.time() - t_collapse)
+            # Map to parent HOG level
+            if parent_hog_level != node_id:
+                saved_events = list(anc.events)
+                anc = akr._map_to_parent_hogs(parent_hog_level, anc,
+                                               source_id="{}_pre".format(node_id))
+                anc.events = saved_events
+            anc.node_id = "{}_pre".format(node_id)
             return anc, []
 
         # Build chromosome-level similarity matrix
@@ -196,6 +200,13 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         pre_anc = pre_G.to_ancestral_graph()
         pre_anc.node_id = "{}_pre".format(node_id)
         n_pre = len(list(pre_anc.chromosomes))
+        # Map to parent HOG level
+        if parent_hog_level != node_id:
+            saved_events = list(pre_anc.events)
+            pre_anc = akr._map_to_parent_hogs(parent_hog_level, pre_anc,
+                                               source_id="{}_pre".format(node_id))
+            pre_anc.events = saved_events
+        pre_anc.node_id = "{}_pre".format(node_id)
         logger.info("  Done: %d -> %d chroms, 0 events (%.1fs)",
                      n_post, n_pre, time.time() - t_collapse)
         return pre_anc, []
@@ -217,7 +228,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             mapped = akr._map_to_parent_hogs(parent_id, akr.leaf_graphs[node_id], source_id=node_id)
             G_leaf = ColoredGraph(hog_level=node_id)
             G_leaf.add_child(node_id, mapped)
-            pre_anc, _ = _wgd_collapse(G_leaf, node_id, ploidy)
+            pre_anc, _ = _wgd_collapse(G_leaf, node_id, ploidy, parent_id)
             akr.pre_wgd_graphs[node_id] = pre_anc
             continue
         elif node.is_leaf():
@@ -270,9 +281,10 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         logger.info("  Done: %d chroms, %d events (%.1fs)",
                      n_chrom, len(ancestor.events), time.time() - t_node)
         if ploidy > 1:
-            pre_anc, events = _wgd_collapse(G, node_id, ploidy)
+            parent_node = node.up
+            parent_name = parent_node.name if parent_node else node_id
+            pre_anc, events = _wgd_collapse(G, node_id, ploidy, parent_name)
             akr.pre_wgd_graphs[node_id] = pre_anc
-            # Set virtual branch on pre-WGD events (stored on pre_anc)
             virtual_branch = "{}_preWGD-{}".format(node_id, node_id)
             for e in pre_anc.events:
                 e.branch = virtual_branch

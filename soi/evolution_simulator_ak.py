@@ -31,7 +31,7 @@ from collections import defaultdict, Counter
 from ete3 import Tree
 import networkx as nx
 
-from .ak_dotplot import draw_ancestor_dotplots
+from .ak_dotplot import draw_ancestor_dotplots, draw_branch_dotplots
 from .tree import convert_newick
 
 
@@ -186,6 +186,7 @@ class GeneTracker:
         self.gene_is_gain = {}
         self.gene_dup_of = {}
         self.gene_dup_type = {}
+        self.gene_parent = {}       # maps gene_id -> immediate parent gene_id
         self.gain_genes = []
 
     def _next_homolog_id(self, anc_gene):
@@ -206,6 +207,7 @@ class GeneTracker:
         anc = self.gene_ancestor.get(original_gid, original_gid)
         gid = self._next_homolog_id(anc)
         self.gene_ancestor[gid] = anc
+        self.gene_parent[gid] = original_gid
         if species is not None:
             self.gene_species[gid] = species
         wgd = dict(self.gene_wgd_copies.get(original_gid, {}))
@@ -218,6 +220,7 @@ class GeneTracker:
         anc = self.gene_ancestor.get(original_gid, original_gid)
         gid = self._next_homolog_id(anc)
         self.gene_ancestor[gid] = anc
+        self.gene_parent[gid] = original_gid
         if species is not None:
             self.gene_species[gid] = species
         self.gene_wgd_copies[gid] = dict(self.gene_wgd_copies.get(original_gid, {}))
@@ -929,7 +932,7 @@ class EvolutionSimulator:
         output_files.append(os.path.join(outdir, "ortholog_groups.txt"))
         self._write_orthologs(outdir, species)
         output_files.append(os.path.join(outdir, "ortholog_pairs.txt"))
-        self._write_events(outdir)
+        self._write_events(outdir, tree)
         output_files.append(os.path.join(outdir, "events.tsv"))
         self._write_true_hogs(outdir, tree, species)
         output_files.append(os.path.join(outdir, "true_hogs.tsv"))
@@ -938,6 +941,11 @@ class EvolutionSimulator:
         draw_ancestor_dotplots(
             tree, self.all_node_karyotypes, outdir,
             ancestor_fn=self.tracker.get_ancestor)
+        # Per-branch dotplots (parent → child)
+        branch_dir = os.path.join(outdir, "branch_dotplots")
+        draw_branch_dotplots(
+            tree, self.all_node_karyotypes, branch_dir,
+            gene_parent=self.tracker.gene_parent)
         # Collect dotplot PNGs
         root_name = None
         for node in tree.traverse("preorder"):
@@ -949,6 +957,17 @@ class EvolutionSimulator:
             if name == root_name or name not in self.all_node_karyotypes:
                 continue
             output_files.append(os.path.join(outdir, "dotplot_{}.png".format(name)))
+        # Collect branch dotplot PNGs
+        for node in tree.traverse("preorder"):
+            if node.is_root() or node.up is None:
+                continue
+            parent_key = node.up.name
+            child_key = node.name
+            if parent_key in self.all_node_karyotypes and child_key in self.all_node_karyotypes:
+                parent_label = parent_key if parent_key else "root"
+                child_label = child_key if child_key else "unnamed"
+                output_files.append(os.path.join(
+                    branch_dir, "dotplot_{}_{}.png".format(parent_label, child_label)))
 
         print("Done! Output files:")
         for f in sorted(output_files):
@@ -1100,13 +1119,52 @@ class EvolutionSimulator:
                             if compatible:
                                 fout.write("{}\t{}\n".format(min(g1, g2), max(g1, g2)))
 
-    def _write_events(self, outdir, path="events.tsv"):
+    def _write_events(self, outdir, tree, path="events.tsv"):
+        """Write events in unified branch-level format.
+        
+        Format: branch, event_type, genes, chroms, desc, support
+        where branch = parent->child identifier.
+        """
+        # Build parent_of mapping from tree
+        parent_of = {}
+        for node in tree.traverse("preorder"):
+            if not node.is_root():
+                parent_of[node.name] = node.up.name
+
         evt_path = os.path.join(outdir, path)
         with open(evt_path, 'w') as f:
-            f.write("node\tevent_type\tdetails\n")
+            f.write("branch\tevent_type\tgenes\tchroms\tdesc\tsupport\n")
             for e in self.events:
-                details = {k: v for k, v in e.items() if k not in ("node", "type")}
-                f.write("{}\t{}\t{}\n".format(e['node'], e['type'], details))
+                if e['type'] in ('rearrangements',):
+                    continue  # skip summary events
+                # branch = parent - child
+                child = e['node']
+                parent = parent_of.get(child, '?')
+                branch = "{}-{}".format(parent, child)
+                # canonicalize event type
+                from .takr_events import canonicalize_event_type
+                etype = canonicalize_event_type(e['type'])
+                # extract fields
+                genes = self._fmt_genes(e)
+                chroms = e.get('chroms', e.get('chrom', ''))
+                if isinstance(chroms, list):
+                    chroms = ','.join(str(x) for x in chroms)
+                desc = e.get('desc', e.get('pos', ''))
+                if not desc:
+                    desc = "{}: {}".format(etype, chroms)
+                support = e.get('support', 1)
+                f.write("{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                    branch, etype, genes, chroms, desc, support))
+
+    def _fmt_genes(self, e):
+        """Extract genes string from event dict."""
+        for key in ('genes', 'gene'):
+            vals = e.get(key)
+            if vals:
+                if isinstance(vals, list):
+                    return ','.join(str(v) for v in vals)
+                return str(vals)
+        return ''
 
     def _write_true_hogs(self, outdir, tree, species):
         tree_copy = tree.copy("deepcopy")

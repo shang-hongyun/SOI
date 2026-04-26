@@ -152,15 +152,19 @@ def match_events_branch(
     truth_events: List[dict],
     detected_events: List[dict],
     min_jaccard: float = 0.3,
+    match_mode: str = 'genes',
 ) -> dict:
     """Match detected events to truth events within a single branch.
 
-    Greedy matching by event_type, then by highest gene set Jaccard.
+    Two modes:
+    - 'genes' (default): Greedy matching by event_type + highest gene Jaccard
+    - 'type_only': Count-based matching, ignore gene IDs (for cross-namespace)
 
     Args:
         truth_events: List of truth event dicts for one branch
         detected_events: List of detected event dicts for one branch
         min_jaccard: Minimum Jaccard similarity for gene set match
+        match_mode: 'genes' or 'type_only'
 
     Returns:
         dict with keys: tp, fp, fn, matched, false_positives, false_negatives
@@ -180,27 +184,39 @@ def match_events_branch(
     for etype in sorted(all_types):
         t_list = list(truth_by_type.get(etype, []))
         d_list = list(det_by_type.get(etype, []))
-        used_t, used_d = set(), set()
 
-        for di, d in enumerate(d_list):
-            best_j, best_ti = 0, -1
+        if match_mode == 'type_only':
+            # Count-based: TP = min(truth, detected)
+            tp_count = min(len(t_list), len(d_list))
+            for i in range(tp_count):
+                matched_pairs.append((t_list[i], d_list[i]))
+            for i in range(tp_count, len(t_list)):
+                false_negatives.append(t_list[i])
+            for i in range(tp_count, len(d_list)):
+                false_positives.append(d_list[i])
+        else:
+            # Gene Jaccard matching
+            used_t, used_d = set(), set()
+
+            for di, d in enumerate(d_list):
+                best_j, best_ti = 0, -1
+                for ti, t in enumerate(t_list):
+                    if ti in used_t:
+                        continue
+                    j = _genes_jaccard(t['genes'], d['genes'])
+                    if j > best_j:
+                        best_j, best_ti = j, ti
+                if best_j >= min_jaccard:
+                    used_t.add(best_ti)
+                    used_d.add(di)
+                    matched_pairs.append((t_list[best_ti], d))
+
             for ti, t in enumerate(t_list):
-                if ti in used_t:
-                    continue
-                j = _genes_jaccard(t['genes'], d['genes'])
-                if j > best_j:
-                    best_j, best_ti = j, ti
-            if best_j >= min_jaccard:
-                used_t.add(best_ti)
-                used_d.add(di)
-                matched_pairs.append((t_list[best_ti], d))
-
-        for ti, t in enumerate(t_list):
-            if ti not in used_t:
-                false_negatives.append(t)
-        for di, d in enumerate(d_list):
-            if di not in used_d:
-                false_positives.append(d)
+                if ti not in used_t:
+                    false_negatives.append(t)
+            for di, d in enumerate(d_list):
+                if di not in used_d:
+                    false_positives.append(d)
 
     return {
         'tp': len(matched_pairs),
@@ -242,17 +258,17 @@ def calculate_metrics(tp: int, fp: int, fn: int) -> dict:
 def evaluate_branches(
     truth_by_branch: Dict[str, List[dict]],
     detected_by_branch: Dict[str, List[dict]],
+    match_mode: str = 'genes',
 ) -> Tuple[Dict, Dict]:
     """Evaluate all branches, compute per-branch and global metrics.
 
     Args:
         truth_by_branch: {branch: [event_dicts]} from load_events
         detected_by_branch: {branch: [event_dicts]} from load_events
+        match_mode: 'genes' (Jaccard) or 'type_only' (count-based)
 
     Returns:
         (results_by_branch, global_metrics)
-        results_by_branch: {branch: {metrics, by_type, ...}}
-        global_metrics: {micro_F1: {...}}
     """
     all_branches = set(list(truth_by_branch.keys()) +
                        list(detected_by_branch.keys()))
@@ -263,7 +279,7 @@ def evaluate_branches(
     for branch in sorted(all_branches):
         truth_e = truth_by_branch.get(branch, [])
         det_e = detected_by_branch.get(branch, [])
-        match = match_events_branch(truth_e, det_e)
+        match = match_events_branch(truth_e, det_e, match_mode=match_mode)
 
         # Per-type breakdown
         by_type = {}

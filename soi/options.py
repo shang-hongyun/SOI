@@ -91,6 +91,25 @@ def func_hog(**kargs):
 	from .hog import xmain as hog_main
 	hog_main(**kargs)
 
+def args_detandem(parser):
+	parser.add_argument('-og', '-orthogroup', required=True, type=str,
+						dest='ogfile', metavar='FILE',
+						help='Orthogroup file (MCL format). [required]')
+	parser.add_argument('-g', '-gff', required=True, type=str,
+						dest='gfffile', metavar='FILE',
+						help='GFF annotation file. [required]')
+	parser.add_argument('-s', '-synteny', type=str, nargs='*', default=None,
+						dest='orthfiles', metavar='FILE',
+						help='Ortholog/Collinearity files. [optional]')
+	parser.add_argument('-d', '-dist', type=int, default=200,
+						dest='tandem_dist', metavar='INT',
+						help='Maximum index distance for tandem duplication. '
+						'[default=%(default)s]')
+
+def func_detandem(**kargs):
+	from .detandem import Detandem
+	Detandem(**kargs).run()
+
 def args_sim(parser):
 	from .evolution_simulator_ak import sim_args
 	sim_args(parser)
@@ -321,6 +340,9 @@ def makeArgs():
 	parser_hog = subparsers.add_parser('hog',
 									   help='Split HOGs from orthogroups using synteny and species tree.')
 	args_hog(parser_hog)
+	parser_detandem = subparsers.add_parser('detandem',
+									   help='Remove tandem duplicate genes from orthogroups.')
+	args_detandem(parser_detandem)
 	parser_rak = subparsers.add_parser('rak',
 									   help='Reconstruct ancestral karyotypes based on HOG and telomere-centric model.')
 	args_rak(parser_rak)
@@ -344,6 +366,7 @@ FUNC = {
 	'stats': func_stats,
 	'depth': func_depth,
 	'hog': func_hog,
+	'detandem': func_detandem,
 	'rak': func_rak,
 	'sim': func_sim,
 }

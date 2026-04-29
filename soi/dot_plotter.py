@@ -198,6 +198,7 @@ def _resolve_sp(sp, gff_files):
 	if sp is None:
 		return None
 	from .mcscan import XGff
+	from .creat_ctl import sort_version
 	chrs = []
 	seen = set()
 	for line in XGff(gff_files):
@@ -206,7 +207,7 @@ def _resolve_sp(sp, gff_files):
 			seen.add(line.chrom)
 	if not chrs:
 		logger.warning('No chromosomes found in GFF for species "{}"'.format(sp))
-	return sorted(chrs)
+	return sort_version(chrs)
 
 
 def reset_args(args):
@@ -373,8 +374,12 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	xcsize = ycsize = fontsize * cfont_scale  # chromosome labels
 	# resolve custom subgenome colors
 	sg_colors = sg_colors or _sg_colors
+	# warn if ancestor-required options are set but no ancestor file given
+	if bar_colorby_sg or colorby_sg or colorby_anc:
+		if not (xbars or ybars or xanc or yanc):
+			logger.warning('--bar-colorby-sg/--colorby-sg/--colorby-anc set but no ancestor file (--xanc/--yanc/--xbars/--ybars) provided')
 	# warn if subgenome palette is smaller than actual subgenome count
-	if bar_colorby_sg or colorby_sg:
+	elif bar_colorby_sg or colorby_sg:
 		for anc_file in (xbars, ybars, xanc, yanc):
 			if anc_file:
 				_warn_sg_palette(anc_file, sg_colors)

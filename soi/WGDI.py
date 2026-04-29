@@ -154,7 +154,7 @@ class AK:
         plt.ylabel('')
         plt.savefig(outfig, bbox_inches='tight', transparent=True)
 
-    def plot_dotplot(self, ax=None, d_offset={}, gff=None, align='center', xy=1,  axis='x', width=0.5, label=True, gene_axis=False, fontsize=10):
+    def plot_dotplot(self, ax=None, d_offset={}, gff=None, align='center', xy=1,  axis='x', width=0.5, label=True, gene_axis=False, fontsize=10, color_fn=None):
         bar = plt.bar if axis == 'y' else plt.barh
         has_lab = False
         texts = []
@@ -163,8 +163,9 @@ class AK:
                 continue
             offset = d_offset[sgement.chrom] + sgement.start
             lab = sgement.label if label else None
+            color = color_fn(sgement) if color_fn else sgement.color
             bar(xy, len(sgement), width, offset,
-                color=sgement.color, align=align, )
+                color=color, align=align, )
             if not lab:
                 continue
             has_lab = True

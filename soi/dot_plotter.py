@@ -18,6 +18,7 @@ from .RunCmdsMP import logger
 from .WGDI import AK
 from .ploidy_plotter import add_ploidy_opts, get_ploidy, plot_bars
 from .mcscan import Collinearity, XGff, XCollinearity
+from .colors import COLORS_HEX as _sg_colors
 
 cmaps = {
             'viridis', 'plasma', 'inferno', 'magma', 'cividis',
@@ -45,10 +46,10 @@ def dotplot_args(parser):
 						help="syntenic block file (*.collinearity, output of MCSCANX/WGDI)[required]")
 	parser.add_argument('-g', metavar='FILE', type=str, required=True, nargs='+',
 						help="gene annotation gff file (*.gff, one of MCSCANX/WGDI input)[required]")
-	parser.add_argument('-c', metavar='FILE', type=str, required=True,
-						help="chromosomes config file (*.ctl, same format as MCSCANX dotplotter)[required]")
+	parser.add_argument('-c', metavar='FILE', type=str, required=False, default=None,
+						help="chromosomes config file (*.ctl, same format as MCSCANX dotplotter). Use -c or (--xchrs + --ychrs). [default=%(default)s]")
 	parser.add_argument('-o', metavar='STR', type=str, default=None,
-						help="output file prefix. [default: the same as `-c`]")
+						help="output file prefix. [default: the same as `-c`, or 'dotplot']")
 	parser.add_argument('--format', metavar='FORMAT', action='append', default=['pdf', 'png'],
 						help="output figure format [default=%(default)s]")
 	parser.add_argument('--homology', action='store_true', default=False,
@@ -81,10 +82,10 @@ def dotplot_args(parser):
 						   help="bed/pos file to add vertical lines. [default=%(default)s]")
 	group_dot.add_argument('--ylines', metavar='FILE', type=str, default=None,
 						   help="bed/pos file to add horizontal lines. [default=%(default)s]")
-	group_dot.add_argument('--xchrs', metavar='CHR', type=str, nargs='+', default=None,
-						   help="chromosomes to plot on x axis (overrides -c). [default=%(default)s]")
-	group_dot.add_argument('--ychrs', metavar='CHR', type=str, nargs='+', default=None,
-						   help="chromosomes to plot on y axis (overrides -c). [default=%(default)s]")
+	group_dot.add_argument('--xchrs', metavar='CHR/FILE', type=str, nargs='+', default=None,
+						   help="chromosomes to plot on x axis (overrides -c); or a file whose first column lists chromosomes. [default=%(default)s]")
+	group_dot.add_argument('--ychrs', metavar='CHR/FILE', type=str, nargs='+', default=None,
+						   help="chromosomes to plot on y axis (overrides -c); or a file whose first column lists chromosomes. [default=%(default)s]")
 	group_dot.add_argument('--xlabel', type=str, default=None,
 						   help="x label (species) for dot plot (top). [default=%(default)s]")
 	group_dot.add_argument('--ylabel', type=str, default=None,
@@ -179,6 +180,15 @@ def dotplot_args(parser):
 						   help="plot binned Ks. [default=%(default)s]")
 
 
+def _resolve_chrs(xchrs):
+	'''If xchrs is a single-element list that is a file path, read its first column.'''
+	if xchrs is None:
+		return None
+	if len(xchrs) == 1 and os.path.isfile(xchrs[0]):
+		return [line.strip().split()[0] for line in open(xchrs[0]) if line.strip() and not line.startswith('#')]
+	return xchrs
+
+
 def reset_args(args):
 	args.matrix = None
 	args.hide_blocks = None
@@ -189,8 +199,15 @@ def reset_args(args):
 	args.clip_ks = None
 	args.hist_ylim = None
 
+	# --xchrs/--ychrs: accept file input (single-element list that is a file → read first column)
+	args.xchrs = _resolve_chrs(args.xchrs)
+	args.ychrs = _resolve_chrs(args.ychrs)
+
 	if args.o is None:
-		args.o = os.path.splitext(os.path.basename(args.c))[0]
+		if args.c:
+			args.o = os.path.splitext(os.path.basename(args.c))[0]
+		else:
+			args.o = 'dotplot'
 	# ploidy plot
 	if args.window_step is None:
 		args.window_step = args.window_size / 5
@@ -229,18 +246,21 @@ def main(args):
 	reset_args(args)
 	collinearity = args.s
 	gff = args.g
-	ctl = args.c
 	prefix = args.o
 	kaks = args.kaks
 	ks_args = {'yn00': args.yn00, 'method': args.method, 'fdtv': args.fdtv}
 	if args.hide_blocks is not None:
 		args.hide_blocks = set([line.strip().split()[0]
 							   for line in open(args.hide_blocks)])
-	chrs1, chrs2 = parse_ctl(ctl)
-	if args.xchrs:
-		chrs1 = args.xchrs
-	if args.ychrs:
-		chrs2 = args.ychrs
+	chrs1, chrs2 = args.xchrs, args.ychrs
+	if args.c:
+		chrs1, chrs2 = parse_ctl(args.c)
+		if args.xchrs:
+			chrs1 = args.xchrs
+		if args.ychrs:
+			chrs2 = args.ychrs
+	if not chrs1 or not chrs2:
+		sys.exit('Error: need either -c (ctl file) or both --xchrs and --ychrs')
 	same_sp = True if chrs1 == chrs2 else False
 	blocks, lines1, lines2, ortholog_graph, chrs1, chrs2, d_offset1, d_offset2 = \
 		parse_collinearity(
@@ -442,32 +462,25 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	xlabelpad, ylabelpad = 10, 7.5
 	xbar_file = xbars or xanc
 	ybar_file = ybars or yanc
+	bar_color_fn = (lambda seg: sg_colors[seg.subgenome % len(sg_colors)]) if bar_colorby_sg else None
 	if xbar_file:
 		y = ylim
 		width = ylim / 60
 		ylim += width
-		if bar_colorby_sg:
-			has_lab = _plot_sg_bar(xbar_file, xoffset, gene_axis, gff,
-				xy=y, axis='x', width=width, label=xbarlab, fontsize=xcsize-1,
-				sg_colors=sg_colors)
-		else:
-			has_lab = AK(xbar_file).plot_dotplot(xy=y, align='edge', d_offset=xoffset,
-				axis='x', width=width, label=xbarlab,
-				gene_axis=gene_axis, gff=gff, fontsize=xcsize-1)
+		has_lab = AK(xbar_file).plot_dotplot(xy=y, align='edge', d_offset=xoffset,
+			axis='x', width=width, label=xbarlab,
+			gene_axis=gene_axis, gff=gff, fontsize=xcsize-1,
+			color_fn=bar_color_fn)
 		if has_lab:
 			xlabelpad += xcsize
 	if ybar_file:
 		x = xlim
 		width = xlim / 60
 		xlim += width
-		if bar_colorby_sg:
-			has_lab = _plot_sg_bar(ybar_file, yoffset, gene_axis, gff,
-				xy=x, axis='y', width=width, label=ybarlab, fontsize=ycsize-1,
-				sg_colors=sg_colors)
-		else:
-			has_lab = AK(ybar_file).plot_dotplot(xy=x, align='edge', d_offset=yoffset,
-				axis='y', width=width, label=ybarlab,
-				gene_axis=gene_axis, gff=gff, fontsize=ycsize-1)
+		has_lab = AK(ybar_file).plot_dotplot(xy=x, align='edge', d_offset=yoffset,
+			axis='y', width=width, label=ybarlab,
+			gene_axis=gene_axis, gff=gff, fontsize=ycsize-1,
+			color_fn=bar_color_fn)
 		if has_lab:
 			ylabelpad += ycsize * 0.75
 
@@ -742,9 +755,9 @@ def _remove_prefix(labels):
 		logger.info('no same prefix to remove')
 	return labels
 
-# subgenome colors for --colorby-sg
-_sg_colors = ['#f9c00c', '#00b9f1', '#7200da', '#f9320c', '#00b8a9',
-			  '#ff6f61', '#6b5b95', '#88b04b', '#f7cac9', '#92a8d1']
+# # subgenome colors for --colorby-sg
+# _sg_colors = ['#f9c00c', '#00b9f1', '#7200da', '#f9320c', '#00b8a9',
+			  # '#ff6f61', '#6b5b95', '#88b04b', '#f7cac9', '#92a8d1']
 
 
 def _build_anc_segments(anc_file, d_offset, gene_axis, gff):
@@ -788,37 +801,6 @@ def _lookup_anc_color(segments, pos, mode='sg', sg_colors=None):
 		else:
 			return color
 	return None
-
-
-def _plot_sg_bar(anc_file, d_offset, gene_axis, gff, xy, axis, width, label, fontsize, sg_colors=None):
-	'''Render a subgenome-colored bar strip using ancestor file data.'''
-	if sg_colors is None:
-		sg_colors = _sg_colors
-	bar = plt.bar if axis == 'y' else plt.barh
-	has_lab = False
-	for seg in AK(anc_file).lazy_lines(gene_axis, gff=gff):
-		if seg.chrom not in d_offset:
-			continue
-		offset = d_offset[seg.chrom] + seg.start
-		sg_color = sg_colors[seg.subgenome % len(sg_colors)]
-		bar(xy, len(seg), width, offset, color=sg_color, align='edge')
-		if not label:
-			continue
-		has_lab = True
-		lab = seg.label
-		if not lab:
-			continue
-		if axis == 'x':
-			x = offset + len(seg) / 2
-			y = xy + width * 1.05
-			plt.text(x, y, lab, horizontalalignment='center',
-					verticalalignment='bottom', fontsize=fontsize)
-		else:
-			x = xy + width * 1.07
-			y = offset + len(seg) / 2
-			plt.text(x, y, lab, horizontalalignment='left',
-					verticalalignment='center', fontsize=fontsize)
-	return has_lab
 
 
 def parse_hvlines(bedfile, min_span=10):

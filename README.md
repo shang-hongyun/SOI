@@ -236,25 +236,31 @@ soi phylo -og cluster.mcl.plus -pep pep.faa -mm 0.5
 The subcommand `dotplot` enables visualization and evaluation of synteny, 
 with colored by the Orthology Index or Ks values.
 
-Usage examples: see [Quick Start](#Quick-Start).
-
-Additional usage with ancestor files:
+Usage examples:
 ```
-# show ancestral chromosome colors on the axes
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl \
-    --xanc anc_x.txt --yanc anc_y.txt --xbars anc_x.txt -o dot_anc
+# basic dotplot with Ks coloring
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --kaks wgdi_ks.tsv -o dot_ks
 
-# color dots by subgenome from x axis
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl \
-    --xanc anc_x.txt --colorby-sg x -o dot_sg
+# color by Orthology Index (filter + color)
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --ofdir OrthoFinder/Results/ -of-color --of-ratio 0.6 -o dot_oi
 
-# color bars by subgenome (instead of ancestral chromosome)
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl \
-    --xanc anc_x.txt --xbars anc_x.txt --bar-colorby-sg -o dot_bar_sg
+# with ploidy subplots (a-d panels)
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --kaks wgdi_ks.tsv --ks-hist --plot-ploidy --number-plots -o dot_full
 
-# show ancestor labels on the bars
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl \
-    --xanc anc_x.txt --xbars anc_x.txt --xbarlab -o dot_barlab
+# specify chromosomes directly (no ctl file)
+soi dotplot -s collinearity.ortho -g all.gff --xchrs Pt1 Pt2 --ychrs Sd3 Sd4 -o dot_chrs
+
+# auto-detect chromosomes by species name from GFF
+soi dotplot -s collinearity.ortho -g all.gff --xsp Vitis_vinifera --ysp Daucus_carota -o dot_sp
+
+# ancestor chromosome bars on axes
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --xanc anc_x.txt --xbars anc_x.txt --xbarlab -o dot_anc
+
+# color dots and bars by subgenome
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --xanc anc_x.txt --colorby-sg x --xbars anc_x.txt --bar-colorby-sg -o dot_sg
+
+# custom subgenome colors
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --xanc anc_x.txt --bar-colorby-sg --sg-colors '#FF0000' '#00FF00' '#0000FF' '#FFFF00' -o dot_custom
 ```
 
 #### `depth` ####
@@ -466,16 +472,16 @@ Format: `chrom  start  end  color  subgenome  [label]`
 
 ```
 # basic format (5 columns):
-Chr1   0     100   #FF0000  1
-Chr1   100   250   #00B9F1  2
-Chr2   0     80    #FF0000  1
-Chr2   80    200   #7200DA  3
+Pt1   0     100   #FF0000  1
+Pt1   100   250   #00B9F1  2
+Pt2   0     80    #FF0000  1
+Pt2   80    200   #7200DA  3
 
 # extended format (6 columns, label for --xbarlab / --ybarlab):
-Chr1   0     100   #FF0000  1   Anc1A
-Chr1   100   250   #00B9F1  2   Anc1B
-Chr2   0     80    #FF0000  1   Anc2A
-Chr2   80    200   #7200DA  3   Anc2B
+Pt1   0     100   #FF0000  1   Anc1A
+Pt1   100   250   #00B9F1  2   Anc1B
+Pt2   0     80    #FF0000  1   Anc2A
+Pt2   80    200   #7200DA  3   Anc2B
 ```
 
 Columns: `chrom` (modern chromosome), `start`/`end` (gene-order coordinates), `color` (hex color for ancestor chromosome), `subgenome` (integer subgenome ID), `label` (optional, shown when `--xbarlab`/`--ybarlab` is set).
@@ -490,8 +496,8 @@ The Newick format (with or without branch lengths and support values) is support
 # with branch lengths:
 (Vitis_vinifera:0.1,(Daucus_carota:0.05,(Angelica_sinensis:0.02,Apium_graveolens:0.02):0.03):0.05);
 
-# with support values:
-(Vitis_vinifera,(Daucus_carota,(Angelica_sinensis,Apium_graveolens)100)85);
+# with WGD indicator (p=2: tetraploidy, p=2: hexaploidy, etc.):
+(Vitis_vinifera:0.1,(Daucus_carota:0.05,(Angelica_sinensis:0.02,Apium_graveolens:0.02):0.03)[p=2]:0.05);
 ```
 
 In summary, users may be not needed to preprare additional files for this tool. And other popular format can be supported upon request.
@@ -518,9 +524,9 @@ SOG3002: Angelica_sinensis|AS10G01791 Apium_graveolens|Ag1G00857 Apium_graveolen
 The `hog` subcommand outputs a TSV file with hierarchical orthologous group information:
 ```
 HOG	OG	Tree_Node	Parent	Genes
-SOG100.5.hog0	SOG100	5	Root	Sp1|G001 Sp1|G002 Sp2|G003
-SOG100.3.hog0	SOG100	3	SOG100.5.hog0	Sp1|G001 Sp2|G003
-SOG100.3.hog1	SOG100	3	SOG100.5.hog0	Sp1|G002
+SOG100.N5.hog0	SOG100	N5	Root	Sp1|G001 Sp1|G002 Sp2|G003
+SOG100.N3.hog0	SOG100	N3	SOG100.N5.hog0	Sp1|G001 Sp2|G003
+SOG100.N3.hog1	SOG100	N3	SOG100.N5.hog0	Sp1|G002
 ```
 Columns: `HOG` (unique HOG ID), `OG` (source orthogroup), `Tree_Node` (species tree node), `Parent` (parent HOG or "Root" if at root), `Genes` (space-separated gene IDs).
 

@@ -120,7 +120,7 @@ def dotplot_args(parser):
 	group_anc.add_argument('--bar-colorby-sg', action='store_true', default=False,
 						   help="color bars (xbars/ybars) by subgenome instead of ancestor color. [default=%(default)s]")
 	group_anc.add_argument('--sg-colors', metavar='COLOR', type=str, nargs='+', default=None,
-						   help="custom subgenome colors (hex codes, >= number of subgenomes; e.g. --sg-colors '#f9c00c' '#00b9f1'). [default: built-in palette]")
+						   help="custom subgenome colors (>= number of subgenomes; e.g. --sg-colors '#f9c00c' '#00b9f1'). [default: built-in palette]")
 
 	group_orth = parser.add_argument_group('Orthology Index filter/color',
 										   'filtering or coloring blocks by Orthology Index (prior to Ks color)')

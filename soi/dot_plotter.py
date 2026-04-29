@@ -81,6 +81,10 @@ def dotplot_args(parser):
 						   help="bed/pos file to add vertical lines. [default=%(default)s]")
 	group_dot.add_argument('--ylines', metavar='FILE', type=str, default=None,
 						   help="bed/pos file to add horizontal lines. [default=%(default)s]")
+	group_dot.add_argument('--xchrs', metavar='CHR', type=str, nargs='+', default=None,
+						   help="chromosomes to plot on x axis (overrides -c). [default=%(default)s]")
+	group_dot.add_argument('--ychrs', metavar='CHR', type=str, nargs='+', default=None,
+						   help="chromosomes to plot on y axis (overrides -c). [default=%(default)s]")
 	group_dot.add_argument('--xlabel', type=str, default=None,
 						   help="x label (species) for dot plot (top). [default=%(default)s]")
 	group_dot.add_argument('--ylabel', type=str, default=None,
@@ -95,11 +99,11 @@ def dotplot_args(parser):
 						   help="dot size [default=%(default)s]")
 
 	group_anc = parser.add_argument_group('Ancestor / Subgenome',
-										   'ancestor-based coloring and chromosome bars')
+										   'ancestor/subgenome-based coloring and chromosome bars')
 	group_anc.add_argument('--xanc', metavar='FILE', type=str, default=None,
-						   help="ancestor file for x axis (used by colorbar fallback, --colorby-sg/anc x). [default=%(default)s]")
+						   help="ancestor file for x axis (used by colorbar fallback, --colorby-sg/anc x; same format as WGDI). [default=%(default)s]")
 	group_anc.add_argument('--yanc', metavar='FILE', type=str, default=None,
-						   help="ancestor file for y axis (used by colorbar fallback, --colorby-sg/anc y). [default=%(default)s]")
+						   help="ancestor file for y axis (used by colorbar fallback, --colorby-sg/anc y; same format as WGDI). [default=%(default)s]")
 	group_anc.add_argument('--colorby-sg', choices=['x', 'y'], default=None,
 						   help="color dots by subgenome from x or y ancestor file. [default=%(default)s]")
 	group_anc.add_argument('--colorby-anc', choices=['x', 'y'], default=None,
@@ -114,12 +118,14 @@ def dotplot_args(parser):
 						   help="add labels for y bars. [default=%(default)s]")
 	group_anc.add_argument('--bar-colorby-sg', action='store_true', default=False,
 						   help="color bars (xbars/ybars) by subgenome instead of ancestor color. [default=%(default)s]")
+	group_anc.add_argument('--sg-colors', metavar='COLOR', type=str, nargs='+', default=None,
+						   help="custom subgenome colors (hex codes, >= number of subgenomes; e.g. --sg-colors '#f9c00c' '#00b9f1'). [default: built-in palette]")
 
 	group_orth = parser.add_argument_group('Orthology Index filter/color',
 										   'filtering or coloring blocks by Orthology Index (prior to Ks color)')
-	group_orth.add_argument('--ofdir', metavar='FOLDER/FILE', type=str, nargs='+', default=None,
+	group_orth.add_argument('-orth', '--ofdir', metavar='FOLDER/FILE', type=str, nargs='+', default=None,
 							help="OrthoFinder output folder/ OrthoMCL output pair file. [default=%(default)s]")
-	group_orth.add_argument('--of-ratio', metavar='FLOAT', type=float, default=0,
+	group_orth.add_argument('-oi', '--of-ratio', metavar='FLOAT', type=float, default=0,
 							help="Orthology Index cutoff (only show blocks >= cutoff) [default=%(default)s]")
 	group_orth.add_argument('--of-color', action='store_true', default=None,
 							help="coloring dots by Orthology Index [default=%(default)s]")
@@ -231,6 +237,10 @@ def main(args):
 		args.hide_blocks = set([line.strip().split()[0]
 							   for line in open(args.hide_blocks)])
 	chrs1, chrs2 = parse_ctl(ctl)
+	if args.xchrs:
+		chrs1 = args.xchrs
+	if args.ychrs:
+		chrs2 = args.ychrs
 	same_sp = True if chrs1 == chrs2 else False
 	blocks, lines1, lines2, ortholog_graph, chrs1, chrs2, d_offset1, d_offset2 = \
 		parse_collinearity(
@@ -309,14 +319,16 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 				plot_bin=None, output_hist=False,
 		xoffset=None, yoffset=None, xbars=None, ybars=None, gff=None,
 		xanc=None, yanc=None, colorby_sg=None, colorby_anc=None,
-		bar_colorby_sg=False,
-				gene_axis=None, xbarlab=True, ybarlab=True,
+		bar_colorby_sg=False, sg_colors=None,
+		gene_axis=None, xbarlab=True, ybarlab=True,
 				hist_ylim=None, xlabel=None, ylabel=None, remove_prefix=True,
 				number_plots=True, same_sp=False, cbar=False,
 				ploidy=False, ploidy_data=None, ortholog_graph=None,
 				of_color=False, homology=False, **kargs
 				):
 	xcsize = ycsize = fontsize * cfont_scale  # chromosome labels
+	# resolve custom subgenome colors
+	sg_colors = sg_colors or _sg_colors
 	xsize = ysize = fontsize * 2.5	 # species labels
 	labsize = fontsize * lfont_scale	# x/y labels of b-d plots
 	lsize = fontsize * 1.7		# a-d labels
@@ -416,7 +428,7 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 				pos = px if use_x else py
 				if pos is None:
 					continue
-				c = _lookup_anc_color(anc_segs, pos, mode=anc_mode)
+				c = _lookup_anc_color(anc_segs, pos, mode=anc_mode, sg_colors=sg_colors)
 				color_arr.append(c if c else 'lightgrey')
 			plt.scatter(kXs[:len(color_arr)], kYs[:len(color_arr)],
 				marker=',', s=point_size, c=color_arr,
@@ -436,7 +448,8 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 		ylim += width
 		if bar_colorby_sg:
 			has_lab = _plot_sg_bar(xbar_file, xoffset, gene_axis, gff,
-				xy=y, axis='x', width=width, label=xbarlab, fontsize=xcsize-1)
+				xy=y, axis='x', width=width, label=xbarlab, fontsize=xcsize-1,
+				sg_colors=sg_colors)
 		else:
 			has_lab = AK(xbar_file).plot_dotplot(xy=y, align='edge', d_offset=xoffset,
 				axis='x', width=width, label=xbarlab,
@@ -449,7 +462,8 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 		xlim += width
 		if bar_colorby_sg:
 			has_lab = _plot_sg_bar(ybar_file, yoffset, gene_axis, gff,
-				xy=x, axis='y', width=width, label=ybarlab, fontsize=ycsize-1)
+				xy=x, axis='y', width=width, label=ybarlab, fontsize=ycsize-1,
+				sg_colors=sg_colors)
 		else:
 			has_lab = AK(ybar_file).plot_dotplot(xy=x, align='edge', d_offset=yoffset,
 				axis='y', width=width, label=ybarlab,
@@ -748,11 +762,13 @@ def _build_anc_segments(anc_file, d_offset, gene_axis, gff):
 	return segments
 
 
-def _lookup_anc_color(segments, pos, mode='sg'):
+def _lookup_anc_color(segments, pos, mode='sg', sg_colors=None):
 	'''Find the segment containing pos and return its color.
 	mode='sg': return subgenome-mapped color
 	mode='anc': return ancestor color string directly
 	'''
+	if sg_colors is None:
+		sg_colors = _sg_colors
 	# binary search for the rightmost segment with plot_start <= pos
 	lo, hi = 0, len(segments)
 	while lo < hi:
@@ -767,22 +783,24 @@ def _lookup_anc_color(segments, pos, mode='sg'):
 	plot_start, plot_end, subgenome, color = seg
 	if plot_start <= pos <= plot_end:
 		if mode == 'sg':
-			idx = subgenome % len(_sg_colors)
-			return _sg_colors[idx]
+			idx = subgenome % len(sg_colors)
+			return sg_colors[idx]
 		else:
 			return color
 	return None
 
 
-def _plot_sg_bar(anc_file, d_offset, gene_axis, gff, xy, axis, width, label, fontsize):
+def _plot_sg_bar(anc_file, d_offset, gene_axis, gff, xy, axis, width, label, fontsize, sg_colors=None):
 	'''Render a subgenome-colored bar strip using ancestor file data.'''
+	if sg_colors is None:
+		sg_colors = _sg_colors
 	bar = plt.bar if axis == 'y' else plt.barh
 	has_lab = False
 	for seg in AK(anc_file).lazy_lines(gene_axis, gff=gff):
 		if seg.chrom not in d_offset:
 			continue
 		offset = d_offset[seg.chrom] + seg.start
-		sg_color = _sg_colors[seg.subgenome % len(_sg_colors)]
+		sg_color = sg_colors[seg.subgenome % len(sg_colors)]
 		bar(xy, len(seg), width, offset, color=sg_color, align='edge')
 		if not label:
 			continue

@@ -4,6 +4,7 @@ import argparse
 from .RunCmdsMP import logger
 from .__version__ import version
 import logging
+from collections import OrderedDict
 
 # 禁用 fontTools 的所有 INFO 级别日志
 logging.getLogger('fontTools').setLevel(logging.WARNING)
@@ -312,9 +313,98 @@ def func_phylo(**kargs):
 	orthomcl_to_astral(**kargs)
 
 
+# ── Subcommand grouping for help display ──────────────────────────────
+
+class GroupedHelpFormatter(argparse.RawDescriptionHelpFormatter):
+	"""argparse HelpFormatter that groups subcommands under categorized headers."""
+
+	def _format_action(self, action):
+		# Intercept subparser actions that carry group metadata
+		if hasattr(action, '_cmd_groups'):
+			return self._format_grouped_subparsers(action)
+		return super()._format_action(action)
+
+	def _format_grouped_subparsers(self, action):
+		# --- header (same logic as _format_action) ---
+		help_position = min(self._action_max_length + 2,
+							self._max_help_position)
+		help_width = max(self._width - help_position, 11)
+		action_width = help_position - self._current_indent - 2
+		action_header = self._format_action_invocation(action)
+
+		if not action.help:
+			tup = self._current_indent, '', action_header
+			action_header = '%*s%s\n' % tup
+			indent_first = 0
+		elif len(action_header) <= action_width:
+			tup = self._current_indent, '', action_width, action_header
+			action_header = '%*s%-*s  ' % tup
+			indent_first = 0
+		else:
+			tup = self._current_indent, '', action_header
+			action_header = '%*s%s\n' % tup
+			indent_first = help_position
+
+		parts = [action_header]
+
+		if action.help and action.help.strip():
+			help_text = self._expand_help(action)
+			if help_text:
+				help_lines = self._split_lines(help_text, help_width)
+				parts.append('%*s%s\n' % (indent_first, '', help_lines[0]))
+				for line in help_lines[1:]:
+					parts.append('%*s%s\n' % (help_position, '', line))
+		elif not action_header.endswith('\n'):
+			parts.append('\n')
+
+		# --- grouped command listing ---
+		flat = [(n, h) for names in action._cmd_groups.values() for n, h in names]
+		w = max(len(n) for n, _ in flat)
+		for group_name, cmds in action._cmd_groups.items():
+			parts.append('  ' + group_name + ':\n')
+			for name, help_text in cmds:
+				parts.append('    {:<{}}  {}\n'.format(name, w, help_text))
+			parts.append('\n')
+
+		return self._join_parts(parts)
+
+
+CMD_GROUPS = OrderedDict([
+	('Visualization', [
+		('dotplot', 'Generate Ks/OI-colored dot plots.'),
+		('depth',   'Bar plots for synteny depth.'),
+		('ksplot',  'Plot Ks distributions: histogram, density, and ridge plots.'),
+	]),
+	('Syntenic Orthogroup', [
+		('filter',   'Filter synteny by Orthology Index.'),
+		('cluster',  'Cluster syntenic orthogroups (SOGs).'),
+		('outgroup', 'Add outgroups for SOGs from synteny.'),
+		('detandem', 'Remove tandem duplicate genes from orthogroups.'),
+		('hog',      'Split HOGs from orthogroups using synteny and species tree.'),
+	]),
+	('Phylogenetics', [
+		('phylo', 'Reconstruct gene trees from SOGs.'),
+		('stats', 'Make statistics of SOGs for phylogeny.'),
+	]),
+	('Karyotype Evolution', [
+		('rak', 'Reconstruct ancestral karyotypes based on HOG and telomere-centric model.[experimental]'),
+		('sim', 'Simulate chromosome rearrangement evolution.'),
+	]),
+])
+
+# args_* function lookup for grouped subparser creation
+_ARGS_FN = {
+	'dotplot': args_dotplot, 'depth': args_depth, 'ksplot': args_ksplot,
+	'filter': args_filter, 'cluster': args_cluster, 'outgroup': args_outgroup,
+	'hog': args_hog, 'detandem': args_detandem,
+	'phylo': args_phylo, 'stats': args_stats,
+	'rak': args_rak, 'sim': args_sim,
+}
+
+
 def makeArgs():
 	parser = argparse.ArgumentParser(
-		formatter_class=argparse.RawDescriptionHelpFormatter,
+		formatter_class=GroupedHelpFormatter,
 		description='Play with Orthology Index and orthologs synteny.',
 	)
 	parser.add_argument(
@@ -324,42 +414,11 @@ def makeArgs():
 	)
 	# subcommands
 	subparsers = parser.add_subparsers(help='sub-command help')
-	parser_dot = subparsers.add_parser('dotplot',
-									   help='Generate Ks/OI-colored dot plots.')
-	args_dotplot(parser_dot)
-	parser_flt = subparsers.add_parser('filter',
-									   help='Filter synteny by Orthology Index.')
-	args_filter(parser_flt)
-	parser_clst = subparsers.add_parser('cluster',
-										help='Cluster syntenic orthogroups (SOGs).')
-	args_cluster(parser_clst)
-	parser_ogrp = subparsers.add_parser('outgroup',
-										help='Add outgroups for SOGs from synteny.')
-	args_outgroup(parser_ogrp)
-	parser_phylo = subparsers.add_parser('phylo',
-										 help='Build gene trees from SOGs.')
-	args_phylo(parser_phylo)
-	parser_stats = subparsers.add_parser('stats',
-										 help='Make statistics of SOGs for phylogeny.')
-	args_stats(parser_stats)
-	parser_depth = subparsers.add_parser('depth',
-										 help='Bar plots for synteny depth')
-	args_depth(parser_depth)
-	parser_hog = subparsers.add_parser('hog',
-									   help='Split HOGs from orthogroups using synteny and species tree.')
-	args_hog(parser_hog)
-	parser_detandem = subparsers.add_parser('detandem',
-									   help='Remove tandem duplicate genes from orthogroups.')
-	args_detandem(parser_detandem)
-	parser_rak = subparsers.add_parser('rak',
-									   help='Reconstruct ancestral karyotypes based on HOG and telomere-centric model.')
-	args_rak(parser_rak)
-	parser_sim = subparsers.add_parser('sim',
-									   help='Simulate chromosome rearrangement evolution.')
-	args_sim(parser_sim)
-	parser_ksplot = subparsers.add_parser('ksplot',
-									   help='Plot Ks distributions: histogram, density, and ridge plots.')
-	args_ksplot(parser_ksplot)
+	subparsers._cmd_groups = CMD_GROUPS
+	for group_name, cmds in CMD_GROUPS.items():
+		for cmd_name, help_text in cmds:
+			p = subparsers.add_parser(cmd_name, help=help_text)
+			_ARGS_FN[cmd_name](p)
 
 	if len(sys.argv) == 1:
 		parser.print_help(sys.stderr) 

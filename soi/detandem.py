@@ -40,10 +40,10 @@ class Detandem:
         # --- 2. parse ortholog/collinearity files, build graph ---
         self.graph = None
         if self.orthfiles:
-            species = set(g.species for g in self.d_genes.values())
-            spsd = {sp: 1 for sp in species}
+            #species = set(g.species for g in self.d_genes.values())
+            #spsd = {sp: 1 for sp in species}
             logger.info(f'Loading ortholog/collinearity pairs from {self.orthfiles}')
-            self.graph = ColinearGroups(self.orthfiles, spsd=spsd,
+            self.graph = ColinearGroups(self.orthfiles, #spsd=spsd,
                                         noparalog=False).graph
             logger.info(f'  {self.graph.number_of_nodes()} genes, '
                         f'{self.graph.number_of_edges()} edges')

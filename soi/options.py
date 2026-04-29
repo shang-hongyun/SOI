@@ -110,6 +110,14 @@ def func_detandem(**kargs):
 	from .detandem import Detandem
 	Detandem(**kargs).run()
 
+def args_ksplot(parser):
+	from .ks_plotter import ksplot_args
+	ksplot_args(parser)
+
+def func_ksplot(**kargs):
+	from .ks_plotter import xmain as ksplot_main
+	ksplot_main(**kargs)
+
 def args_sim(parser):
 	from .evolution_simulator_ak import sim_args
 	sim_args(parser)
@@ -349,6 +357,9 @@ def makeArgs():
 	parser_sim = subparsers.add_parser('sim',
 									   help='Simulate chromosome rearrangement evolution.')
 	args_sim(parser_sim)
+	parser_ksplot = subparsers.add_parser('ksplot',
+									   help='Plot Ks distributions: histogram, density, and ridge plots.')
+	args_ksplot(parser_ksplot)
 
 	if len(sys.argv) == 1:
 		parser.print_help(sys.stderr) 
@@ -369,6 +380,7 @@ FUNC = {
 	'detandem': func_detandem,
 	'rak': func_rak,
 	'sim': func_sim,
+	'ksplot': func_ksplot,
 }
 
 

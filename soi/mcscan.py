@@ -2076,7 +2076,7 @@ class ColinearGroups:
 			for rc in XCollinearity(self.collinearity, kaks=self.kaks):
 				if rc.N < self.min_size:  # min length
 					continue
-				if set(rc.species) - set(self.sp_dict):  # both be in sp_dict
+				if self.sp_dict and set(rc.species) - set(self.sp_dict):  # both be in sp_dict
 					continue
 				if self.noparalog and len(set(rc.species)) == 1:  # discard paralog
 					continue

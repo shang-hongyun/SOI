@@ -223,6 +223,20 @@ class OrthoMCLGroup():  # Parse groups.txt and iterate to return each line.
 			species = species | set(rc.species)
 		return species
 
+def mcl2count(mclgroup, fout=sys.stdout):
+	species = set([])
+	counters = []
+	for rc in OrthoMCLGroup(mclgroup):
+		counter = rc.counter
+		species = species| set(counter)
+		counters += [(rc.ogid, counter)]
+	species = sorted(species)
+	line = ['ID'] + species
+	fout.write('\t'.join(line) + '\n')
+	for ogid, counter in counters:
+		count = [counter.get(sp, 0) for sp in species]
+		line = [ogid] + list(map(str, count))
+		fout.write('\t'.join(line) + '\n')
 
 class OrthoMCLGroupRecord(GroupRecord):  # Parse each line.
 	def __init__(self, line=None, genes=None, ogid=None, nsp=None, sps=None):
@@ -2644,6 +2658,8 @@ def main():
 		OrthoFinder(OFdir).to_wgdi(**kargs)
 	elif subcommand == 'test_spd':
 		test_sonicparanoid()
+	elif subcommand == 'mcl2count':
+		mcl2count(sys.argv[2])
 	else:
 		raise ValueError('Unknown command: {}'.format(subcommand))
 

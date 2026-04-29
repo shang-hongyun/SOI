@@ -86,6 +86,10 @@ def dotplot_args(parser):
 						   help="chromosomes to plot on x axis (overrides -c); or a file whose first column lists chromosomes. [default=%(default)s]")
 	group_dot.add_argument('--ychrs', metavar='CHR/FILE', type=str, nargs='+', default=None,
 						   help="chromosomes to plot on y axis (overrides -c); or a file whose first column lists chromosomes. [default=%(default)s]")
+	group_dot.add_argument('--xsp', metavar='SPECIES', type=str, default=None,
+						   help="species for x axis; automatically uses all its chromosomes from GFF. [default=%(default)s]")
+	group_dot.add_argument('--ysp', metavar='SPECIES', type=str, default=None,
+						   help="species for y axis; automatically uses all its chromosomes from GFF. [default=%(default)s]")
 	group_dot.add_argument('--xlabel', type=str, default=None,
 						   help="x label (species) for dot plot (top). [default=%(default)s]")
 	group_dot.add_argument('--ylabel', type=str, default=None,
@@ -189,6 +193,22 @@ def _resolve_chrs(xchrs):
 	return xchrs
 
 
+def _resolve_sp(sp, gff_files):
+	'''Resolve a species name to its chromosome list from GFF files.'''
+	if sp is None:
+		return None
+	from .mcscan import XGff
+	chrs = []
+	seen = set()
+	for line in XGff(gff_files):
+		if line.species == sp and line.chrom not in seen:
+			chrs.append(line.chrom)
+			seen.add(line.chrom)
+	if not chrs:
+		logger.warning('No chromosomes found in GFF for species "{}"'.format(sp))
+	return sorted(chrs)
+
+
 def reset_args(args):
 	args.matrix = None
 	args.hide_blocks = None
@@ -259,8 +279,12 @@ def main(args):
 			chrs1 = args.xchrs
 		if args.ychrs:
 			chrs2 = args.ychrs
+	if args.xsp:
+		chrs1 = _resolve_sp(args.xsp, gff)
+	if args.ysp:
+		chrs2 = _resolve_sp(args.ysp, gff)
 	if not chrs1 or not chrs2:
-		sys.exit('Error: need either -c (ctl file) or both --xchrs and --ychrs')
+		sys.exit('Error: need -c, (--xchrs + --ychrs), or (--xsp + --ysp)')
 	same_sp = True if chrs1 == chrs2 else False
 	blocks, lines1, lines2, ortholog_graph, chrs1, chrs2, d_offset1, d_offset2 = \
 		parse_collinearity(

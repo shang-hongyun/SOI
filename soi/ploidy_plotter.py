@@ -21,14 +21,14 @@ def add_ploidy_opts(parser):
 						help="window_step. [default=%(default)s]")
 	parser.add_argument('--min_block', metavar='INT', type=int, default=None,
 						help="min genes for a block. [default=%(default)s]")
-	parser.add_argument('--max_ploidy', metavar='INT', type=int, default=10,
-						help="upper limit for x axis. [default=%(default)s]")
 	parser.add_argument('--max_distance', metavar='INT', type=int, default=20,
 						help="max distance from anchor genes. [default=%(default)s]")
 	parser.add_argument('--min_overlap', metavar='FLOAT', type=float, default=0.4,
 						help="min overlap for covering a reference window. [default=%(default)s]")
 	parser.add_argument('--output_depth', metavar='FILE', type=str, default=None,
 						help="output depth data to a file. [default=%(default)s]")
+	parser.add_argument('--max_ploidy', metavar='INT', type=int, default=10,
+                        help="upper limit for x axis. [default=%(default)s]")
 	parser.add_argument('--color', metavar='COLOR', type=str, default=None,
 						help="bar fill color. [default=%(default)s]")
 	parser.add_argument('--edgecolor', metavar='COLOR', type=str, default=None,
@@ -273,15 +273,17 @@ def get_ploidy(ref_coord_paths, ref_coord_graph, qry_coord_graph, rq_ortholog_gr
 					orthologs += rq_ortholog_graph.neighbors(gene)
 			if len(orthologs) < 2:  # ploidy=0
 				continue
-			qry_clusters = cluster_genes(orthologs, qry_coord_graph)
+			qry_clusters = cluster_genes(orthologs, qry_coord_graph, **kargs)
 			qry_blocks = list(nx.connected_components(qry_clusters))
 			if not qry_blocks:  # not into blocks
 				continue
 			ref_blocks = map_graph(bin, rq_ortholog_graph, qry_blocks)
 			ref_clusters = overlap_blocks(ref_blocks, ref_coord_graph, **kargs)
 			ncmpt1 = len(qry_blocks)
-			ncmpt2 = max([len(x)
-						 for x in nx.connected_components(ref_clusters)])
+#			ncmpt2 = max([len(x)
+#						 for x in nx.connected_components(ref_clusters)])
+			max_blocks = max(nx.connected_components(ref_clusters), key=lambda x: len(x))
+			ncmpt2 = sweep_line(max_blocks, ref_coord_graph)
 			ploidy = ncmpt2
 			try:
 				d_fold[ploidy] += 1
@@ -289,6 +291,25 @@ def get_ploidy(ref_coord_paths, ref_coord_graph, qry_coord_graph, rq_ortholog_gr
 				d_fold[ploidy] = 1
 	return d_fold
 
+def sweep_line(ref_blocks, ref_coord_graph):
+    '''扫描线求最大局部覆盖深度'''
+    intervals = []
+    for block in ref_blocks:
+        idxs = [ref_coord_graph.nodes[g]['index'] for g in block]
+        intervals.append((min(idxs), max(idxs)))
+
+    events = []
+    for lo, hi in intervals:
+        events.append((lo, 1))
+        events.append((hi + 1, -1))
+    events.sort()
+
+    depth = max_depth = 0
+    for _, delta in events:
+        depth += delta
+        max_depth = max(max_depth, depth)
+
+    return max_depth
 
 def map_graph(bin, rq_ortholog_graph, qry_blocks):
 	'''map qry block to ref block'''

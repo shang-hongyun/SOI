@@ -15,6 +15,9 @@
       - [phylo](#phylo)
       - [dotplot](#dotplot)
       - [depth](#depth)
+      - [ksplot](#ksplot)
+      - [detandem](#detandem)
+      - [hog](#hog)
    * [Other functions](#other-functions)
       - [Macro-synteny phylogeny](#Macro-synteny-phylogeny)
 	  - [Allele identification](#Allele-identification)
@@ -160,48 +163,10 @@ apptainer pull orthoindex.sif library://shang-hongyun/collection/orthoindex:1.2.
 The image can be found [here](https://cloud.sylabs.io/library/shang-hongyun/collection/orthoindex).
 
 ## Subcommands ##
-```
-$ soi -h
-usage: soi [-h] {dotplot,filter,cluster,outgroup,phylo,stats} ...
 
-Play with Orthology Index
-
-positional arguments:
-  {dotplot,filter,cluster,outgroup,phylo,stats}
-                        sub-command help
-    dotplot             Generate colored dot plots
-    filter              Filter synteny with Orthology Index (standard output)
-    cluster             Cluster syntenic orthogroups (SOGs)
-    outgroup            Add outgroups for SOGs from synteny
-    phylo               Build gene trees from SOGs
-    stats               Make statistics of SOGs for phylogeny
-
-optional arguments:
-  -h, --help            show this help message and exit
-```
 #### `filter` ####
 The subcommand `filter` filters orthologous blocks with a default minimum index of 0.6:
-```
-$ soi filter -h
-usage: soi filter [-h] -s [FILE [FILE ...]] -o [FOLDER/FILE [FOLDER/FILE ...]] [-c FLOAT] [-u FLOAT] [-n INT] [-g FILE] [-d INT] [-stat OUT_STATS] [-oo]
 
-optional arguments:
-  -h, --help            show this help message and exit
-  -s [FILE [FILE ...]], -synteny [FILE [FILE ...]]
-                        Collinearity files output from MCscanX, WGDI, or MCscan/JCVI. [required]
-  -o [FOLDER/FILE [FOLDER/FILE ...]], -orthology [FOLDER/FILE [FOLDER/FILE ...]]
-                        Orthologues output from OrthoFinder (folder), or OrthoMCL (file). [required]
-  -c FLOAT, -cutoff FLOAT
-                        Cutoff (lower limit) of Orthology Index [default=0.6]
-  -u FLOAT, -upper FLOAT
-                        Upper limit of Orthology Index [default=1]
-  -n INT, -min_n INT    Minimum gene number in a block [default=0]
-  -g FILE, -gff FILE    Gff file. [required for `-d`]
-  -d INT, -min_dist INT
-                        Minimum distance to remove a tandem repeated block [default=None]
-  -stat OUT_STATS       Output stats by species pairs. [default=None]
-  -oo                   Output retained orthology instead of synteny. [default=False]
-```
 Usage examples:
 ```
 # from outputs of WGDI and OrthoFinder
@@ -226,27 +191,9 @@ soi filter -s wgdi/SP1-SP1.collinearity -o inparalogs.pairs > collinearity.inpar
 
 ```
 #### `cluster` ####
-The subcommand ‘cluster’ groups orthologous syntenic genes into syntenic orthogroups (SOGs), through constructing an orthologous syntenic graph 
+The subcommand 'cluster' groups orthologous syntenic genes into syntenic orthogroups (SOGs), through constructing an orthologous syntenic graph 
 and applying the Markov Cluster (MCL) algorithm to perform graph clustering and break weak links. 
-```
-$ soi cluster -h
-usage: soi cluster [-h] -s [FILE [FILE ...]] [-o [FOLDER/FILE [FOLDER/FILE ...]]] [-I FLOAT] [-outgroup [TAXON/FILE [TAXON/FILE ...]]] [-ingroup [TAXON/FILE [TAXON/FILE ...]]]
-                   [-prefix OUTPRE]
 
-optional arguments:
-  -h, --help            show this help message and exit
-  -s [FILE [FILE ...]], -synteny [FILE [FILE ...]]
-                        Collinearity files from `filter` sub-command. [required]
-  -o [FOLDER/FILE [FOLDER/FILE ...]], -orthology [FOLDER/FILE [FOLDER/FILE ...]]
-                        Orthologues output from OrthoFinder (folder), or OrthoMCL (file). This will use Orthology Index as weight for MCL [default=None]
-  -I FLOAT, -inflation FLOAT
-                        Inflation for MCL (varying this parameter affects granularity) [default=1.5]
-  -outgroup [TAXON/FILE [TAXON/FILE ...]]
-                        Outgroups to exclude from orthogroups (prior to `-ingroup`) [default=None]
-  -ingroup [TAXON/FILE [TAXON/FILE ...]]
-                        Ingroups that are only included [default=None]
-  -prefix OUTPRE        Output prefix [default=cluster]
-```
 Usage examples:
 ```
 # all species to include
@@ -258,21 +205,8 @@ soi cluster -s collinearity.ortho -outgroup XXX YYY
 The defualt output file is `cluster.mcl`, with the orthogroup format of legacy OrthoMCL.
 
 #### `outgroup` ####
-The subcommand ‘outgroup’ retrieves syntenic orthologs from outgroups that lack WGDs shared with ingroups. 
-```
-$ soi outgroup -h
-usage: soi outgroup [-h] -s [FILE [FILE ...]] -og FILE -outgroup [TAXON [TAXON ...]] [-cutoff FLOAT]
+The subcommand 'outgroup' retrieves syntenic orthologs from outgroups that lack WGDs shared with ingroups. 
 
-optional arguments:
-  -h, --help            show this help message and exit
-  -s [FILE [FILE ...]], -synteny [FILE [FILE ...]]
-                        Collinearity files from `filter` sub-command. [required]
-  -og FILE, -orthogroup FILE
-                        Orthogroups output from `cluster` sub-command. [required]
-  -outgroup [TAXON [TAXON ...]]
-                        Outgroups to include to orthogroups [required]
-  -cutoff FLOAT         Cutoff (lower limit) of links to outgroup genes [default=0.2]
-```
 Usage examples:
 ```
 # If outgroups are excluded in the last `cluster` step:
@@ -285,40 +219,7 @@ by aligning protein sequences with MAFFT v7.481 (Standley and Katoh 2013),
 converting protein alignment to codon alignment with PAL2NAL v14 (Suyama et al. 2006), 
 trimming alignments with trimAl v1.2 (Capella-Gutierrez et al. 2009) (parameter: -automated1) 
 and reconstructing maximum-likelihood trees with IQ-TREE v2.2.0.3 (Minh et al. 2020). 
-```
-$ soi phylo -h
-sage: soi phylo [-h] -og FILE -pep FILE [-cds FILE] [-both] [-root [TAXON [TAXON ...]]] [-pre STR] [-mm FLOAT] [-mc INT] [-sc]
-                 [-ss FILE] [-fmt {orthomcl,orthofinder,mcscanx}] [-only_aln] [-concat] [-trimal_opts STR] [-iqtree_opts STR]
-                 [-p INT] [-tmp FOLDER] [-clean]
 
-optional arguments:
-  -h, --help            show this help message and exit
-  -og FILE, -orthogroup FILE
-                        Orthogroups output from `cluster` or `outgroup` sub-commands. [required]
-  -pep FILE             Protein fasta file. [required]
-  -cds FILE             CDS fasta file. [default=None]
-  -both                 To use both CDS and PEP to build gene trees. [default: only CDS when `-cds` is true]
-  -root [TAXON [TAXON ...]], -outgroup [TAXON [TAXON ...]]
-                        Outgroups to root gene trees [default=None]
-  -pre STR, -prefix STR
-                        Output prefix. [default=sog]
-  -mm FLOAT, -max_missing FLOAT
-                        To allow maximum ratio of missing species. [default=0.4]
-  -mc INT, -max_copies INT
-                        To limit a common maximum copy number for every species. [default=6]
-  -sc, -singlecopy      Only retrieve singlecopy genes (=`-max_copies 1`). [default=None]
-  -ss FILE, -spsd FILE  To limit a specific copy number for each species (format: 'TAXON<tab>NUMBER'). [default=None]
-  -fmt {orthomcl,orthofinder,mcscanx}
-                        Format of `-orthogroup` input. [default=orthomcl]
-  -only_aln             Only aligning sequences, to skip trimal and iqtree. [default=None]
-  -concat               To concatenate alignments for tools such as IQTREE (valid when `-singlecopy` is true). [default=None]
-  -trimal_opts STR      TrimAl options. [default='-automated1']
-  -iqtree_opts STR      IQ-TREE options. [default='']
-  -p INT, -ncpu INT     Number of processors. [default=20]
-  -tmp FOLDER, -tmpdir FOLDER
-                        Temporary folder. [default=./tmp-8a639818-fb56-11ef-b568-4cd98fb9bbe7]
-  -clean                Cleanup temporary folder. [default=None]
-```
 Usage examples:
 ```
 # output multi-copy gene trees of both protein and CDS(-both); rooted with grape (-root)
@@ -335,124 +236,12 @@ soi phylo -og cluster.mcl.plus -pep pep.faa -mm 0.5
 The subcommand `dotplot` enables visualization and evaluation of synteny, 
 with colored by the Orthology Index or Ks values.
 
-```
-$ soi dotplot -h
-usage: soi dotplot [-h] -s FILE [FILE ...] -g FILE -c FILE [-o STR] [--format FORMAT] [--number-plots] [--min-block INT]
-                   [--min-dist INT] [--cluster] [--diagonal] [--gene-axis] [--xlines FILE] [--ylines FILE] [--xbars FILE]
-                   [--ybars FILE] [--xbarlab] [--ybarlab] [--xlabel XLABEL] [--ylabel YLABEL] [--figsize NUM [NUM ...]]
-                   [--fontsize NUM] [--dotsize NUM] [--ofdir FOLDER/FILE [FOLDER/FILE ...]] [--of-ratio FLOAT] [--of-color]
-                   [--kaks FILE] [--ks-hist] [--max-ks Ks] [--ks-cmap Ks [Ks ...]] [--ks-step Ks] [--use-median] [--method STR]
-                   [--lower-ks Ks] [--upper-ks Ks] [--output-hist] [--cbar] [--plot-ploidy] [--window_size INT]
-                   [--window_step INT] [--min_block INT] [--max_distance INT] [--max_ploidy INT] [--min_overlap FLOAT]
-                   [--color COLOR] [--edgecolor COLOR] [--plot-bin]
-
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -s FILE [FILE ...]    syntenic block file (*.collinearity, output of MCSCANX/WGDI)[required]
-  -g FILE               gene annotation gff file (*.gff, one of MCSCANX/WGDI input)[required]
-  -c FILE               chromosomes config file (*.ctl, same format as MCSCANX dotplotter)[required]
-  -o STR                output file prefix. [default: the same as `-c`]
-  --format FORMAT       output figure format [default=['pdf', 'png']]
-  --number-plots        number subplots with (a-d). [default=False]
-  --min-block INT       min gene number in a block. [default=None]
-  --min-dist INT        remove tandem with distance shorter than this value. [default=None]
-
-Dot plot:
-  settings for dot plots
-
-  --cluster             cluster chromosomes. [default=False]
-  --diagonal            try to put blocks onto the diagonal. [default=False]
-  --gene-axis           use gene as axis instead of base pair. [default=False]
-  --xlines FILE         bed/pos file to add vertical lines. [default=None]
-  --ylines FILE         bed/pos file to add horizontal lines. [default=None]
-  --xbars FILE          ancetor file to set colorbar for x axis. [default=None]
-  --ybars FILE          ancetor file to set colorbar for y axis. [default=None]
-  --xbarlab             plot labels for x bars. [default=False]
-  --ybarlab             plot labels for y bars. [default=False]
-  --xlabel XLABEL       x label for dot plot. [default=None]
-  --ylabel YLABEL       y label for dot plot. [default=None]
-  --figsize NUM [NUM ...]
-                        figure size (width [height]) [default=[16]]
-  --fontsize NUM        font size of chromosome labels [default=10]
-  --dotsize NUM         dot size [default=1]
-
-Orthology Index filter/color:
-  filtering or coloring blocks by Orthology Index (prior to Ks color)
-
-  --ofdir FOLDER/FILE [FOLDER/FILE ...]
-                        OrthoFinder output folder/ OrthoMCL output pair file. [default=None]
-  --of-ratio FLOAT      Orthology Index cutoff [default=0]
-  --of-color            coloring dots by Orthology Index [default=None]
-
-Ks plot:
-  options to histogram plot with Ks
-
-  --kaks FILE           kaks output from KaKs_Calculator/WGDI. [default=None]
-  --ks-hist             plot histogram or not [default=None]
-  --max-ks Ks           max Ks (x limit) [default=1]
-  --ks-cmap Ks [Ks ...]
-                        color map for Ks. [default=None]
-  --ks-step Ks          Ks step of histogram [default=0.02]
-  --use-median          use median Ks for a block. [default=False]
-  --method STR          Ks calculation method [default=NG86]
-  --lower-ks Ks         lower limit of median Ks. [default=None]
-  --upper-ks Ks         upper limit of median Ks. [default=None]
-  --output-hist         output the data for histogram plot. [default=False]
-  --cbar                plot color bar when no histogram plot. [default=False]
-
-Ploidy plot:
-  options to plot relative ploidy (synteny depth)
-
-  --plot-ploidy         plot relative ploidy. [default=False]
-  --window_size INT     window_size. [default=50]
-  --window_step INT     window_step. [default=10]
-  --min_block INT       min genes for a block. [default=10]
-  --max_distance INT    max distance. [default=20]
-  --max_ploidy INT      x limit. [default=10]
-  --min_overlap FLOAT   min overlap. [default=0.4]
-  --color COLOR         bar fill color. [default=None]
-  --edgecolor COLOR     bar edge color. [default=None]
-
-Plot Ks by bins:
-  options to plot binned Ks
-
-  --plot-bin            plot binned Ks. [default=False]
-```
-
 Usage examples: see [Quick Start](#Quick-Start).
 
 #### `depth` ####
 The subcommand `depth` enables visualization of synteny depth (window-based),
 with one genome as the reference.
-```
-$ soi depth -h
-usage: soi depth [-h] -s FILE [FILE ...] -g FILE [FILE ...] -r reference -q queries [queries ...] [-o STR] [--format figure file out format] [--nrow nrow] [--window_size INT]
-                 [--window_step INT] [--min_block INT] [--max_ploidy INT] [--max_distance INT] [--min_overlap FLOAT] [--output_depth FILE] [--color COLOR] [--edgecolor COLOR]
 
-options:
-  -h, --help            show this help message and exit
-  -s FILE [FILE ...]    syntenic block file (*.collinearity, output of MCSCANX/WGDI)[required]
-  -g FILE [FILE ...]    gene annotation gff file (*.gff, one of MCSCANX/WGDI input)[required]
-  -r reference, --ref reference
-                        reference species
-  -q queries [queries ...], --qry queries [queries ...]
-                        query species
-  -o STR, --output STR  the output file prefix.
-  --format figure file out format
-                        default=['pdf', 'png']
-  --nrow nrow           number of rows. default=None
-  --window_size INT     window_size. [default=50]
-  --window_step INT     window_step. [default=10]
-  --min_block INT       min genes for a block. [default=None]
-  --max_ploidy INT      upper limit for x axis. [default=10]
-  --max_distance INT    max distance from anchor genes. [default=20]
-  --min_overlap FLOAT   min overlap for covering a reference window. [default=0.4]
-  --output_depth FILE   output depth data to a file. [default=None]
-  --color COLOR         bar fill color. [default=None]
-  --edgecolor COLOR     bar edge color. [default=None]
-
-```
 Usage examples:
 ```
 # specify multiple queries:
@@ -462,6 +251,56 @@ soi depth -s collinearity.ortho -g ../all_species_gene.gff -r Vitis_vinifera -q 
 soi depth -s collinearity.ortho -g ../all_species_gene.gff -r Vitis_vinifera -q Daucus_carota Angelica_sinensis Apium_graveolens --window_size 60 --window_step 1
 
 ```
+
+
+#### `ksplot` ####
+The subcommand `ksplot` plots Ks distributions with three visualization types:
+histogram, density curve, and ridge plot.
+
+Usage examples:
+```
+# histogram + density + ridge plots (default)
+soi ksplot --kaks wgdi_ks.tsv -o ks_plot
+
+# histogram only, with custom max Ks
+soi ksplot --kaks wgdi_ks.tsv -o ks_hist -p hist --max-ks 1.5
+
+# color by homology class (e.g., ortholog vs paralog)
+soi ksplot --kaks wgdi_ks.tsv --homology-class class.tsv -o ks_class
+```
+
+#### `detandem` ####
+The subcommand `detandem` removes tandem duplicate genes from orthogroups.
+Tandem duplicates are defined as genes on the same chromosome whose index difference
+is below a threshold (default `-d 200`). When synteny files (`-s`) are provided,
+the gene with the highest degree in the synteny graph is retained;
+otherwise, one gene is chosen arbitrarily.
+
+Usage examples:
+```
+# basic tandem removal
+soi detandem -og cluster.mcl -g all_species_gene.gff > cluster.mcl.detandem
+
+# with custom distance threshold
+soi detandem -og cluster.mcl -g all_species_gene.gff -d 100 > cluster.mcl.detandem
+
+# with synteny files for smarter gene retention
+soi detandem -og cluster.mcl -g all_species_gene.gff -s collinearity.ortho > cluster.mcl.detandem
+```
+
+#### `hog` ####
+The subcommand `hog` splits orthogroups into Hierarchical Orthologous Groups (HOGs)
+using synteny and a species tree. Output follows the OrthoXML HOG format.
+
+Usage examples:
+```
+# split orthogroups into HOGs
+soi hog -og cluster.mcl.detandem -s collinearity.ortho -t species.tree -prefix HOGs
+
+# include paralogs for subgenome-aware reconstruction
+soi hog -og cluster.mcl.detandem -s collinearity.ortho -t species.tree -prefix HOGs -paralog
+```
+
 ### Other functions ###
 Other functions can be found in [SOI-tools](SOI-tools.md). Related functions can be requested by users via [issues](https://github.com/zhangrengang/SOI/issues).
 #### Macro-synteny phylogeny ####
@@ -601,6 +440,19 @@ As1,As2,As3,As4,As5,As6,As7,As8,As9,As10,As11	// y
 Dc1,Dc2,Dc3,Dc4,Dc5,Dc6,Dc7,Dc8,Dc9				// x
 ```
 
+#### Species tree format ####
+The Newick format (with or without branch lengths and support values) is supported for `hog` and `rak` subcommands:
+```
+# simple Newick with species names only:
+(Vitis_vinifera,(Daucus_carota,(Angelica_sinensis,Apium_graveolens)));
+
+# with branch lengths:
+(Vitis_vinifera:0.1,(Daucus_carota:0.05,(Angelica_sinensis:0.02,Apium_graveolens:0.02):0.03):0.05);
+
+# with support values:
+(Vitis_vinifera,(Daucus_carota,(Angelica_sinensis,Apium_graveolens)100)85);
+```
+
 In summary, users may be not needed to preprare additional files for this tool. And other popular format can be supported upon request.
 But it is **important** to label GENE ID with SPECIES ID (e.g. `Angelica_sinensis|AS01G00001`) (see details in [evolution_example](https://github.com/zhangrengang/evolution_example/)). 
 Unique CHROMOSOME ID is also required.
@@ -620,6 +472,16 @@ SOG3001: Angelica_sinensis|AS08G03434 Angelica_sinensis|AS08G03435 Apium_graveol
 SOG3002: Angelica_sinensis|AS10G01791 Apium_graveolens|Ag1G00857 Apium_graveolens|Ag6G02641 Aralia_elata|AE12G02379 Centella_asiatica|evm.TU.Scaffold_7.2680 Coriandrum_sativum|Cs06G01941 Coriandrum_sativum|Cs06G01943 Coriandrum_sativum|Cs09G00381 Daucus_carota|DCAR_001660 Daucus_carota|DCAR_029095 Panax_ginseng|GWHGBEIL023683.1 Panax_ginseng|GWHGBEIL043112.1 Panax_notoginseng|PN013453
 ...
 ```
+
+#### HOG format ####
+The `hog` subcommand outputs a TSV file with hierarchical orthologous group information:
+```
+HOG	OG	Tree_Node	Parent	Genes
+SOG100.5.hog0	SOG100	5	Root	Sp1|G001 Sp1|G002 Sp2|G003
+SOG100.3.hog0	SOG100	3	SOG100.5.hog0	Sp1|G001 Sp2|G003
+SOG100.3.hog1	SOG100	3	SOG100.5.hog0	Sp1|G002
+```
+Columns: `HOG` (unique HOG ID), `OG` (source orthogroup), `Tree_Node` (species tree node), `Parent` (parent HOG or "Root" if at root), `Genes` (space-separated gene IDs).
 
 ## Citation ##
 Zhang RG, Shang HY, Milne RI et. al. 

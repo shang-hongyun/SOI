@@ -238,6 +238,25 @@ with colored by the Orthology Index or Ks values.
 
 Usage examples: see [Quick Start](#Quick-Start).
 
+Additional usage with ancestor files:
+```
+# show ancestral chromosome colors on the axes
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl \
+    --xanc anc_x.txt --yanc anc_y.txt --xbars anc_x.txt -o dot_anc
+
+# color dots by subgenome from x axis
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl \
+    --xanc anc_x.txt --colorby-sg x -o dot_sg
+
+# color bars by subgenome (instead of ancestral chromosome)
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl \
+    --xanc anc_x.txt --xbars anc_x.txt --bar-colorby-sg -o dot_bar_sg
+
+# show ancestor labels on the bars
+soi dotplot -s collinearity.ortho -g all.gff -c species.ctl \
+    --xanc anc_x.txt --xbars anc_x.txt --xbarlab -o dot_barlab
+```
+
 #### `depth` ####
 The subcommand `depth` enables visualization of synteny depth (window-based),
 with one genome as the reference.
@@ -440,6 +459,28 @@ As1,As2,As3,As4,As5,As6,As7,As8,As9,As10,As11	// y
 Dc1,Dc2,Dc3,Dc4,Dc5,Dc6,Dc7,Dc8,Dc9				// x
 ```
 
+#### Ancestor file format ####
+The ancestor file (WGDI `ancestor.txt` format) maps modern chromosomes to ancestral chromosome blocks.
+Used by `--xanc`, `--yanc`, `--xbars`, `--ybars`, `--colorby-sg`, `--colorby-anc`, and `--bar-colorby-sg`.
+Format: `chrom  start  end  color  subgenome  [label]`
+
+```
+# basic format (5 columns):
+Chr1   0     100   #FF0000  1
+Chr1   100   250   #00B9F1  2
+Chr2   0     80    #FF0000  1
+Chr2   80    200   #7200DA  3
+
+# extended format (6 columns, label for --xbarlab / --ybarlab):
+Chr1   0     100   #FF0000  1   Anc1A
+Chr1   100   250   #00B9F1  2   Anc1B
+Chr2   0     80    #FF0000  1   Anc2A
+Chr2   80    200   #7200DA  3   Anc2B
+```
+
+Columns: `chrom` (modern chromosome), `start`/`end` (gene-order coordinates), `color` (hex color for ancestor chromosome), `subgenome` (integer subgenome ID), `label` (optional, shown when `--xbarlab`/`--ybarlab` is set).
+
+In summary, users may be not needed to preprare additional files for this tool.
 #### Species tree format ####
 The Newick format (with or without branch lengths and support values) is supported for `hog` and `rak` subcommands:
 ```

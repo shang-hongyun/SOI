@@ -81,10 +81,6 @@ def dotplot_args(parser):
 						   help="bed/pos file to add vertical lines. [default=%(default)s]")
 	group_dot.add_argument('--ylines', metavar='FILE', type=str, default=None,
 						   help="bed/pos file to add horizontal lines. [default=%(default)s]")
-	group_dot.add_argument('--xbars', metavar='FILE', type=str, default=None,
-						   help="ancetor file to set colorbar for x axis (top). Fallback to --xanc. [default=%(default)s]")
-	group_dot.add_argument('--ybars', metavar='FILE', type=str, default=None,
-						   help="ancetor file to set colorbar for y axis (left). Fallback to --yanc. [default=%(default)s]")
 	group_dot.add_argument('--xanc', metavar='FILE', type=str, default=None,
 						   help="ancestor file for x axis (used by colorbar fallback, --colorby-sg/anc x). [default=%(default)s]")
 	group_dot.add_argument('--yanc', metavar='FILE', type=str, default=None,
@@ -93,10 +89,16 @@ def dotplot_args(parser):
 						   help="color dots by subgenome from x or y ancestor file. [default=%(default)s]")
 	group_dot.add_argument('--colorby-anc', choices=['x', 'y'], default=None,
 						   help="color dots by ancestor color from x or y ancestor file. [default=%(default)s]")
+	group_dot.add_argument('--xbars', metavar='FILE', type=str, default=None,
+						   help="plot colorbar for x axis (top). Fallback to --xanc. [default=%(default)s]")
+	group_dot.add_argument('--ybars', metavar='FILE', type=str, default=None,
+						   help="plot colorbar for y axis (left). Fallback to --yanc. [default=%(default)s]")
 	group_dot.add_argument('--xbarlab', action='store_true', default=False,
-						   help="plot labels for x bars. [default=%(default)s]")
+						   help="add labels for x bars. [default=%(default)s]")
 	group_dot.add_argument('--ybarlab', action='store_true', default=False,
-						   help="plot labels for y bars. [default=%(default)s]")
+						   help="add labels for y bars. [default=%(default)s]")
+	group_dot.add_argument('--bar-colorby-sg', action='store_true', default=False,
+						   help="color bars (xbars/ybars) by subgenome instead of ancestor color. [default=%(default)s]")
 	group_dot.add_argument('--xlabel', type=str, default=None,
 						   help="x label (species) for dot plot (top). [default=%(default)s]")
 	group_dot.add_argument('--ylabel', type=str, default=None,
@@ -302,8 +304,9 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 				figsize=18, fontsize=10, cfont_scale=0.8, lfont_scale=1.5, point_size=0.8, 
 				xclines=None, yclines=None,
 				plot_bin=None, output_hist=False,
-				xoffset=None, yoffset=None, xbars=None, ybars=None, gff=None,
-				xanc=None, yanc=None, colorby_sg=None, colorby_anc=None,
+		xoffset=None, yoffset=None, xbars=None, ybars=None, gff=None,
+		xanc=None, yanc=None, colorby_sg=None, colorby_anc=None,
+		bar_colorby_sg=False,
 				gene_axis=None, xbarlab=True, ybarlab=True,
 				hist_ylim=None, xlabel=None, ylabel=None, remove_prefix=True,
 				number_plots=True, same_sp=False, cbar=False,
@@ -427,19 +430,27 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	if xbar_file:
 		y = ylim
 		width = ylim / 60
-		ylim += width  # increase limit
-		has_lab = AK(xbar_file).plot_dotplot(xy=y, align='edge', d_offset=xoffset,
-										 axis='x', width=width, label=xbarlab,
-										 gene_axis=gene_axis, gff=gff, fontsize=xcsize-1)
+		ylim += width
+		if bar_colorby_sg:
+			has_lab = _plot_sg_bar(xbar_file, xoffset, gene_axis, gff,
+				xy=y, axis='x', width=width, label=xbarlab, fontsize=xcsize-1)
+		else:
+			has_lab = AK(xbar_file).plot_dotplot(xy=y, align='edge', d_offset=xoffset,
+				axis='x', width=width, label=xbarlab,
+				gene_axis=gene_axis, gff=gff, fontsize=xcsize-1)
 		if has_lab:
 			xlabelpad += xcsize
 	if ybar_file:
 		x = xlim
 		width = xlim / 60
 		xlim += width
-		has_lab = AK(ybar_file).plot_dotplot(xy=x, align='edge', d_offset=yoffset,
-										 axis='y', width=width, label=ybarlab,
-										 gene_axis=gene_axis, gff=gff, fontsize=ycsize-1)
+		if bar_colorby_sg:
+			has_lab = _plot_sg_bar(ybar_file, yoffset, gene_axis, gff,
+				xy=x, axis='y', width=width, label=ybarlab, fontsize=ycsize-1)
+		else:
+			has_lab = AK(ybar_file).plot_dotplot(xy=x, align='edge', d_offset=yoffset,
+				axis='y', width=width, label=ybarlab,
+				gene_axis=gene_axis, gff=gff, fontsize=ycsize-1)
 		if has_lab:
 			ylabelpad += ycsize * 0.75
 
@@ -758,6 +769,35 @@ def _lookup_anc_color(segments, pos, mode='sg'):
 		else:
 			return color
 	return None
+
+
+def _plot_sg_bar(anc_file, d_offset, gene_axis, gff, xy, axis, width, label, fontsize):
+	'''Render a subgenome-colored bar strip using ancestor file data.'''
+	bar = plt.bar if axis == 'y' else plt.barh
+	has_lab = False
+	for seg in AK(anc_file).lazy_lines(gene_axis, gff=gff):
+		if seg.chrom not in d_offset:
+			continue
+		offset = d_offset[seg.chrom] + seg.start
+		sg_color = _sg_colors[seg.subgenome % len(_sg_colors)]
+		bar(xy, len(seg), width, offset, color=sg_color, align='edge')
+		if not label:
+			continue
+		has_lab = True
+		lab = seg.label
+		if not lab:
+			continue
+		if axis == 'x':
+			x = offset + len(seg) / 2
+			y = xy + width * 1.05
+			plt.text(x, y, lab, horizontalalignment='center',
+					verticalalignment='bottom', fontsize=fontsize)
+		else:
+			x = xy + width * 1.07
+			y = offset + len(seg) / 2
+			plt.text(x, y, lab, horizontalalignment='left',
+					verticalalignment='center', fontsize=fontsize)
+	return has_lab
 
 
 def parse_hvlines(bedfile, min_span=10):

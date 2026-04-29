@@ -43,7 +43,7 @@ cmaps = {
 
 def dotplot_args(parser):
 	parser.add_argument('-s', metavar='FILE', type=str, required=True, nargs='+',
-						help="syntenic block file (*.collinearity, output of MCSCANX/WGDI)[required]")
+						help="syntenic block file (*.collinearity, output of MCSCANX/WGDI/JCVI)[required]")
 	parser.add_argument('-g', metavar='FILE', type=str, required=True, nargs='+',
 						help="gene annotation gff file (*.gff, one of MCSCANX/WGDI input)[required]")
 	parser.add_argument('-c', metavar='FILE', type=str, required=False, default=None,
@@ -349,6 +349,12 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	xcsize = ycsize = fontsize * cfont_scale  # chromosome labels
 	# resolve custom subgenome colors
 	sg_colors = sg_colors or _sg_colors
+	# warn if subgenome palette is smaller than actual subgenome count
+	if bar_colorby_sg or colorby_sg:
+		for anc_file in (xbars, ybars, xanc, yanc):
+			if anc_file:
+				_warn_sg_palette(anc_file, sg_colors)
+				break
 	xsize = ysize = fontsize * 2.5	 # species labels
 	labsize = fontsize * lfont_scale	# x/y labels of b-d plots
 	lsize = fontsize * 1.7		# a-d labels
@@ -773,6 +779,18 @@ def _build_anc_segments(anc_file, d_offset, gene_axis, gff):
 		segments.append((plot_start, plot_end, seg.subgenome, seg.color))
 	segments.sort(key=lambda x: x[0])
 	return segments
+
+
+def _warn_sg_palette(anc_file, sg_colors):
+	'''Warn if subgenome count exceeds color palette size.'''
+	from .WGDI import AK as _AK
+	max_sg = -1
+	for seg in _AK(anc_file).lazy_lines():
+		if seg.subgenome > max_sg:
+			max_sg = seg.subgenome
+	if max_sg >= len(sg_colors):
+		logger.warning('{} subgenomes (max ID {}) but only {} colors in palette; colors will cycle'.format(
+			max_sg + 1, max_sg, len(sg_colors)))
 
 
 def _lookup_anc_color(segments, pos, mode='sg', sg_colors=None):

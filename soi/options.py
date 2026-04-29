@@ -120,7 +120,11 @@ def func_ksplot(**kargs):
 	ksplot_main(**kargs)
 
 def args_sim(parser):
-	from .evolution_simulator_ak import sim_args
+	try:
+		from .evolution_simulator_ak import sim_args
+	except ImportError as e:
+		logger.warning('Cannot register sim: {}'.format(e))
+		return
 	sim_args(parser)
 
 def func_sim(**kargs):

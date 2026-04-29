@@ -375,20 +375,20 @@ class GroupedHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 CMD_GROUPS = OrderedDict([
 	('Visualization', [
-		('dotplot', 'Generate Ks/OI-colored dot plots.'),
-		('depth',   'Bar plots for synteny depth.'),
-		('ksplot',  'Plot Ks distributions: histogram, density, and ridge plots.'),
+		('dotplot', 'Generate Ks/OI/subgenome/ancestor-colored dot plots with versatile functions.'),
+		('depth',   'Generate mutiple bar plots for synteny depth (indicator of relative ploidy).'),
+		('ksplot',  'Plot mutiple Ks distributions: histogram, density, and ridge plots.'),
 	]),
-	('Syntenic Orthogroup', [
-		('filter',   'Filter synteny by Orthology Index.'),
-		('cluster',  'Cluster syntenic orthogroups (SOGs).'),
-		('outgroup', 'Add outgroups for SOGs from synteny.'),
-		('detandem', 'Remove tandem duplicate genes from orthogroups.'),
-		('hog',      'Split HOGs from orthogroups using synteny and species tree.'),
+	('Syntenic Orthogroups', [
+		('filter',   'Filter synteny by Orthology Index to generate orthologous synteny.'),
+		('cluster',  'Cluster orthologous synteny into syntenic orthogroups (SOGs).'),
+		('outgroup', 'Add outgroups to SOGs.'),
+		('detandem', 'Remove tandem duplicate genes from SOGs.'),
+		('hog',      'Split HOGs from SOGs using synteny and species tree.'),
 	]),
-	('Phylogenetics', [
+	('Phylogenomics', [
 		('phylo', 'Reconstruct gene trees from SOGs.'),
-		('stats', 'Make statistics of SOGs for phylogeny.'),
+		('stats', 'Make summary of SOGs for phylogeny.'),
 	]),
 	('Karyotype Evolution', [
 		('rak', 'Reconstruct ancestral karyotypes based on HOG and telomere-centric model.[experimental]'),
@@ -409,7 +409,7 @@ _ARGS_FN = {
 def makeArgs():
 	parser = argparse.ArgumentParser(
 		formatter_class=GroupedHelpFormatter,
-		description='Play with Orthology Index and orthologs synteny.',
+		description='Play with Orthology Index and orthologous synteny.',
 	)
 	parser.add_argument(
 		'-v', '--version',

@@ -81,24 +81,6 @@ def dotplot_args(parser):
 						   help="bed/pos file to add vertical lines. [default=%(default)s]")
 	group_dot.add_argument('--ylines', metavar='FILE', type=str, default=None,
 						   help="bed/pos file to add horizontal lines. [default=%(default)s]")
-	group_dot.add_argument('--xanc', metavar='FILE', type=str, default=None,
-						   help="ancestor file for x axis (used by colorbar fallback, --colorby-sg/anc x). [default=%(default)s]")
-	group_dot.add_argument('--yanc', metavar='FILE', type=str, default=None,
-						   help="ancestor file for y axis (used by colorbar fallback, --colorby-sg/anc y). [default=%(default)s]")
-	group_dot.add_argument('--colorby-sg', choices=['x', 'y'], default=None,
-						   help="color dots by subgenome from x or y ancestor file. [default=%(default)s]")
-	group_dot.add_argument('--colorby-anc', choices=['x', 'y'], default=None,
-						   help="color dots by ancestor color from x or y ancestor file. [default=%(default)s]")
-	group_dot.add_argument('--xbars', metavar='FILE', type=str, default=None,
-						   help="plot colorbar for x axis (top). Fallback to --xanc. [default=%(default)s]")
-	group_dot.add_argument('--ybars', metavar='FILE', type=str, default=None,
-						   help="plot colorbar for y axis (left). Fallback to --yanc. [default=%(default)s]")
-	group_dot.add_argument('--xbarlab', action='store_true', default=False,
-						   help="add labels for x bars. [default=%(default)s]")
-	group_dot.add_argument('--ybarlab', action='store_true', default=False,
-						   help="add labels for y bars. [default=%(default)s]")
-	group_dot.add_argument('--bar-colorby-sg', action='store_true', default=False,
-						   help="color bars (xbars/ybars) by subgenome instead of ancestor color. [default=%(default)s]")
 	group_dot.add_argument('--xlabel', type=str, default=None,
 						   help="x label (species) for dot plot (top). [default=%(default)s]")
 	group_dot.add_argument('--ylabel', type=str, default=None,
@@ -111,6 +93,27 @@ def dotplot_args(parser):
 							help="scaling factor for font size of chromosome labels [default=%(default)s]")
 	group_dot.add_argument('--dotsize', metavar='NUM', type=float, default=5, dest='point_size',
 						   help="dot size [default=%(default)s]")
+
+	group_anc = parser.add_argument_group('Ancestor / Subgenome',
+										   'ancestor-based coloring and chromosome bars')
+	group_anc.add_argument('--xanc', metavar='FILE', type=str, default=None,
+						   help="ancestor file for x axis (used by colorbar fallback, --colorby-sg/anc x). [default=%(default)s]")
+	group_anc.add_argument('--yanc', metavar='FILE', type=str, default=None,
+						   help="ancestor file for y axis (used by colorbar fallback, --colorby-sg/anc y). [default=%(default)s]")
+	group_anc.add_argument('--colorby-sg', choices=['x', 'y'], default=None,
+						   help="color dots by subgenome from x or y ancestor file. [default=%(default)s]")
+	group_anc.add_argument('--colorby-anc', choices=['x', 'y'], default=None,
+						   help="color dots by ancestor color from x or y ancestor file. [default=%(default)s]")
+	group_anc.add_argument('--xbars', metavar='FILE', type=str, default=None,
+						   help="plot colorbar for x axis (top). Fallback to --xanc. [default=%(default)s]")
+	group_anc.add_argument('--ybars', metavar='FILE', type=str, default=None,
+						   help="plot colorbar for y axis (left). Fallback to --yanc. [default=%(default)s]")
+	group_anc.add_argument('--xbarlab', action='store_true', default=False,
+						   help="add labels for x bars. [default=%(default)s]")
+	group_anc.add_argument('--ybarlab', action='store_true', default=False,
+						   help="add labels for y bars. [default=%(default)s]")
+	group_anc.add_argument('--bar-colorby-sg', action='store_true', default=False,
+						   help="color bars (xbars/ybars) by subgenome instead of ancestor color. [default=%(default)s]")
 
 	group_orth = parser.add_argument_group('Orthology Index filter/color',
 										   'filtering or coloring blocks by Orthology Index (prior to Ks color)')

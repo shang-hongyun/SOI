@@ -234,18 +234,18 @@ soi phylo -og cluster.mcl.plus -pep pep.faa -mm 0.5
 
 #### `dotplot` ####
 The subcommand `dotplot` enables visualization and evaluation of synteny, 
-with colored by the Orthology Index or Ks values.
+with colored by the Orthology Index or Ks values, or subgenome/ancestor assignments.
 
 Usage examples:
 ```
 # basic dotplot with Ks coloring
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --kaks wgdi_ks.tsv -o dot_ks
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --kaks wgdi_ks.tsv -o dot_ks
 
 # color by Orthology Index (filter + color)
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --ofdir OrthoFinder/Results/ -of-color --of-ratio 0.6 -o dot_oi
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --ofdir OrthoFinder/Results/ -of-color --of-ratio 0.6 -o dot_oi
 
 # with ploidy subplots (a-d panels)
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --kaks wgdi_ks.tsv --ks-hist --plot-ploidy --number-plots -o dot_full
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --kaks wgdi_ks.tsv --ks-hist --plot-ploidy --number-plots -o dot_full
 
 # specify chromosomes directly (no ctl file)
 soi dotplot -s collinearity.ortho -g all.gff --xchrs Pt1 Pt2 --ychrs Sd3 Sd4 -o dot_chrs
@@ -254,13 +254,13 @@ soi dotplot -s collinearity.ortho -g all.gff --xchrs Pt1 Pt2 --ychrs Sd3 Sd4 -o 
 soi dotplot -s collinearity.ortho -g all.gff --xsp Vitis_vinifera --ysp Daucus_carota -o dot_sp
 
 # ancestor chromosome bars on axes
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --xanc anc_x.txt --xbars anc_x.txt --xbarlab -o dot_anc
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --xbars anc_x.txt --xbarlab -o dot_anc
 
 # color dots and bars by subgenome
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --xanc anc_x.txt --colorby-sg x --xbars anc_x.txt --bar-colorby-sg -o dot_sg
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --colorby-sg x --xbars anc_x.txt --bar-colorby-sg -o dot_sg
 
 # custom subgenome colors
-soi dotplot -s collinearity.ortho -g all.gff -c species.ctl --xanc anc_x.txt --bar-colorby-sg --sg-colors '#FF0000' '#00FF00' '#0000FF' '#FFFF00' -o dot_custom
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --bar-colorby-sg --sg-colors '#FF0000' '#00FF00' '#0000FF' '#FFFF00' -o dot_custom
 ```
 
 #### `depth` ####
@@ -289,9 +289,6 @@ soi ksplot --kaks wgdi_ks.tsv -o ks_plot
 
 # histogram only, with custom max Ks
 soi ksplot --kaks wgdi_ks.tsv -o ks_hist -p hist --max-ks 1.5
-
-# color by homology class (e.g., ortholog vs paralog)
-soi ksplot --kaks wgdi_ks.tsv --homology-class class.tsv -o ks_class
 ```
 
 #### `detandem` ####
@@ -315,7 +312,7 @@ soi detandem -og cluster.mcl -g all_species_gene.gff -s collinearity.ortho > clu
 
 #### `hog` ####
 The subcommand `hog` splits orthogroups into Hierarchical Orthologous Groups (HOGs)
-using synteny and a species tree. Output follows the OrthoXML HOG format.
+using synteny and a species tree. 
 
 Usage examples:
 ```
@@ -461,8 +458,8 @@ The ctl format for MCscanX (dot_plotter) is supported:
 ```
 1500
 1500
-As1,As2,As3,As4,As5,As6,As7,As8,As9,As10,As11	// y 
-Dc1,Dc2,Dc3,Dc4,Dc5,Dc6,Dc7,Dc8,Dc9				// x
+As1,As2,As3,As4,As5,As6,As7,As8,As9,As10,As11	// y axis
+Dc1,Dc2,Dc3,Dc4,Dc5,Dc6,Dc7,Dc8,Dc9				// x axis
 ```
 
 #### Ancestor file format ####

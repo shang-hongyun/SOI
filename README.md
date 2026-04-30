@@ -312,15 +312,12 @@ soi detandem -og cluster.mcl -g all_species_gene.gff -s collinearity.ortho > clu
 
 #### `hog` ####
 The subcommand `hog` splits orthogroups into Hierarchical Orthologous Groups (HOGs)
-using synteny and a species tree. 
+based on orthologous synteny. 
 
 Usage examples:
 ```
 # split orthogroups into HOGs
 soi hog -og cluster.mcl.detandem -s collinearity.ortho -t species.tree -prefix HOGs
-
-# include paralogs for subgenome-aware reconstruction
-soi hog -og cluster.mcl.detandem -s collinearity.ortho -t species.tree -prefix HOGs -paralog
 ```
 
 ### Other functions ###

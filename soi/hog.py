@@ -1,5 +1,6 @@
 import sys
 import re
+import numpy as np
 import networkx as nx
 from collections import defaultdict, Counter
 
@@ -13,12 +14,15 @@ def xmain(**kargs):
 	
 class HOG:
 	def __init__(self, ogfile=None, orthfiles=None, sptreefile=None, outpre = "HOGs",
-		  paralog=False, **kargs):
+		  paralog=False, max_copies=5, out_stats=None, plot=None, **kargs):
 		self.ogfile = ogfile
 		self.orthfiles = orthfiles
 		self.sptreefile = sptreefile
 		self.outtsv = outpre + '.tsv'
 		self.noparalog = not paralog
+		self.max_copies = max_copies
+		self.out_stats = out_stats or (outpre + '.stats.tsv')
+		self.plot = plot
 	def pipe(self, write_tsv=True):
 		logger.info(f'Reading and Numbering species tree from {self.sptreefile}')
 		self.tree = sptree = number_nodes(self.sptreefile)
@@ -30,38 +34,27 @@ class HOG:
 		
 		logger.info(f'Splitting HOGs from {self.ogfile}')
 		prefix = 'hog'
-		# 存储所有HOG：key = hog_id, value = HOG对象/dict
 		self.all_hogs = {}
 		self.all_genes = []
 		for og in OrthoMCLGroup(self.ogfile):
 			og_genes = og.genes
 			self.all_genes  += og_genes
-			og_species = set(og.species)   # 这个OG包含的物种
+			og_species = set(og.species)
 			og_id = og.ogid
-			og_spdict = og.spdict		 # species -> [genes]
+			og_spdict = og.spdict
 			subgraph = graph.subgraph(og_genes).copy()
 
-			# 临时存储：node_id → 该节点下的所有HOGs
 			node_to_hogs = defaultdict(list)
 
-			# ------------------------------
-			# 遍历物种树（HOG标准：后序）
-			# ------------------------------
 			for node in sptree.traverse(strategy="postorder"):
 				if self.noparalog and node.is_leaf():
 					continue
 				node_id = node.name
 				node_species = set(node.get_leaf_names())
 
-				# --------------------------
-				# 核心：无交集 → 跳过
-				# --------------------------
 				if not node_species & og_species:
 					continue
 
-				# --------------------------
-				# 从 og_spdict 直接取 subset_genes
-				# --------------------------
 				subset_genes = []
 				for sp in node_species & og_species:
 					subset_genes.extend(og_spdict[sp])
@@ -69,28 +62,12 @@ class HOG:
 				if not subset_genes:
 					continue
 
-				# --------------------------
-				# 共线性连通分量 = 单个HOG
-				# --------------------------
 				hog_subgraph = subgraph.subgraph(subset_genes)
 				connected_components = list(nx.connected_components(hog_subgraph))
 
-				# --------------------------
-				# 为每个连通分量创建 HOG
-				# --------------------------
 				for idx, cc_genes in enumerate(connected_components):
 					hog_id = f"{og_id}.{node_id}.{prefix}{idx}"
 
-					# 构建 HOG 条目（含层级、父子关系）
-					# hog = {
-						# "hog_id": hog_id,
-						# "og_id": og_id,
-						# "node_id": node_id,
-						# "genes": list(cc_genes),
-						# "species": [sp for sp in og_spdict if sp in node_species],
-						# "parent": None,		  # 关键：父HOG
-						# "children": [],		  # 关键：子HOG
-					# }
 					hog = HOGrecord(
 						hog_id=hog_id,
 						og_id=og_id,
@@ -103,9 +80,6 @@ class HOG:
 					self.all_hogs[hog_id] = hog
 					node_to_hogs[node_id].append(hog)
 
-			# ------------------------------
-			# 最关键步骤：建立 HOG 层级父子关系
-			# ------------------------------
 			for node in sptree.traverse(strategy="postorder"):
 				node_id = node.name
 				current_hogs = node_to_hogs.get(node_id, [])
@@ -113,15 +87,13 @@ class HOG:
 				if not current_hogs:
 					continue
 
-				# 找父节点
 				parent_node = node.up
 				if not parent_node:
-					continue  # 根节点无parent
+					continue
 
 				p_node_id = parent_node.name
 				parent_hogs = node_to_hogs.get(p_node_id, [])
 
-				# 每个子HOG必须找到包含它的父HOG
 				for hog in current_hogs:
 					hog_genes = set(hog["genes"])
 					for phog in parent_hogs:
@@ -132,22 +104,22 @@ class HOG:
 							break
 
 		logger.info(f"Processed {len(self.all_hogs)} HOGs")
-		#print(Counter(v['node_id'] for v in self.all_hogs.values()))
 		logger.info("All HOGs with hierarchy built successfully!")
 		
 		if write_tsv:
 			with open(self.outtsv, 'w', encoding='utf-8') as f:
 				self.write_all_hogs_in_one_file(f)
 			logger.info(f"HOGs written to {self.outtsv}")
+
+		# compute and output copy-number statistics
+		leaf_data, internal_data, node_names = self.compute_copy_stats()
+		if leaf_data or internal_data:
+			self.write_stats_table(leaf_data, internal_data, node_names)
+		if self.plot:
+			self.plot_stats(leaf_data, internal_data, node_names)
 		return self.all_hogs
 		
 	def write_all_hogs_in_one_file(self, fout=sys.stdout):
-		"""
-		最终输出格式：HOG  OG  Tree_Node  Parent  Genes
-		Genes: 空格分隔
-		Parent: 父HOG，无父节点则为 Root
-		"""
-		# 表头
 		header = ["HOG", "OG", "Tree_Node", "Parent", "Genes"]
 		fout.write("\t".join(header) + "\n")
 
@@ -156,43 +128,136 @@ class HOG:
 			og_id = hog["og_id"]
 			node_id = hog["node_id"]
 			parent_id = hog["parent"] if hog["parent"] is not None else "Root"
-			gene_str = " ".join(sorted(hog["genes"]))  # 空格分隔
+			gene_str = " ".join(sorted(hog["genes"]))
 
-			# 写入一行
 			row = [hog_id, og_id, node_id, parent_id, gene_str]
 			fout.write("\t".join(row) + "\n")
+
+	def compute_copy_stats(self):
+		"""Compute per-node copy-number distribution.
+
+		Internal nodes: parent HOG -> number of child HOGs.
+		Leaf species:   HOG -> number of gene copies from that species.
+		Returns (leaf_data, internal_data, node_names) where each data is
+		list of np.array([[copies, hog_count], ...]) sorted postorder."""
+		sptree = self.tree
+		all_nodes = list(sptree.traverse(strategy="postorder"))
+		max_c = self.max_copies
+
+		# --- Internal nodes: count children per parent HOG ---
+		node_parent_children = defaultdict(lambda: defaultdict(int))
+		for hog in self.all_hogs.values():
+			pid = hog["parent"]
+			if pid and pid != "Root":
+				parent_hog = self.all_hogs.get(pid)
+				if parent_hog:
+					node_parent_children[parent_hog["node_id"]][pid] += 1
+
+		internal_data = []
+		internal_names = []
+		for node in all_nodes:
+			if node.is_leaf():
+				continue
+			nid = node.name
+			pcounts = node_parent_children.get(nid, {})
+			if not pcounts:
+				continue
+			dist = Counter()
+			for cnt in pcounts.values():
+				c = min(cnt, max_c)
+				dist[c] += 1
+			arr = np.array(sorted(dist.items()), dtype=int)
+			if len(arr):
+				internal_data.append(arr)
+				internal_names.append(nid)
+
+		# --- Leaf species: count gene copies per HOG per species ---
+		leaf_sp_counts = defaultdict(lambda: defaultdict(int))
+		for hog in self.all_hogs.values():
+			for sp in hog["species"]:
+				cnt = sum(1 for g in hog["genes"] if g.startswith(sp))
+				if cnt > 0:
+					leaf_sp_counts[sp][hog["hog_id"]] = cnt
+
+		leaf_data = []
+		leaf_names = []
+		for node in all_nodes:
+			if not node.is_leaf():
+				continue
+			sp = node.name
+			sp_hog_genes = leaf_sp_counts.get(sp, {})
+			if not sp_hog_genes:
+				continue
+			dist = Counter()
+			for cnt in sp_hog_genes.values():
+				c = min(cnt, max_c)
+				dist[c] += 1
+			arr = np.array(sorted(dist.items()), dtype=int)
+			if len(arr):
+				leaf_data.append(arr)
+				leaf_names.append(sp)
+
+		return leaf_data, internal_data, leaf_names + internal_names
+
+	def write_stats_table(self, leaf_data, internal_data, node_names):
+		"""Write TSV like save_depth_table: rows = nodes, cols = copy numbers."""
+		max_c = self.max_copies
+		all_data = leaf_data + internal_data
+		header = ["Node"] + [str(i) for i in range(1, max_c)] + [f"{max_c}+"]
+		rows = [header]
+		for name, arr in zip(node_names, all_data):
+			counts = {i: 0 for i in range(1, max_c + 1)}
+			for copies, cnt in arr:
+				c = min(int(copies), max_c)
+				counts[c] += int(cnt)
+			row = [name] + [str(counts[i]) for i in range(1, max_c + 1)]
+			rows.append(row)
+		text = "\n".join(["\t".join(r) for r in rows]) + "\n"
+		with open(self.out_stats, 'w', encoding='utf-8') as f:
+			f.write(text)
+		logger.info(f"Copy-number stats written to {self.out_stats}")
+
+	def plot_stats(self, leaf_data, internal_data, node_names):
+		"""Bar chart: one panel per node showing copy-number distribution."""
+		from .ploidy_plotter import plot_bars
+		all_data = leaf_data + internal_data
+		if not all_data:
+			logger.warning("No data for plot")
+			return
+		n = len(all_data)
+		nrow = int(np.ceil(np.sqrt(n)))
+		ncol = int(np.ceil(n / nrow))
+		outfigs = [f"{self.plot}.pdf", f"{self.plot}.png"]
+		plot_bars(all_data, node_names, outfigs=outfigs,
+				nrow=nrow, ncol=ncol, max_ploidy=self.max_copies,
+				xlabel='Copy number', ylabel='HOG count')
+		logger.info(f"Copy-number plot written to {self.plot}.pdf, {self.plot}.png")
+
 
 class HOGrecord:
     __slots__ = ["hog_id", "og_id", "node_id", "genes", "species", "parent", "children"]
     
     def __init__(self, hog_id, og_id, node_id, genes, species, parent=None, children=None):
-        # 核心字段
         self.hog_id = hog_id
         self.og_id = og_id
         self.node_id = node_id
         self.genes = genes
         self.species = species
-        # 层级关系
         self.parent = parent
         self.children = children if children is not None else []
 
-    # 🔥 支持字典访问：hog["hog_id"]
     def __getitem__(self, key):
         return getattr(self, key)
 
-    # 🔥 支持字典赋值：hog["parent"] = xxx
     def __setitem__(self, key, value):
         setattr(self, key, value)
 
-    # 🔥 可哈希：唯一标识为 hog_id
     def __hash__(self):
         return hash(self.hog_id)
 
-    # 🔥 相等判断：两个HOG的hog_id相同则视为同一个对象
     def __eq__(self, other):
         return isinstance(other, HOGrecord) and self.hog_id == other.hog_id
 
-    # 打印美化（调试用）
     def __repr__(self):
         return f"{self.hog_id}"
 

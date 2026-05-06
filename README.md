@@ -259,8 +259,8 @@ soi dotplot -s collinearity.ortho -g all.gff --xsp Vitis_vinifera --ysp Daucus_c
 # ancestor chromosome bars (--xbars triggers bar, data from --xanc)
 soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --xbars --xbarlab -o dot_bar
 
-# bars with explicit file (overrides --xanc fallback)
-soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --xbars alt_anc.txt -o dot_bar_file
+# bars with explicit file (no need for --xanc when not coloring dots)
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xbars alt_anc.txt -o dot_bar_file
 
 # color bars by subgenome; dots by subgenome (y axis)
 soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --yanc anc_y.txt --colorby-sg y --ybars --bar-colorby-sg -o dot_sg

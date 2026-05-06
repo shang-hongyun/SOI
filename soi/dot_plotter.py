@@ -77,7 +77,7 @@ def dotplot_args(parser):
 	group_dot.add_argument('--diagonal', action='store_true', default=False,
 						   help="try to put blocks onto the diagonal. [default=%(default)s]")
 	group_dot.add_argument('--gene-axis', action='store_true', default=True,
-						   help="use gene as axis instead of base pair. [default=%(default)s]")
+						   help=argparse.SUPPRESS)  # "use gene as axis instead of base pair. [default=%(default)s]")
 	group_dot.add_argument('--bp-axis', action='store_true', default=False,
 						   help="use base pair as axis (overrides --gene-axis). [default=%(default)s]")
 	group_dot.add_argument('--xlines', metavar='FILE', type=str, default=None,
@@ -216,6 +216,12 @@ def reset_args(args):
 	# --bp-axis overrides --gene-axis
 	if args.bp_axis:
 		args.gene_axis = False
+	# clamp --of-ratio to [0, 1]
+	if args.of_ratio is not None:
+		clamped = min(max(args.of_ratio, 0.0), 1.0)
+		if clamped != args.of_ratio:
+			logger.warning(f'--of-ratio {args.of_ratio} out of [0,1]; clamped to {clamped}')
+			args.of_ratio = clamped
 	args.matrix = None
 	args.hide_blocks = None
 	args.plot_dot = None

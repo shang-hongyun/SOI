@@ -14,15 +14,15 @@ def xmain(**kargs):
 	
 class HOG:
 	def __init__(self, ogfile=None, orthfiles=None, sptreefile=None, outpre = "HOGs",
-		  paralog=False, max_copies=5, out_stats=None, plot=None, **kargs):
+		  paralog=False, max_copies=5, out_stats=False, plot=False, **kargs):
 		self.ogfile = ogfile
 		self.orthfiles = orthfiles
 		self.sptreefile = sptreefile
 		self.outtsv = outpre + '.tsv'
 		self.noparalog = not paralog
 		self.max_copies = max_copies
-		self.out_stats = out_stats or (outpre + '.stats.tsv')
-		self.plot = plot
+		self.out_stats = outpre + '.stats.tsv' if out_stats else None
+		self.plot = outpre if plot else None
 	def pipe(self, write_tsv=True):
 		logger.info(f'Reading and Numbering species tree from {self.sptreefile}')
 		self.tree = sptree = number_nodes(self.sptreefile)

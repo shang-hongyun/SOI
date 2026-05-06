@@ -89,10 +89,10 @@ def args_hog(parser):
 						help='Include paralogs [default=%(default)s]')
 	parser.add_argument('--max-copies', type=int, default=5,
 						help='Max copy number to track in stats/plot [default=%(default)s]')
-	parser.add_argument('--out-stats', type=str, default=None, metavar='FILE',
-						help='Output copy-number statistics TSV [default: <prefix>.stats.tsv]')
-	parser.add_argument('--plot', type=str, default=None, metavar='PREFIX',
-						help='Output bar chart of copy-number distribution [default: no plot]')
+	parser.add_argument('--out-stats', action='store_true', default=False,
+						help='Output copy-number statistics TSV (<prefix>.stats.tsv)')
+	parser.add_argument('--plot', action='store_true', default=False,
+						help='Output bar chart of copy-number distribution (<prefix>.pdf/.png)')
 
 def func_hog(**kargs):
 	from .hog import xmain as hog_main

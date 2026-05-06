@@ -374,9 +374,6 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	xcsize = ycsize = fontsize * cfont_scale  # chromosome labels
 	# resolve custom subgenome colors
 	sg_colors = sg_colors or _sg_colors
-	# normalize gff: -g can produce a list; downstream expects str
-	if isinstance(gff, (list, tuple)):
-		gff = gff[0] if gff else None
 	# warn if ancestor-required options are set but no ancestor file given
 	if bar_colorby_sg or colorby_sg or colorby_anc:
 		if not (xbars or ybars or xanc or yanc):

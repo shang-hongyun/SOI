@@ -1127,6 +1127,27 @@ class XGff(XOrthology):
 		for gff in self.gffs:
 			for line in Gff(gff):
 				yield line
+	def get_indexed_genes(self):
+		from collections import OrderedDict
+		d_chrom = OrderedDict()
+		for line in self:
+			try:
+				d_chrom[line.chrom] += [line]
+			except KeyError:
+				d_chrom[line.chrom] = [line]
+		d_genes = OrderedDict()
+		for chrom, lines in d_chrom.items():
+			lines = sorted(lines, key=lambda x: x.start)
+			for i, line in enumerate(lines):
+				line.index = i
+				d_genes[line.gene] = line
+		return d_genes
+	def get_index(self):
+		d_genes = self.get_indexed_genes()
+		d_index = {}
+		for gene, line in d_genes.items():
+			d_index[(line.chrom, line.index + 1)] = line
+		return d_index
 
 
 class Gff:

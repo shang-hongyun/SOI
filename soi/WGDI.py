@@ -6,7 +6,7 @@ import numpy as np
 from collections import Counter, OrderedDict
 from Bio import SeqIO
 import matplotlib.pyplot as plt
-from .mcscan import Gff, ColinearGroups, KaKsParser, seq2dict, Collinearity
+from .mcscan import Gff, XGff, ColinearGroups, KaKsParser, seq2dict, Collinearity
 from .OrthoFinder import catAln, format_id_for_iqtree
 from lazy_property import LazyWritableProperty as lazyproperty
 from .small_tools import mkdirs, flatten, test_s, test_f, parse_kargs
@@ -49,7 +49,7 @@ class TPMLine:
 
 
 class AK:
-    '''Parser for WGDI ancestor.txt+'''
+    """Parser for WGDI ancestor.txt+"""
 
     def __init__(self, akfile):
         self.akfile = akfile
@@ -79,7 +79,7 @@ class AK:
 
     def map_to_raw_coord(self, gff, chrmap=None):
         d_chr = Collinearity(chrmap=chrmap).map_chr()
-        d_index = Gff(gff).get_index()
+        d_index = XGff(gff).get_index()
         for line in self._parse_line():
             gene1 = d_index[(line.chrom, line.start)]
             gene2 = d_index[(line.chrom, line.end)]

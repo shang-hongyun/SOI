@@ -33,6 +33,8 @@ def add_ploidy_opts(parser):
 						help="bar fill color. [default=%(default)s]")
 	parser.add_argument('--edgecolor', metavar='COLOR', type=str, default=None,
 						help="bar edge color. [default=%(default)s]")
+	parser.add_argument('--as-ratio', action='store_true', default=False,
+						help="show y-axis as proportion (0-1) instead of count. [default=%(default)s]")
 
 def ploidy_args(parser):
 	# parser.add_argument('-s', '--collinearity', metavar='INPUT_BLOCK_FILE', type=str,
@@ -123,7 +125,7 @@ def plot_bars(data, titles, ax=None, outfigs=None, nrow=1, ncol=1, fontsize=10,
 			  suptitle=None, max_ploidy=10, color='white', edgecolor='black',
 			  ylabel='Number of windows', xlabel='Synteny depth', 
 			  output_depth=None, mode='w', ref=None,
-			  **kargs):
+			  as_ratio=False, **kargs):
 	if output_depth:
 		save_depth_table(data, titles, output_depth=output_depth, 
 			mode=mode, max_ploidy=max_ploidy, ref=ref)
@@ -143,7 +145,10 @@ def plot_bars(data, titles, ax=None, outfigs=None, nrow=1, ncol=1, fontsize=10,
 	for i, (dat, title, sax) in enumerate(zip(data, titles, ax)):
 		try:
 			x = dat[:, 0]
-			y = dat[:, 1]
+			y = dat[:, 1].astype(float)
+			if as_ratio and y.sum() > 0:
+				y = y / y.sum()
+				sax.set_ylabel('Proportion' if ylabel == 'Number of windows' else ylabel)
 			sax.bar(x, y, align='center', color=color, edgecolor=edgecolor)
 		except IndexError:
 			pass

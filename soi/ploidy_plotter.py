@@ -152,7 +152,7 @@ def plot_bars(data, titles, ax=None, outfigs=None, nrow=1, ncol=1, fontsize=10,
 		except IndexError:
 			pass
 		if as_proportion:
-			sax.set_ylabel('Proportion' if ylabel.startswith('Number') else 'Proportion of ' + ylabel)
+			sax.set_ylabel(ylabel.replace('Number', 'Proportion', 1) if ylabel.startswith('Number') else 'Proportion of ' + ylabel)
 		if title is not None:
 			sax.set_title(title)
 		sax.set_xlim(0, max_ploidy)

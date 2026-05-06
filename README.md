@@ -321,13 +321,35 @@ soi detandem -og cluster.mcl -g all_species_gene.gff -s collinearity.ortho > clu
 
 #### `hog` ####
 The subcommand `hog` splits orthogroups into Hierarchical Orthologous Groups (HOGs)
-based on orthologous synteny. 
+based on orthologous synteny, and can output copy-number statistics for detecting
+whole-genome duplications (WGD) across the species tree.
 
 Usage examples:
 ```
-# split orthogroups into HOGs
-soi hog -og cluster.mcl.detandem -s collinearity.ortho -t species.tree -prefix HOGs
+# basic HOG splitting
+soi hog -og cluster.mcl -s collinearity.ortho -t species.tree -prefix HOGs
+
+# include paralogs
+soi hog -og cluster.mcl -s collinearity.ortho -t species.tree -prefix HOGs -paralog
+
+# output copy-number statistics table (per-node distribution)
+soi hog -og cluster.mcl -s collinearity.ortho -t species.tree -prefix HOGs --out-stats
+
+# bar chart of copy-number distribution per node
+soi hog -og cluster.mcl -s collinearity.ortho -t species.tree -prefix HOGs --bar-plot
+
+# species tree with pie charts at nodes (gray=1 copy, blue=2, green=3, orange=4, red=5+)
+soi hog -og cluster.mcl -s collinearity.ortho -t species.tree -prefix HOGs --tree-plot
+
+# all outputs combined
+soi hog -og cluster.mcl -s collinearity.ortho -t species.tree -prefix HOGs --out-stats --bar-plot --tree-plot --max-copies 10
 ```
+
+Output files:
+- `HOGs.tsv` — HOG table (HOG / OG / Tree_Node / Parent / Genes)
+- `HOGs.stats.tsv` — per-node copy-number distribution (columns: 1, 2, 3, ..., N+, Multi%)
+- `HOGs.bar.pdf/.png` — multi-panel bar chart of the distribution
+- `HOGs.tree.pdf/.png` — species tree with pie charts at each node
 
 ### Other functions ###
 Other functions can be found in [SOI-tools](SOI-tools.md). Related functions can be requested by users via [issues](https://github.com/zhangrengang/SOI/issues).

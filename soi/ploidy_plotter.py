@@ -100,8 +100,6 @@ def main(args):
 	# xlabel = 'Relative Ploidy'.format(args.window_size)
 	# args.suptitle = '{} ({})'.format(xlabel, suptitle)
 	args.titles = args.qry
-	if getattr(args, 'as_proportion', False):
-		args.ylabel = 'Proportion of windows'
 	print('{} x {} figure'.format(args.nrow, args.ncol), file=sys.stderr)
 #	print(args.__dict__)
 
@@ -153,6 +151,8 @@ def plot_bars(data, titles, ax=None, outfigs=None, nrow=1, ncol=1, fontsize=10,
 			sax.bar(x, y, align='center', color=color, edgecolor=edgecolor)
 		except IndexError:
 			pass
+		if as_proportion:
+			sax.set_ylabel('Proportion' if ylabel.startswith('Number') else 'Proportion of ' + ylabel)
 		if title is not None:
 			sax.set_title(title)
 		sax.set_xlim(0, max_ploidy)

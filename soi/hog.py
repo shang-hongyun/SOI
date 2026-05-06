@@ -14,7 +14,7 @@ def xmain(**kargs):
 	
 class HOG:
 	def __init__(self, ogfile=None, orthfiles=None, sptreefile=None, outpre = "HOGs",
-		  paralog=False, max_copies=5, out_stats=False, plot=False, tree_plot=False, **kargs):
+		  paralog=False, max_copies=5, out_stats=False, bar_plot=False, tree_plot=False, **kargs):
 		self.ogfile = ogfile
 		self.orthfiles = orthfiles
 		self.sptreefile = sptreefile
@@ -22,7 +22,7 @@ class HOG:
 		self.noparalog = not paralog
 		self.max_copies = max_copies
 		self.out_stats = outpre + '.stats.tsv' if out_stats else None
-		self.plot = outpre if plot else None
+		self.bar_plot = outpre + '.bar' if bar_plot else None
 		self.tree_plot = outpre + '.tree' if tree_plot else None
 	def pipe(self, write_tsv=True):
 		logger.info(f'Reading and Numbering species tree from {self.sptreefile}')
@@ -113,12 +113,12 @@ class HOG:
 			logger.info(f"HOGs written to {self.outtsv}")
 
 		# compute and output copy-number statistics (only when needed)
-		need_stats = self.out_stats or self.plot or self.tree_plot
+		need_stats = self.out_stats or self.bar_plot or self.tree_plot
 		if need_stats:
 			leaf_data, internal_data, node_names = self.compute_copy_stats()
 			if self.out_stats and (leaf_data or internal_data):
 				self.write_stats_table(leaf_data, internal_data, node_names)
-			if self.plot:
+			if self.bar_plot:
 				self.plot_stats(leaf_data, internal_data, node_names)
 			if self.tree_plot:
 				self.plot_tree(leaf_data, internal_data, node_names)
@@ -244,11 +244,11 @@ class HOG:
 		n = len(all_data)
 		nrow = int(np.ceil(np.sqrt(n)))
 		ncol = int(np.ceil(n / nrow))
-		outfigs = [f"{self.plot}.pdf", f"{self.plot}.png"]
+		outfigs = [f"{self.bar_plot}.pdf", f"{self.bar_plot}.png"]
 		plot_bars(all_data, node_names, outfigs=outfigs,
 				nrow=nrow, ncol=ncol, max_ploidy=self.max_copies,
 				xlabel='Copy number', ylabel='HOG count')
-		logger.info(f"Copy-number plot written to {self.plot}.pdf, {self.plot}.png")
+		logger.info(f"Bar plot written to {self.bar_plot}.pdf, {self.bar_plot}.png")
 
 	def plot_tree(self, leaf_data, internal_data, node_names):
 		"""Render species tree with pie charts at nodes showing copy-number distribution."""
@@ -292,7 +292,7 @@ class HOG:
 				node.add_face(name_face, column=1, position='aligned')
 			else:
 				name_face = TextFace(nid, fsize=7, fgcolor='#888888')
-				node.add_face(name_face, column=0, position='branch-top')
+				node.add_face(name_face, column=1, position='aligned')
 
 		tree = self.tree
 		ts = TreeStyle()

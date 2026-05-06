@@ -91,8 +91,8 @@ def args_hog(parser):
 						help='Max copy number to track in stats/plot [default=%(default)s]')
 	parser.add_argument('--out-stats', action='store_true', default=False,
 						help='Output copy-number statistics TSV (<prefix>.stats.tsv)')
-	parser.add_argument('--plot', action='store_true', default=False,
-						help='Output bar chart of copy-number distribution (<prefix>.pdf/.png)')
+	parser.add_argument('--bar-plot', action='store_true', default=False,
+						help='Output bar chart of copy-number distribution (<prefix>.bar.pdf/.png)')
 	parser.add_argument('--tree-plot', action='store_true', default=False,
 						help='Output species tree with copy-number pie charts at nodes (<prefix>.tree.pdf/.png)')
 

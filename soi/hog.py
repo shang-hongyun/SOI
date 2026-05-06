@@ -212,14 +212,17 @@ class HOG:
 		"""Write TSV like save_depth_table: rows = nodes, cols = copy numbers."""
 		max_c = self.max_copies
 		all_data = leaf_data + internal_data
-		header = ["Node"] + [str(i) for i in range(1, max_c)] + [f"{max_c}+"]
+		header = ["Node"] + [str(i) for i in range(1, max_c)] + [f"{max_c}+", "Multi%"]
 		rows = [header]
 		for name, arr in zip(node_names, all_data):
 			counts = {i: 0 for i in range(1, max_c + 1)}
 			for copies, cnt in arr:
 				c = min(int(copies), max_c)
 				counts[c] += int(cnt)
-			row = [name] + [str(counts[i]) for i in range(1, max_c + 1)]
+			total = sum(counts.values())
+			multi = sum(v for k, v in counts.items() if k > 1)
+			ratio = f"{100.0 * multi / total:.1f}" if total else "0"
+			row = [name] + [str(counts[i]) for i in range(1, max_c + 1)] + [ratio]
 			rows.append(row)
 		text = "\n".join(["\t".join(r) for r in rows]) + "\n"
 		with open(self.out_stats, 'w', encoding='utf-8') as f:

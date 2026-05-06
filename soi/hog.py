@@ -255,7 +255,7 @@ class HOG:
 		import os
 		if 'QT_QPA_PLATFORM' not in os.environ:
 			os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-		from ete3 import TreeStyle, PieChartFace, faces, TextFace, NodeStyle
+		from ete3 import TreeStyle, PieChartFace, TextFace
 		pie_colors = ['#d9d9d9', '#377eb8', '#4daf4a', '#ff7f00', '#e41a1c',
 					  '#984ea3', '#a65628', '#f781bf', '#999999', '#66c2a5']
 		max_c = self.max_copies
@@ -281,13 +281,18 @@ class HOG:
 				if non_zero:
 					filtered_pcts = [p for p, c in non_zero]
 					filtered_colors = [c for p, c in non_zero]
-					pie = PieChartFace(filtered_pcts, 40, 40,
+					pie = PieChartFace(filtered_pcts, 20, 20,
 									   colors=filtered_colors, line_color=None)
 					pie.opacity = 0.9
-					faces.add_face_to_node(pie, node, column=0, position='aligned')
+					pie.margin_left = 4
+					pie.margin_right = 4
+					node.add_face(pie, column=0, position='aligned')
 			if node.is_leaf():
 				name_face = TextFace(node.name, fsize=10)
-				faces.add_face_to_node(name_face, node, column=1, position='aligned')
+				node.add_face(name_face, column=1, position='aligned')
+			else:
+				name_face = TextFace(nid, fsize=7, fgcolor='#888888')
+				node.add_face(name_face, column=0, position='branch-top')
 
 		tree = self.tree
 		ts = TreeStyle()

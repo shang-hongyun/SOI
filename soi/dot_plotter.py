@@ -387,6 +387,10 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	xcsize = ycsize = fontsize * cfont_scale  # chromosome labels
 	# resolve custom subgenome colors
 	sg_colors = sg_colors or _sg_colors
+	# warn if no dot coloring mode is active
+	if ks is None and colorby_sg is None and colorby_anc is None:
+		logger.warning('No dot coloring active; blocks shown as lines. '
+			'Use --kaks, -orth --of-color, --colorby-sg, or --colorby-anc for colored dots.')
 	# warn if ancestor-required options are set but no ancestor file given
 	if bar_colorby_sg or colorby_sg or colorby_anc:
 		if not (xbars or ybars or xanc or yanc):

@@ -238,11 +238,14 @@ with colored by the Orthology Index or Ks values, or subgenome/ancestor assignme
 
 Usage examples:
 ```
-# basic dotplot with Ks coloring
+# basic dotplot with Ks coloring (gene-axis is default)
 soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --kaks wgdi_ks.tsv -o dot_ks
 
-# color by Orthology Index (filter + color)
-soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --ofdir OrthoFinder/Results/ -of-color --of-ratio 0.6 -o dot_oi
+# use base-pair coordinates instead
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --kaks wgdi_ks.tsv --bp-axis -o dot_bp
+
+# color by Orthology Index (takes priority over Ks)
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl -orth orthologs.txt --of-color --of-ratio 0.6 -o dot_oi
 
 # with ploidy subplots (a-d panels)
 soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --kaks wgdi_ks.tsv --ks-hist --plot-ploidy --number-plots -o dot_full
@@ -253,14 +256,20 @@ soi dotplot -s collinearity.ortho -g all.gff --xchrs Pt1 Pt2 --ychrs Sd3 Sd4 -o 
 # auto-detect chromosomes by species name from GFF
 soi dotplot -s collinearity.ortho -g all.gff --xsp Vitis_vinifera --ysp Daucus_carota -o dot_sp
 
-# ancestor chromosome bars on axes
-soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --xbars anc_x.txt --xbarlab -o dot_anc
+# ancestor chromosome bars (--xbars triggers bar, data from --xanc)
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --xbars --xbarlab -o dot_bar
 
-# color dots and bars by subgenome
-soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --colorby-sg x --xbars anc_x.txt --bar-colorby-sg -o dot_sg
+# bars with explicit file (overrides --xanc fallback)
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --xbars alt_anc.txt -o dot_bar_file
 
-# custom subgenome colors
-soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --bar-colorby-sg --sg-colors '#FF0000' '#00FF00' '#0000FF' '#FFFF00' -o dot_custom
+# color bars by subgenome; dots by subgenome (y axis)
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --yanc anc_y.txt --colorby-sg y --ybars --bar-colorby-sg -o dot_sg
+
+# color dots by ancestor colors (from ancestor file color column)
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --colorby-anc x -o dot_anc_color
+
+# custom subgenome colors for bars and dots
+soi dotplot -s collinearity.ortho -g all.gff -c xy_chrs.ctl --xanc anc_x.txt --xbars --bar-colorby-sg --sg-colors '#FF0000' '#00FF00' '#0000FF' '#FFFF00' -o dot_custom
 ```
 
 #### `depth` ####

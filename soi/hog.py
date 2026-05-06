@@ -255,7 +255,7 @@ class HOG:
 		import os
 		if 'QT_QPA_PLATFORM' not in os.environ:
 			os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-		from ete3 import TreeStyle, PieChartFace, TextFace
+		from ete3 import TreeStyle, PieChartFace, TextFace, NodeStyle, faces as etefaces
 		pie_colors = ['#d9d9d9', '#377eb8', '#4daf4a', '#ff7f00', '#e41a1c',
 					  '#984ea3', '#a65628', '#f781bf', '#999999', '#66c2a5']
 		max_c = self.max_copies
@@ -273,7 +273,14 @@ class HOG:
 			pcts = [100.0 * counts[i] / total for i in range(1, max_c + 1)]
 			node_pcts[name] = pcts
 
+		# node style: hide dots, keep lines
+		ns = NodeStyle()
+		ns['size'] = 0
+		ns['hz_line_width'] = 1
+		ns['vt_line_width'] = 1
+
 		def layout(node):
+			node.set_style(ns)
 			nid = node.name
 			if nid in node_pcts:
 				pcts = node_pcts[nid]
@@ -286,20 +293,23 @@ class HOG:
 					pie.opacity = 0.9
 					pie.margin_left = 4
 					pie.margin_right = 4
-					node.add_face(pie, column=0, position='aligned')
+					if node.is_leaf():
+						etefaces.add_face_to_node(pie, node, column=0, position='aligned')
+					else:
+						etefaces.add_face_to_node(pie, node, column=0, position='branch-right')
 			if node.is_leaf():
 				name_face = TextFace(node.name, fsize=10)
-				node.add_face(name_face, column=1, position='aligned')
+				etefaces.add_face_to_node(name_face, node, column=1, position='aligned')
 			else:
 				name_face = TextFace(nid, fsize=7, fgcolor='#888888')
-				node.add_face(name_face, column=1, position='aligned')
+				etefaces.add_face_to_node(name_face, node, column=0, position='branch-top')
 
 		tree = self.tree
 		ts = TreeStyle()
 		ts.layout_fn = layout
 		ts.show_leaf_name = False
-		ts.scale = 120
-		ts.branch_vertical_margin = 8
+		ts.scale = 200
+		ts.branch_vertical_margin = 10
 
 		out_pdf = self.tree_plot + '.pdf'
 		out_png = self.tree_plot + '.png'

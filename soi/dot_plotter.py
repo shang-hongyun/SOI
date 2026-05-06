@@ -113,10 +113,10 @@ def dotplot_args(parser):
 						   help="color dots by subgenome from x or y ancestor file. [default=%(default)s]")
 	group_anc.add_argument('--colorby-anc', choices=['x', 'y'], default=None,
 						   help="color dots by ancestor color from x or y ancestor file. [default=%(default)s]")
-	group_anc.add_argument('--xbars', metavar='FILE', type=str, default=None,
-						   help="plot colorbar for x axis (top). Fallback to --xanc. [default=%(default)s]")
-	group_anc.add_argument('--ybars', metavar='FILE', type=str, default=None,
-						   help="plot colorbar for y axis (left). Fallback to --yanc. [default=%(default)s]")
+	group_anc.add_argument('--xbars', metavar='FILE', type=str, nargs='?', const=True, default=None,
+						   help="plot colorbar for x axis (top). Uses --xanc file if no FILE given. [default=%(default)s]")
+	group_anc.add_argument('--ybars', metavar='FILE', type=str, nargs='?', const=True, default=None,
+						   help="plot colorbar for y axis (left). Uses --yanc file if no FILE given. [default=%(default)s]")
 	group_anc.add_argument('--xbarlab', action='store_true', default=False,
 						   help="add labels for x bars. [default=%(default)s]")
 	group_anc.add_argument('--ybarlab', action='store_true', default=False,
@@ -374,6 +374,9 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 	xcsize = ycsize = fontsize * cfont_scale  # chromosome labels
 	# resolve custom subgenome colors
 	sg_colors = sg_colors or _sg_colors
+	# normalize gff: -g can produce a list; downstream expects str
+	if isinstance(gff, (list, tuple)):
+		gff = gff[0] if gff else None
 	# warn if ancestor-required options are set but no ancestor file given
 	if bar_colorby_sg or colorby_sg or colorby_anc:
 		if not (xbars or ybars or xanc or yanc):
@@ -426,6 +429,9 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 			if clip_ks is not None and myks > max_ks:
 				continue
 			if myks is None:
+				if colorby_sg or colorby_anc:
+					Xs += [pos1]
+					Ys += [pos2]
 				continue
 			Xs += [pos1]
 			Ys += [pos2]
@@ -495,8 +501,15 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 
 	# color bars
 	xlabelpad, ylabelpad = 10, 7.5
-	xbar_file = xbars or xanc
-	ybar_file = ybars or yanc
+	# resolve bar file: True means fallback to --xanc/--yanc
+	xbar_file = xanc if xbars is True else xbars
+	ybar_file = yanc if ybars is True else ybars
+	if xbar_file and xbars is True and xanc is None:
+		logger.warning('--xbars triggered but --xanc not provided; no bar data')
+		xbar_file = None
+	if ybar_file and ybars is True and yanc is None:
+		logger.warning('--ybars triggered but --yanc not provided; no bar data')
+		ybar_file = None
 	bar_color_fn = (lambda seg: sg_colors[seg.subgenome % len(sg_colors)]) if bar_colorby_sg else None
 	if xbar_file:
 		y = ylim

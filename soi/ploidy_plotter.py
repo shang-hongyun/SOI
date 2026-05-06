@@ -129,6 +129,8 @@ def plot_bars(data, titles, ax=None, outfigs=None, nrow=1, ncol=1, fontsize=10,
 	if output_depth:
 		save_depth_table(data, titles, output_depth=output_depth, 
 			mode=mode, max_ploidy=max_ploidy, ref=ref)
+	if as_proportion:
+		ylabel = ylabel.replace('Number', 'Proportion', 1) if ylabel.startswith('Number') else 'Proportion of ' + ylabel
 	if ax is None:
 		if nrow*ncol == 1:
 			ax = plt.subplot(111)
@@ -151,8 +153,6 @@ def plot_bars(data, titles, ax=None, outfigs=None, nrow=1, ncol=1, fontsize=10,
 			sax.bar(x, y, align='center', color=color, edgecolor=edgecolor)
 		except IndexError:
 			pass
-		if as_proportion:
-			sax.set_ylabel(ylabel.replace('Number', 'Proportion', 1) if ylabel.startswith('Number') else 'Proportion of ' + ylabel)
 		if title is not None:
 			sax.set_title(title)
 		sax.set_xlim(0, max_ploidy)

@@ -76,8 +76,10 @@ def dotplot_args(parser):
 						   help="cluster chromosomes. [default=%(default)s]")
 	group_dot.add_argument('--diagonal', action='store_true', default=False,
 						   help="try to put blocks onto the diagonal. [default=%(default)s]")
-	group_dot.add_argument('--gene-axis', action='store_true', default=False,
+	group_dot.add_argument('--gene-axis', action='store_true', default=True,
 						   help="use gene as axis instead of base pair. [default=%(default)s]")
+	group_dot.add_argument('--bp-axis', action='store_true', default=False,
+						   help="use base pair as axis (overrides --gene-axis). [default=%(default)s]")
 	group_dot.add_argument('--xlines', metavar='FILE', type=str, default=None,
 						   help="bed/pos file to add vertical lines. [default=%(default)s]")
 	group_dot.add_argument('--ylines', metavar='FILE', type=str, default=None,
@@ -211,6 +213,9 @@ def _resolve_sp(sp, gff_files):
 
 
 def reset_args(args):
+	# --bp-axis overrides --gene-axis
+	if args.bp_axis:
+		args.gene_axis = False
 	args.matrix = None
 	args.hide_blocks = None
 	args.plot_dot = None
@@ -270,6 +275,8 @@ def main(args):
 	prefix = args.o
 	kaks = args.kaks
 	ks_args = {'yn00': args.yn00, 'method': args.method, 'fdtv': args.fdtv}
+	if args.of_color and args.kaks:
+		logger.warning('--of-color overrides Ks coloring; dots will be colored by Orthology Index')
 	if args.hide_blocks is not None:
 		args.hide_blocks = set([line.strip().split()[0]
 							   for line in open(args.hide_blocks)])
@@ -508,6 +515,15 @@ def plot_blocks(blocks, outplots, ks=None, max_ks=None, ks_hist=False, ks_cmap=N
 		logger.warning('--ybars triggered but --yanc not provided; no bar data')
 		ybar_file = None
 	bar_color_fn = (lambda seg: sg_colors[seg.subgenome % len(sg_colors)]) if bar_colorby_sg else None
+	# warn if bar labels requested but ancestor file has no label column
+	if xbarlab and xbar_file:
+		_has_lab = any(seg.label for seg in AK(xbar_file).lazy_lines(gene_axis=True) if seg.label)
+		if not _has_lab:
+			logger.warning('--xbarlab set but ancestor file has no label column; no labels will be shown')
+	if ybarlab and ybar_file:
+		_has_lab = any(seg.label for seg in AK(ybar_file).lazy_lines(gene_axis=True) if seg.label)
+		if not _has_lab:
+			logger.warning('--ybarlab set but ancestor file has no label column; no labels will be shown')
 	if xbar_file:
 		y = ylim
 		width = ylim / 60

@@ -14,7 +14,7 @@ def xmain(**kargs):
 	
 class HOG:
 	def __init__(self, ogfile=None, orthfiles=None, sptreefile=None, outpre = "HOGs",
-		  paralog=False, max_copies=5, out_stats=False, plot=False, **kargs):
+		  paralog=False, max_copies=10, out_stats=False, plot=False, **kargs):
 		self.ogfile = ogfile
 		self.orthfiles = orthfiles
 		self.sptreefile = sptreefile
@@ -136,30 +136,39 @@ class HOG:
 	def compute_copy_stats(self):
 		"""Compute per-node copy-number distribution.
 
-		Internal nodes: parent HOG -> number of child HOGs.
+		Internal nodes: incoming child HOG count per parent HOG.
+		  For node N, group child HOGs at N by their parent (at N's parent),
+		  then aggregate: how many parent HOGs produce 1,2,3... children at N.
+		  This measures the duplication on the branch leading INTO N.
 		Leaf species:   HOG -> number of gene copies from that species.
 		Returns (leaf_data, internal_data, node_names) where each data is
 		list of np.array([[copies, hog_count], ...]) sorted postorder."""
 		sptree = self.tree
 		all_nodes = list(sptree.traverse(strategy="postorder"))
+		leaf_set = {n.name for n in all_nodes if n.is_leaf()}
+		internal_set = {n.name for n in all_nodes if not n.is_leaf()}
 		max_c = self.max_copies
 
-		# --- Internal nodes: count children per parent HOG ---
-		node_parent_children = defaultdict(lambda: defaultdict(int))
+		# --- Internal nodes: incoming children per parent HOG ---
+		# node_id -> parent_hog_id -> child_count at this node
+		node_incoming = defaultdict(lambda: defaultdict(int))
 		for hog in self.all_hogs.values():
+			nid = hog["node_id"]
+			if nid not in internal_set:
+				continue
 			pid = hog["parent"]
 			if pid and pid != "Root":
 				parent_hog = self.all_hogs.get(pid)
 				if parent_hog:
-					node_parent_children[parent_hog["node_id"]][pid] += 1
+					node_incoming[nid][pid] += 1
 
 		internal_data = []
 		internal_names = []
 		for node in all_nodes:
-			if node.is_leaf():
-				continue
 			nid = node.name
-			pcounts = node_parent_children.get(nid, {})
+			if nid in leaf_set:
+				continue
+			pcounts = node_incoming.get(nid, {})
 			if not pcounts:
 				continue
 			dist = Counter()

@@ -14,7 +14,7 @@ def xmain(**kargs):
 	
 class HOG:
 	def __init__(self, ogfile=None, orthfiles=None, sptreefile=None, outpre = "HOGs",
-		  paralog=False, max_copies=10, out_stats=False, plot=False, **kargs):
+		  paralog=False, max_copies=5, out_stats=False, plot=False, tree_plot=False, **kargs):
 		self.ogfile = ogfile
 		self.orthfiles = orthfiles
 		self.sptreefile = sptreefile
@@ -23,6 +23,7 @@ class HOG:
 		self.max_copies = max_copies
 		self.out_stats = outpre + '.stats.tsv' if out_stats else None
 		self.plot = outpre if plot else None
+		self.tree_plot = outpre + '.tree' if tree_plot else None
 	def pipe(self, write_tsv=True):
 		logger.info(f'Reading and Numbering species tree from {self.sptreefile}')
 		self.tree = sptree = number_nodes(self.sptreefile)
@@ -111,12 +112,16 @@ class HOG:
 				self.write_all_hogs_in_one_file(f)
 			logger.info(f"HOGs written to {self.outtsv}")
 
-		# compute and output copy-number statistics
-		leaf_data, internal_data, node_names = self.compute_copy_stats()
-		if leaf_data or internal_data:
-			self.write_stats_table(leaf_data, internal_data, node_names)
-		if self.plot:
-			self.plot_stats(leaf_data, internal_data, node_names)
+		# compute and output copy-number statistics (only when needed)
+		need_stats = self.out_stats or self.plot or self.tree_plot
+		if need_stats:
+			leaf_data, internal_data, node_names = self.compute_copy_stats()
+			if self.out_stats and (leaf_data or internal_data):
+				self.write_stats_table(leaf_data, internal_data, node_names)
+			if self.plot:
+				self.plot_stats(leaf_data, internal_data, node_names)
+			if self.tree_plot:
+				self.plot_tree(leaf_data, internal_data, node_names)
 		return self.all_hogs
 		
 	def write_all_hogs_in_one_file(self, fout=sys.stdout):
@@ -244,6 +249,58 @@ class HOG:
 				nrow=nrow, ncol=ncol, max_ploidy=self.max_copies,
 				xlabel='Copy number', ylabel='HOG count')
 		logger.info(f"Copy-number plot written to {self.plot}.pdf, {self.plot}.png")
+
+	def plot_tree(self, leaf_data, internal_data, node_names):
+		"""Render species tree with pie charts at nodes showing copy-number distribution."""
+		import os
+		if 'QT_QPA_PLATFORM' not in os.environ:
+			os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+		from ete3 import TreeStyle, PieChartFace, faces, TextFace, NodeStyle
+		pie_colors = ['#d9d9d9', '#377eb8', '#4daf4a', '#ff7f00', '#e41a1c',
+					  '#984ea3', '#a65628', '#f781bf', '#999999', '#66c2a5']
+		max_c = self.max_copies
+		all_data = leaf_data + internal_data
+
+		node_pcts = {}
+		for name, arr in zip(node_names, all_data):
+			counts = {i: 0 for i in range(1, max_c + 1)}
+			for copies, cnt in arr:
+				c = min(int(copies), max_c)
+				counts[c] += int(cnt)
+			total = sum(counts.values())
+			if total == 0:
+				continue
+			pcts = [100.0 * counts[i] / total for i in range(1, max_c + 1)]
+			node_pcts[name] = pcts
+
+		def layout(node):
+			nid = node.name
+			if nid in node_pcts:
+				pcts = node_pcts[nid]
+				non_zero = [(p, c) for p, c in zip(pcts, pie_colors[:max_c]) if p > 0.5]
+				if non_zero:
+					filtered_pcts = [p for p, c in non_zero]
+					filtered_colors = [c for p, c in non_zero]
+					pie = PieChartFace(filtered_pcts, 40, 40,
+									   colors=filtered_colors, line_color=None)
+					pie.opacity = 0.9
+					faces.add_face_to_node(pie, node, column=0, position='aligned')
+			if node.is_leaf():
+				name_face = TextFace(node.name, fsize=10)
+				faces.add_face_to_node(name_face, node, column=1, position='aligned')
+
+		tree = self.tree
+		ts = TreeStyle()
+		ts.layout_fn = layout
+		ts.show_leaf_name = False
+		ts.scale = 120
+		ts.branch_vertical_margin = 8
+
+		out_pdf = self.tree_plot + '.pdf'
+		out_png = self.tree_plot + '.png'
+		tree.render(out_png, tree_style=ts)
+		tree.render(out_pdf, tree_style=ts)
+		logger.info(f"Tree plot written to {out_pdf}, {out_png}")
 
 
 class HOGrecord:

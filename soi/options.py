@@ -93,6 +93,8 @@ def args_hog(parser):
 						help='Output copy-number statistics TSV (<prefix>.stats.tsv)')
 	parser.add_argument('--plot', action='store_true', default=False,
 						help='Output bar chart of copy-number distribution (<prefix>.pdf/.png)')
+	parser.add_argument('--tree-plot', action='store_true', default=False,
+						help='Output species tree with copy-number pie charts at nodes (<prefix>.tree.pdf/.png)')
 
 def func_hog(**kargs):
 	from .hog import xmain as hog_main

@@ -330,6 +330,7 @@ def parse_kaks(kaks, pairs=None, max_ks=None, fdtv=False, yn00=False,
 		pairs = set(pairs)
 	d_ks = {}
 	for rc in KaKsParser(kaks):
+		rc.parse_pair()
 		sp1, sp2 = rc.species
 		g1, g2 = rc.pair
 		if d_gff:
@@ -344,7 +345,7 @@ def parse_kaks(kaks, pairs=None, max_ks=None, fdtv=False, yn00=False,
 				pair = (sp2, sp1)
 			else:
 				continue
-		if rc.ks <= 0:
+		if rc.ks is None or rc.ks <= 0:
 			continue
 		if max_ks is not None and rc.ks > max_ks:
 			continue

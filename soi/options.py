@@ -87,6 +87,14 @@ def args_hog(parser):
 	parser.add_argument('-paralog', default=False,
 						dest='paralog', action='store_true',
 						help='Include paralogs [default=%(default)s]')
+	parser.add_argument('--max-copies', type=int, default=5,
+						help='Max copy number to track in stats/plot [default=%(default)s]')
+	parser.add_argument('--out-stats', action='store_true', default=False,
+						help='Output copy-number statistics TSV (<prefix>.stats.tsv)')
+	parser.add_argument('--bar-plot', action='store_true', default=False,
+						help='Output bar chart of copy-number distribution (<prefix>.bar.pdf/.png)')
+	parser.add_argument('--tree-plot', action='store_true', default=False,
+						help='Output species tree with copy-number pie charts at nodes (<prefix>.tree.pdf/.png)')
 
 def func_hog(**kargs):
 	from .hog import xmain as hog_main
@@ -115,10 +123,6 @@ def args_ksplot(parser):
 	from .ks_plotter import ksplot_args
 	ksplot_args(parser)
 
-def func_ksplot(**kargs):
-	from .ks_plotter import xmain as ksplot_main
-	ksplot_main(**kargs)
-
 def args_mclfilter(parser):
 	parser.add_argument('-og', '--og-file', required=True, type=str,
 						dest='ogfile', metavar='FILE',
@@ -145,9 +149,16 @@ def func_mcl_copyfilter(**kargs):
 		'paralog': kargs['paralog']
 	}
 	process_og_with_hog(kargs['ogfile'], hog_args, kargs['output'])
+def func_ksplot(**kargs):
+	from .ks_plotter import xmain as ksplot_main
+	ksplot_main(**kargs)
 
 def args_sim(parser):
-	from .evolution_simulator_ak import sim_args
+	try:
+		from .evolution_simulator_ak import sim_args
+	except ImportError as e:
+		logger.warning('Cannot register sim: {}'.format(e))
+		return
 	sim_args(parser)
 
 def func_sim(**kargs):
@@ -390,7 +401,7 @@ class GroupedHelpFormatter(argparse.RawDescriptionHelpFormatter):
 		for group_name, cmds in action._cmd_groups.items():
 			parts.append('  ' + group_name + ':\n')
 			for name, help_text in cmds:
-				parts.append('	{:<{}}  {}\n'.format(name, w, help_text))
+				parts.append('    {:<{}}  {}\n'.format(name, w, help_text))
 			parts.append('\n')
 
 		return self._join_parts(parts)
@@ -398,21 +409,21 @@ class GroupedHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 CMD_GROUPS = OrderedDict([
 	('Visualization', [
-		('dotplot', 'Generate Ks/OI-colored dot plots.'),
-		('depth',   'Bar plots for synteny depth.'),
-		('ksplot',  'Plot Ks distributions: histogram, density, and ridge plots.'),
+		('dotplot', 'Generate Ks/OI/subgenome/ancestor-colored dot plots with versatile functions.'),
+		('depth',   'Generate mutiple bar plots for synteny depth (indicator of relative ploidy).'),
+		('ksplot',  'Plot mutiple Ks distributions: histogram, density, and ridge plots.'),
 	]),
-	('Syntenic Orthogroup', [
-		('filter',	  'Filter synteny by Orthology Index.'),
-		('cluster',	 'Cluster syntenic orthogroups (SOGs).'),
-		('outgroup',	'Add outgroups for SOGs from synteny.'),
-		('detandem',	'Remove tandem duplicate genes from orthogroups.'),
-		('hog',		 'Split HOGs from orthogroups using synteny and species tree.'),
+	('Syntenic Orthogroups', [
+		('filter',   'Filter synteny by Orthology Index to generate orthologous synteny.'),
+		('cluster',  'Cluster orthologous synteny into syntenic orthogroups (SOGs).'),
+		('outgroup', 'Add outgroups to SOGs.'),
+		('detandem', 'Remove tandem duplicate genes from SOGs.'),
+		('hog',      'Split HOGs from SOGs using synteny and species tree.'),
 		('mclfilter',   'Create single copy OGs from HOG information.'),
 	]),
-	('Phylogenetics', [
+	('Phylogenomics', [
 		('phylo', 'Reconstruct gene trees from SOGs.'),
-		('stats', 'Make statistics of SOGs for phylogeny.'),
+		('stats', 'Make summary of SOGs for phylogeny.'),
 	]),
 	('Karyotype Evolution', [
 		('rak', 'Reconstruct ancestral karyotypes based on HOG and telomere-centric model.[experimental]'),
@@ -424,7 +435,8 @@ CMD_GROUPS = OrderedDict([
 _ARGS_FN = {
 	'dotplot': args_dotplot, 'depth': args_depth, 'ksplot': args_ksplot,
 	'filter': args_filter, 'cluster': args_cluster, 'outgroup': args_outgroup,
-	'hog': args_hog, 'detandem': args_detandem, 'mclfilter': args_mclfilter,
+	'hog': args_hog, 'detandem': args_detandem,
+	'mclfilter': args_mclfilter,
 	'phylo': args_phylo, 'stats': args_stats,
 	'rak': args_rak, 'sim': args_sim,
 }
@@ -433,7 +445,7 @@ _ARGS_FN = {
 def makeArgs():
 	parser = argparse.ArgumentParser(
 		formatter_class=GroupedHelpFormatter,
-		description='Play with Orthology Index and orthologs synteny.',
+		description='Play with Orthology Index and orthologous synteny.',
 	)
 	parser.add_argument(
 		'-v', '--version',

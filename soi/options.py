@@ -409,7 +409,7 @@ class GroupedHelpFormatter(argparse.RawDescriptionHelpFormatter):
 		for group_name, cmds in action._cmd_groups.items():
 			parts.append('  ' + group_name + ':\n')
 			for name, help_text in cmds:
-				parts.append('	{:<{}}  {}\n'.format(name, w, help_text))
+				parts.append('    {:<{}}  {}\n'.format(name, w, help_text))
 			parts.append('\n')
 
 		return self._join_parts(parts)
@@ -426,7 +426,7 @@ CMD_GROUPS = OrderedDict([
 		('cluster',  'Cluster orthologous synteny into syntenic orthogroups (SOGs).'),
 		('outgroup', 'Add outgroups to SOGs.'),
 		('detandem', 'Remove tandem duplicate genes from SOGs.'),
-		('hog',	  'Split HOGs from SOGs using synteny and species tree.'),
+		('hog',      'Split HOGs from SOGs using synteny and species tree.'),
 		('clusterfilter',   'make single copy OGs from HOG information.'),
 	]),
 	('Phylogenomics', [

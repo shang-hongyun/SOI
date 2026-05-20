@@ -207,25 +207,6 @@ def func_rak(**kargs):
 	akr = AKR(**kargs)
 	akr.run()
 
-def args_dup(parser):
-	group = parser.add_argument_group("dup arguments")
-	group.add_argument('-paralog', '--paralog', action='store_true',
-						dest='paralog',
-						help='Include paralog (default: False)')
-	return group
-
-def func_dup(**kargs):
-	# 根据运行环境决定使用哪种导入方式
-	try:
-		# 尝试相对导入（当作为模块运行时）
-		from .duphoginfo import analyze_sog_repeats
-	except (ImportError, SystemError, ValueError):
-		# 如果相对导入失败，尝试直接导入（当直接运行脚本时）
-		from duphoginfo import analyze_sog_repeats
-		
-	analyze_sog_repeats(kargs['ogfile'], kargs['orthfiles'], 
-					   kargs['sptreefile'], kargs['paralog'])
-
 def args_cluster(parser):
 	parser.add_argument('-s', '-synteny', required=True,  type=str,  nargs='*',
 						dest='collinearities',  metavar='FILE',
@@ -447,7 +428,6 @@ CMD_GROUPS = OrderedDict([
 		('detandem', 'Remove tandem duplicate genes from SOGs.'),
 		('hog',	  'Split HOGs from SOGs using synteny and species tree.'),
 		('clusterfilter',   'make single copy OGs from HOG information.'),
-		('dup',	  'Analyze duplicate genes and HOG distribution in OG file.'),
 	]),
 	('Phylogenomics', [
 		('phylo', 'Reconstruct gene trees from SOGs.'),
@@ -467,7 +447,6 @@ _ARGS_FN = {
 	'clusterfilter': args_clusterfilter,
 	'phylo': args_phylo, 'stats': args_stats,
 	'rak': args_rak, 'sim': args_sim,
-	'dup': args_dup,
 }
 
 
@@ -510,7 +489,6 @@ FUNC = {
 	'sim': func_sim,
 	'ksplot': func_ksplot,
 	'clusterfilter': func_cluster_copyfilter,
-	'dup': func_dup,
 }
 
 

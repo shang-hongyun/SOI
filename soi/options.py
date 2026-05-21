@@ -123,6 +123,40 @@ def args_ksplot(parser):
 	from .ks_plotter import ksplot_args
 	ksplot_args(parser)
 
+def args_clusterfilter(parser):
+	parser.add_argument('-og', '--og-file', required=True, type=str,
+						dest='ogfile', metavar='FILE',
+						help='Input OG file path (MCL format) [required]')
+	parser.add_argument('-orthfiles', '--ortholog-files', required=True, type=str, nargs='+',
+						dest='orthfiles', metavar='FILE',
+						help='Ortholog files path list [required]')
+	parser.add_argument('-sptree', '--species-tree-file', required=True, type=str,
+						dest='sptreefile', metavar='FILE',
+						help='Species tree file path [required]')
+	parser.add_argument('-paralog', '--paralog', action='store_true',
+						dest='paralog',
+						help='Include paralogs (default: False)')
+	parser.add_argument('-o', '--output', required=True, type=str,
+						dest='output', metavar='FILE',
+						help='Output file path [required]')
+	parser.add_argument('-restore-gene','--restore-gene', action='store_true', 
+						dest='restore_gene',default=False,
+						help='When a species has no genes retained, restore the first gene of that species (default: False)')
+	parser.add_argument('-restore-log','--restore-log', type=str,
+						dest='restore_log',
+						help='Log file path for recording restored genes')
+
+
+def func_cluster_copyfilter(**kargs):
+	from .cluster_filter_from_hog import process_og_with_hog
+	hog_args = {
+		'ogfile': kargs['ogfile'],
+		'orthfiles': kargs['orthfiles'],
+		'sptreefile': kargs['sptreefile'],
+		'paralog': kargs['paralog']
+	}
+	process_og_with_hog(kargs['ogfile'], hog_args, kargs['output'], kargs['restore_gene'], kargs['restore_log'])
+
 def func_ksplot(**kargs):
 	from .ks_plotter import xmain as ksplot_main
 	ksplot_main(**kargs)
@@ -393,6 +427,7 @@ CMD_GROUPS = OrderedDict([
 		('outgroup', 'Add outgroups to SOGs.'),
 		('detandem', 'Remove tandem duplicate genes from SOGs.'),
 		('hog',      'Split HOGs from SOGs using synteny and species tree.'),
+		('clusterfilter',   'make single copy OGs from HOG information.'),
 	]),
 	('Phylogenomics', [
 		('phylo', 'Reconstruct gene trees from SOGs.'),
@@ -409,6 +444,7 @@ _ARGS_FN = {
 	'dotplot': args_dotplot, 'depth': args_depth, 'ksplot': args_ksplot,
 	'filter': args_filter, 'cluster': args_cluster, 'outgroup': args_outgroup,
 	'hog': args_hog, 'detandem': args_detandem,
+	'clusterfilter': args_clusterfilter,
 	'phylo': args_phylo, 'stats': args_stats,
 	'rak': args_rak, 'sim': args_sim,
 }
@@ -452,6 +488,7 @@ FUNC = {
 	'rak': func_rak,
 	'sim': func_sim,
 	'ksplot': func_ksplot,
+	'clusterfilter': func_cluster_copyfilter,
 }
 
 

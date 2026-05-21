@@ -65,7 +65,7 @@ class HOG:
 
 				hog_subgraph = subgraph.subgraph(subset_genes)
 				connected_components = list(nx.connected_components(hog_subgraph))
-
+				connected_components.sort(key=lambda comp: min(comp))
 				for idx, cc_genes in enumerate(connected_components):
 					hog_id = f"{og_id}.{node_id}.{prefix}{idx}"
 

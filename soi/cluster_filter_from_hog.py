@@ -185,14 +185,13 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 		paralog=hog_args.get('paralog', False)
 	)
 	
-	# 从 orthfiles 构建基因 degree 字典（复用 Collinearity 解析器兼容各种格式）
-	from .mcscan import Collinearity
+	# 从 orthfiles 构建基因 degree 字典（复用 XCollinearity 解析器兼容各种格式）
+	from .mcscan import XCollinearity
 	gene_degree = defaultdict(int)
-	for f in hog_args['orthfiles']:
-		for rc in Collinearity(f):
-			for g1, g2 in zip(rc.genes1, rc.genes2):
-				gene_degree[g1] += 1
-				gene_degree[g2] += 1
+	for rc in XCollinearity(hog_args['orthfiles']):
+		for g1, g2 in zip(rc.genes1, rc.genes2):
+			gene_degree[g1] += 1
+			gene_degree[g2] += 1
 		
 	# 构建删除基因的映射，只遍历一次树
 	all_deleted_genes = build_deletion_map(all_hogs, tree, gene_degree)

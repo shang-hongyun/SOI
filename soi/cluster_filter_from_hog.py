@@ -185,16 +185,13 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 		paralog=hog_args.get('paralog', False)
 	)
 	
-	# 从 orthfiles 构建基因 degree 字典（出现次数）
+	# 从 orthfiles 构建基因 degree 字典（复用 Pairs 解析器兼容各种格式）
+	from .mcscan import Pairs
 	gene_degree = defaultdict(int)
 	for f in hog_args['orthfiles']:
-		for line in open(f):
-			if line.startswith('#') or not line.strip():
-				continue
-			parts = line.strip().split()
-			if len(parts) >= 2:
-				gene_degree[parts[0]] += 1
-				gene_degree[parts[1]] += 1
+		for pair in Pairs(f):
+			gene_degree[pair.pair[0]] += 1
+			gene_degree[pair.pair[1]] += 1
 		
 	# 构建删除基因的映射，只遍历一次树
 	all_deleted_genes = build_deletion_map(all_hogs, tree, gene_degree)

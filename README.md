@@ -18,6 +18,7 @@
       - [ksplot](#ksplot)
       - [detandem](#detandem)
       - [hog](#hog)
+      - [prune](#prune)
    * [Other functions](#other-functions)
       - [Macro-synteny phylogeny](#Macro-synteny-phylogeny)
 	  - [Allele identification](#Allele-identification)
@@ -350,6 +351,24 @@ Output files:
 - `HOGs.stats.tsv` — per-node copy-number distribution (columns: 1, 2, 3, ..., N+, Multi%)
 - `HOGs.bar.pdf/.png` — multi-panel bar chart of the distribution
 - `HOGs.tree.pdf/.png` — species tree with pie charts at each node
+
+#### `prune` ####
+The subcommand `prune` purifies orthogroups (OGs) to single-copy per species,
+guided by Hierarchical Orthologous Group (HOG) information.
+For each SOG, it traverses the species tree and keeps only the gene copy
+from the HOG with the broadest species representation, removing the rest.
+
+Usage examples:
+```
+# basic pruning
+soi prune -og cluster.mcl -orthfiles collinearity.ortho -sptree species.tree -o cluster.sc.mcl
+
+# include paralogs
+soi prune -og cluster.mcl -orthfiles collinearity.ortho -sptree species.tree -paralog -o cluster.sc.mcl
+
+# restore a gene when a species loses all copies, with log
+soi prune -og cluster.mcl -orthfiles collinearity.ortho -sptree species.tree -o cluster.sc.mcl --restore-gene --restore-log restore.log
+```
 
 ### Other functions ###
 Other functions can be found in [SOI-tools](SOI-tools.md). Related functions can be requested by users via [issues](https://github.com/zhangrengang/SOI/issues).

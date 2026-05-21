@@ -384,7 +384,7 @@ class GroupedHelpFormatter(argparse.RawDescriptionHelpFormatter):
 CMD_GROUPS = OrderedDict([
 	('Visualization', [
 		('dotplot', 'Generate Ks/OI/subgenome/ancestor-colored dot plots with versatile functions.'),
-		('depth',   'Generate mutiple bar plots for synteny depth (indicator of relative ploidy).'),
+		('depth',   'Generate mutiple bar charts for synteny depth (indicator of relative ploidy).'),
 		('ksplot',  'Plot mutiple Ks distributions: histogram, density, and ridge plots.'),
 	]),
 	('Syntenic Orthogroups', [

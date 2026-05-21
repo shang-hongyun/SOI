@@ -123,7 +123,7 @@ def args_ksplot(parser):
 	from .ks_plotter import ksplot_args
 	ksplot_args(parser)
 
-def args_clusterfilter(parser):
+def args_prune(parser):
 	parser.add_argument('-og', '--og-file', required=True, type=str,
 						dest='ogfile', metavar='FILE',
 						help='Input OG file path (MCL format) [required]')
@@ -147,7 +147,7 @@ def args_clusterfilter(parser):
 						help='Log file path for recording restored genes')
 
 
-def func_cluster_copyfilter(**kargs):
+def func_prune(**kargs):
 	from .cluster_filter_from_hog import process_og_with_hog
 	hog_args = {
 		'ogfile': kargs['ogfile'],
@@ -427,7 +427,7 @@ CMD_GROUPS = OrderedDict([
 		('outgroup', 'Add outgroups to SOGs.'),
 		('detandem', 'Remove tandem duplicate genes from SOGs.'),
 		('hog',      'Split HOGs from SOGs using synteny and species tree.'),
-		('clusterfilter',   'make single copy OGs from HOG information.'),
+		('prune',     'Prune OGs to single-copy per species based on HOGs.'),
 	]),
 	('Phylogenomics', [
 		('phylo', 'Reconstruct gene trees from SOGs.'),
@@ -444,7 +444,7 @@ _ARGS_FN = {
 	'dotplot': args_dotplot, 'depth': args_depth, 'ksplot': args_ksplot,
 	'filter': args_filter, 'cluster': args_cluster, 'outgroup': args_outgroup,
 	'hog': args_hog, 'detandem': args_detandem,
-	'clusterfilter': args_clusterfilter,
+	'prune': args_prune,
 	'phylo': args_phylo, 'stats': args_stats,
 	'rak': args_rak, 'sim': args_sim,
 }
@@ -488,7 +488,7 @@ FUNC = {
 	'rak': func_rak,
 	'sim': func_sim,
 	'ksplot': func_ksplot,
-	'clusterfilter': func_cluster_copyfilter,
+	'prune': func_prune,
 }
 
 

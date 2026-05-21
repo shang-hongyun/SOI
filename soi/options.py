@@ -136,9 +136,9 @@ def args_prune(parser):
 	parser.add_argument('-paralog', '--paralog', action='store_true',
 						dest='paralog',
 						help='Include paralogs (default: False)')
-	parser.add_argument('-o', '--output', required=True, type=str,
-						dest='output', metavar='FILE',
-						help='Output file path [required]')
+	parser.add_argument('-o', '--output', type=str,
+						dest='output', metavar='FILE', default=None,
+						help='Output file path [default: stdout]')
 	parser.add_argument('-restore-gene','--restore-gene', action='store_true', 
 						dest='restore_gene',default=False,
 						help='When a species has no genes retained, restore the first gene of that species (default: False)')
@@ -148,6 +148,7 @@ def args_prune(parser):
 
 
 def func_prune(**kargs):
+	import sys
 	from .cluster_filter_from_hog import process_og_with_hog
 	hog_args = {
 		'ogfile': kargs['ogfile'],
@@ -155,7 +156,8 @@ def func_prune(**kargs):
 		'sptreefile': kargs['sptreefile'],
 		'paralog': kargs['paralog']
 	}
-	process_og_with_hog(kargs['ogfile'], hog_args, kargs['output'], kargs['restore_gene'], kargs['restore_log'])
+	output = kargs.get('output') or sys.stdout
+	process_og_with_hog(kargs['ogfile'], hog_args, output, kargs['restore_gene'], kargs['restore_log'])
 
 def func_ksplot(**kargs):
 	from .ks_plotter import xmain as ksplot_main
@@ -427,14 +429,14 @@ CMD_GROUPS = OrderedDict([
 		('outgroup', 'Add outgroups to SOGs.'),
 		('detandem', 'Remove tandem duplicate genes from SOGs.'),
 		('hog',      'Split HOGs from SOGs using synteny and species tree.'),
-		('prune',     'Prune OGs to single-copy per species based on HOGs.'),
+		('prune',     'Prune SOGs to single-copy per species based on HOGs.'),
 	]),
 	('Phylogenomics', [
 		('phylo', 'Reconstruct gene trees from SOGs.'),
 		('stats', 'Make summary of SOGs for phylogeny.'),
 	]),
 	('Karyotype Evolution', [
-		('rak', 'Reconstruct ancestral karyotypes based on HOG and telomere-centric model.[experimental]'),
+		('rak', 'Reconstruct ancestral karyotypes based on HOGs and telomere-centric model. [experimental]'),
 		('sim', 'Simulate chromosome rearrangement evolution.'),
 	]),
 ])

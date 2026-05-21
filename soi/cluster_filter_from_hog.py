@@ -199,7 +199,11 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 		log_file = open(restore_log, 'w')
 
 	# 处理OG文件，使用 OrthoMCLGroup 类解析
-	with open(output_file, 'w') as fout:
+	if isinstance(output_file, str):
+		fout = open(output_file, 'w')
+	else:
+		fout = output_file
+	try:
 		for og in OrthoMCLGroup(og_file):
 			og_id = og.ogid
 			genes = og.genes
@@ -248,10 +252,13 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 			final_kept = sorted(kept_genes - all_deleted_genes)
 			
 			# 输出处理后的OG行
-			if final_kept:
-				output_line = "{}: {}".format(og_id, ' '.join(sorted(final_kept)))
-				fout.write(output_line + '\n')
-				
+		if final_kept:
+			output_line = "{}: {}".format(og_id, ' '.join(sorted(final_kept)))
+			fout.write(output_line + '\n')
+	finally:
+		if isinstance(output_file, str):
+			fout.close()
+
 	# 关闭日志文件（如果打开）
 	if log_file:
 		log_file.close()

@@ -132,8 +132,7 @@ def build_deletion_map(all_hogs, tree, gene_degree=None):
 				else:
 					leaf_species_genes.sort()  # fallback: 字母序
 				# 保留第一个基因，将其余的标记为删除
-				for gene in leaf_species_genes[1:]:
-					deleted_genes.add(gene)
+				deleted_genes.update(leaf_species_genes[1:])
 			else:
 				# 中间节点：对于当前HOG的每一个子HOG，按您描述的新逻辑处理
 				# 直接使用HOG记录中的children属性获取当前HOG的子HOG

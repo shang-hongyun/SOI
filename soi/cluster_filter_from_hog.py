@@ -189,7 +189,7 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 	from .mcscan import XCollinearity
 	gene_degree = defaultdict(int)
 	for rc in XCollinearity(hog_args['orthfiles']):
-		for g1, g2 in zip(rc.genes1, rc.genes2):
+		for g1, g2 in rc.pairs:
 			gene_degree[g1] += 1
 			gene_degree[g2] += 1
 		

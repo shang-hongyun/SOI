@@ -63,7 +63,7 @@ def remove_hog_and_descendants(hog, node_to_hogs, all_hogs):
 			if child_hog:
 				stack.append(child_hog)
 
-def build_deletion_map(all_hogs, tree):
+def build_deletion_map(all_hogs, tree, gene_degree=None):
 	"""
 	遍历树一次，构建要删除的基因集合
 	:param all_hogs: HOG字典
@@ -124,12 +124,16 @@ def build_deletion_map(all_hogs, tree):
 					if sp == node_name and gene not in deleted_genes:
 						leaf_species_genes.append(gene)
 						
-				# 对这个HOG中的该物种的基因，如果多于一个，则只保留一个
-				leaf_species_genes.sort()  # 排序确保一致性
-				if len(leaf_species_genes) > 1:
-					# 保留第一个基因，将其余的标记为删除
-					for gene in leaf_species_genes[1:]:
-						deleted_genes.add(gene)
+			# 对这个HOG中的该物种的基因，如果多于一个，则只保留一个
+			if len(leaf_species_genes) > 1:
+				if gene_degree:
+					# 保留 degree 最高的基因
+					leaf_species_genes.sort(key=lambda g: gene_degree.get(g, 0), reverse=True)
+				else:
+					leaf_species_genes.sort()  # fallback: 字母序
+				# 保留第一个基因，将其余的标记为删除
+				for gene in leaf_species_genes[1:]:
+					deleted_genes.add(gene)
 			else:
 				# 中间节点：对于当前HOG的每一个子HOG，按您描述的新逻辑处理
 				# 直接使用HOG记录中的children属性获取当前HOG的子HOG
@@ -180,9 +184,20 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 		sptreefile=hog_args['sptreefile'],
 		paralog=hog_args.get('paralog', False)
 	)
+	
+	# 从 orthfiles 构建基因 degree 字典（出现次数）
+	gene_degree = defaultdict(int)
+	for f in hog_args['orthfiles']:
+		for line in open(f):
+			if line.startswith('#') or not line.strip():
+				continue
+			parts = line.strip().split()
+			if len(parts) >= 2:
+				gene_degree[parts[0]] += 1
+				gene_degree[parts[1]] += 1
 		
 	# 构建删除基因的映射，只遍历一次树
-	all_deleted_genes = build_deletion_map(all_hogs, tree)
+	all_deleted_genes = build_deletion_map(all_hogs, tree, gene_degree)
 	end_time = time.time()
 	logger.info('build_deletion_map took %.2f s', end_time - start_time)
 	

@@ -362,12 +362,6 @@ Usage examples:
 ```
 # basic pruning
 soi prune -og cluster.mcl -orthfiles collinearity.ortho -sptree species.tree -o cluster.sc.mcl
-
-# include paralogs
-soi prune -og cluster.mcl -orthfiles collinearity.ortho -sptree species.tree -paralog -o cluster.sc.mcl
-
-# restore a gene when a species loses all copies, with log
-soi prune -og cluster.mcl -orthfiles collinearity.ortho -sptree species.tree -o cluster.sc.mcl --restore-gene --restore-log restore.log
 ```
 
 ### Other functions ###

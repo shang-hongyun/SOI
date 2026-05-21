@@ -86,7 +86,7 @@ def build_deletion_map(all_hogs, tree, gene_degree=None):
 		node_name = node.name
 		node_hogs = node_to_hogs.get(node_name, [])
 
-		if node_name == 'N0':
+		if node.is_root():
 			# 按 og_id 分组（同 SOG 的 HOG 具有相同的 og_id）
 			hogs_by_og = defaultdict(list)
 			for hog in node_hogs:

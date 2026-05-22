@@ -71,22 +71,27 @@ def func_filter(**kargs):
 	from .mcscan import identify_orthologous_blocks
 	identify_orthologous_blocks(**kargs)
 
-def args_hog(parser):
-	parser.add_argument('-og', '-orthogroup', required=True, type=str,
+def _add_shared_hog_args(parser):
+	"""Shared arguments for prune and hog subcommands."""
+	parser.add_argument('-og', required=True, type=str,
 						dest='ogfile', metavar='FILE',
-						help='Orthogroup file [required]')
-	parser.add_argument('-s', '-synteny', required=True, type=str,
-						dest='orthfiles', metavar='FILE', nargs='*',
+						help='Orthogroup file (MCL format) [required]')
+	parser.add_argument('-s', required=True, type=str, nargs='+',
+						dest='orthfiles', metavar='FILE',
 						help='Ortholog/Collinearity files [required]')
-	parser.add_argument('-t', '-sptree', required=True, type=str,
+	parser.add_argument('-t', required=True, type=str,
 						dest='sptreefile', metavar='FILE',
-						help='Species tree file [required]')
+						help='Species tree file (Newick) [required]')
+	parser.add_argument('-paralog', action='store_true', default=False,
+						dest='paralog',
+						help='Include paralogs [default: False]')
+
+
+def args_hog(parser):
+	_add_shared_hog_args(parser)
 	parser.add_argument('-prefix', type=str, default='HOGs',
 						dest='outpre', metavar='FILE',
 						help='Output prefix [default=%(default)s]')
-	parser.add_argument('-paralog', default=False,
-						dest='paralog', action='store_true',
-						help='Include paralogs [default=%(default)s]')
 	parser.add_argument('--max-copies', type=int, default=5,
 						help='Max copy number to track in stats/plot [default=%(default)s]')
 	parser.add_argument('--out-stats', action='store_true', default=False,
@@ -129,18 +134,7 @@ def args_ksplot(parser):
 	ksplot_args(parser)
 
 def args_prune(parser):
-	parser.add_argument('-og', '--og-file', required=True, type=str,
-						dest='ogfile', metavar='FILE',
-						help='Input OG file path (MCL format) [required]')
-	parser.add_argument('-orthfiles', '--ortholog-files', required=True, type=str, nargs='+',
-						dest='orthfiles', metavar='FILE',
-						help='Ortholog files path list [required]')
-	parser.add_argument('-sptree', '--species-tree-file', required=True, type=str,
-						dest='sptreefile', metavar='FILE',
-						help='Species tree file path [required]')
-	parser.add_argument('-paralog', '--paralog', action='store_true',
-						dest='paralog',
-						help='Include paralogs (default: False)')
+	_add_shared_hog_args(parser)
 	parser.add_argument('-o', '--output', type=str,
 						dest='output', metavar='FILE', default=None,
 						help='Output file path [default: stdout]')

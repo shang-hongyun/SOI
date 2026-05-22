@@ -376,7 +376,7 @@ from the HOG with the broadest species representation, removing the rest.
 Usage examples:
 ```
 # basic pruning
-soi prune -og cluster.mcl -orthfiles collinearity.ortho -sptree species.tree -o cluster.sc.mcl
+soi prune -og cluster.mcl -s collinearity.ortho -t species.tree -o cluster.sc.mcl
 ```
 
 ### Other functions ###

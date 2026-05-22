@@ -16,6 +16,7 @@
       - [dotplot](#dotplot)
       - [depth](#depth)
       - [ksplot](#ksplot)
+      - [evaluate](#evaluate)
       - [detandem](#detandem)
       - [hog](#hog)
       - [prune](#prune)
@@ -300,6 +301,24 @@ soi ksplot --kaks wgdi_ks.tsv -o ks_plot
 # histogram only, with custom max Ks
 soi ksplot --kaks wgdi_ks.tsv -o ks_hist -p hist --max-ks 1.5
 ```
+
+#### `evaluate` ####
+The subcommand `evaluate` generates diagnostic multi-panel plots to assess synteny quality,
+including fractionation rate, Orthology Index, block size distribution, and copy-number statistics.
+
+Usage examples:
+```
+# basic evaluation
+soi evaluate -s collinearity.ortho -o orthologs.txt -g all.gff -ref Vitis_vinifera -pre eval
+
+# filter by query species
+soi evaluate -s collinearity.ortho -o orthologs.txt -g all.gff -ref Vitis_vinifera -qry Daucus_carota Angelica_sinensis
+
+# custom figure size
+soi evaluate -s collinearity.ortho -o orthologs.txt -g all.gff -ref Vitis_vinifera --figsize 14 16
+```
+
+Outputs both `<prefix>.png` and `<prefix>.pdf` by default.
 
 #### `detandem` ####
 The subcommand `detandem` removes tandem duplicate genes from orthogroups.

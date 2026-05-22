@@ -26,9 +26,9 @@ def evaluate_args(parser):
 	parser.add_argument('-qry', '--query', type=str, nargs='+', default=None,
 						dest='qry', metavar='SPECIES',
 						help='Target query species to evaluate (only pairs involving these species)')
-	parser.add_argument('-ref', '--reference', type=str, default=None,
+	parser.add_argument('-ref', '--reference', required=True, type=str,
 						dest='ref', metavar='SPECIES',
-						help='Reference species for fractionation rate calculation')
+						help='Reference species for fractionation rate calculation [required]')
 	parser.add_argument('-pre', '--prefix', type=str, default='evaluate',
 						dest='pre', metavar='PREFIX',
 						help='Output prefix [default: %(default)s]')
@@ -46,7 +46,7 @@ def eval(collinearities, orthologs, gff, qry=None, ref=None, pre=None, figsize=(
 	d_refgenes = {}
 	for rc in XCollinearity(collinearities, orthologs=orthologs, gff=gff):
 		rc.fr = rc.fractionation_rate(ref=ref)
-		if ref and rc.fr is None:
+		if rc.fr is None:
 			continue
 		sp1, sp2 = rc.species1, rc.species2
 		genes1, genes2 = rc.genes

@@ -73,13 +73,13 @@ def func_filter(**kargs):
 
 def _add_shared_hog_args(parser):
 	"""Shared arguments for prune and hog subcommands."""
-	parser.add_argument('-og', required=True, type=str,
+	parser.add_argument('-og', '-orthogroup', required=True, type=str,
 						dest='ogfile', metavar='FILE',
 						help='Orthogroup file (MCL format) [required]')
-	parser.add_argument('-s', required=True, type=str, nargs='+',
+	parser.add_argument('-s', '-synteny', required=True, type=str, nargs='+',
 						dest='orthfiles', metavar='FILE',
 						help='Ortholog/Collinearity files [required]')
-	parser.add_argument('-t', required=True, type=str,
+	parser.add_argument('-t', '-sptree', required=True, type=str,
 						dest='sptreefile', metavar='FILE',
 						help='Species tree file (Newick) [required]')
 	parser.add_argument('-paralog', action='store_true', default=False,
@@ -89,7 +89,7 @@ def _add_shared_hog_args(parser):
 
 def args_hog(parser):
 	_add_shared_hog_args(parser)
-	parser.add_argument('-prefix', type=str, default='HOGs',
+	parser.add_argument('-pre', '-prefix', type=str, default='HOGs',
 						dest='outpre', metavar='FILE',
 						help='Output prefix [default=%(default)s]')
 	parser.add_argument('--max-copies', type=int, default=5,

@@ -119,6 +119,11 @@ def func_detandem(**kargs):
 	from .detandem import Detandem
 	Detandem(**kargs).run()
 
+def args_evaluate(parser):
+	from .evaluator import evaluate_args
+	evaluate_args(parser)
+
+
 def args_ksplot(parser):
 	from .ks_plotter import ksplot_args
 	ksplot_args(parser)
@@ -158,6 +163,11 @@ def func_prune(**kargs):
 	}
 	output = kargs.get('output') or sys.stdout
 	process_og_with_hog(kargs['ogfile'], hog_args, output, kargs['restore_gene'], kargs['restore_log'])
+
+def func_evaluate(**kargs):
+	from .evaluator import evaluate_main
+	evaluate_main(**kargs)
+
 
 def func_ksplot(**kargs):
 	from .ks_plotter import xmain as ksplot_main
@@ -422,6 +432,7 @@ CMD_GROUPS = OrderedDict([
 		('dotplot', 'Generate Ks/OI/subgenome/ancestor-colored dot plots with versatile functions.'),
 		('depth',   'Generate mutiple bar charts for synteny depth (indicator of relative ploidy).'),
 		('ksplot',  'Plot mutiple Ks distributions: histogram, density, and ridge plots.'),
+		('evaluate', 'Evaluate synteny quality: fractionation rate, OI, and block size statistics.'),
 	]),
 	('Syntenic Orthogroups', [
 		('filter',   'Filter synteny by Orthology Index to generate orthologous synteny.'),
@@ -444,6 +455,7 @@ CMD_GROUPS = OrderedDict([
 # args_* function lookup for grouped subparser creation
 _ARGS_FN = {
 	'dotplot': args_dotplot, 'depth': args_depth, 'ksplot': args_ksplot,
+	'evaluate': args_evaluate,
 	'filter': args_filter, 'cluster': args_cluster, 'outgroup': args_outgroup,
 	'hog': args_hog, 'detandem': args_detandem,
 	'prune': args_prune,
@@ -490,6 +502,7 @@ FUNC = {
 	'rak': func_rak,
 	'sim': func_sim,
 	'ksplot': func_ksplot,
+	'evaluate': func_evaluate,
 	'prune': func_prune,
 }
 

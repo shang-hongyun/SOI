@@ -1,4 +1,5 @@
 import sys
+import argparse
 import numpy as np
 import collections
 import matplotlib.pyplot as plt
@@ -9,54 +10,74 @@ mpl.rcParams['pdf.fonttype'] = 42
 from lazy_property import LazyWritableProperty as lazyproperty
 from .colors import Colors
 from .mcscan import Collinearity, Gff, XCollinearity
+from .RunCmdsMP import logger
 
 
-def eval(collinearities, orthologs, gff, ref=None, pre=None):
-    d_rcs = {}
-    d_refgenes = {}
-    for rc in XCollinearity(collinearities, orthologs=orthologs, gff=gff):
-        rc.fr = rc.fractionation_rate(ref=ref)
-        if ref and rc.fr is None:
-            continue
-        sp1, sp2 = rc.species1, rc.species2
-        genes1, genes2 = rc.genes
-        if sp1 == sp2:
-            continue
-        if sp2 == ref:
-            sp1, sp2 = sp2, sp1
-            genes1, genes2 = genes2, genes1
-        xrc = SynRec(rc)
-        key = (sp1, sp2)
-        try:
-            d_rcs[key] += [xrc]
-        except KeyError:
-            d_rcs[key] = [xrc]
-        try:
-            d_refgenes[key] += genes1
-        except KeyError:
-            d_refgenes[key] = genes1
-
-    for spp, rcs in d_rcs.items():
-        rcs = SynRecs(rcs)
-        counts = collections.Counter(d_refgenes[spp])
-        rcs.refcounts = np.array(
-            sorted(collections.Counter(counts.values()).items()))
-        d_rcs[spp] = rcs
-    outfig = 'test_eval.png'
-    plot_eval(d_rcs, outfig)
+def evaluate_args(parser):
+	parser.add_argument('-s', '--synteny', required=True, nargs='+',
+						dest='collinearities', metavar='FILE',
+						help='Collinearity files [required]')
+	parser.add_argument('-o', '--orthologs', required=True, nargs='+',
+						dest='orthologs', metavar='FILE',
+						help='Ortholog files [required]')
+	parser.add_argument('-g', '--gff', required=True,
+						dest='gff', metavar='GFF',
+						help='GFF file [required]')
+	parser.add_argument('-ref', '--reference', type=str, default=None,
+						dest='ref', metavar='SPECIES',
+						help='Reference species for fractionation rate calculation')
+	parser.add_argument('-pre', '--prefix', type=str, default='evaluate',
+						dest='pre', metavar='PREFIX',
+						help='Output prefix [default: %(default)s]')
+	parser.add_argument('--figsize', type=float, nargs=2, default=(10, 12),
+						dest='figsize', metavar=('W', 'H'),
+						help='Figure size in inches [default: 10 12]')
 
 
-def main():
-    collinearities, orthologs, gff = sys.argv[1:4]
-    try:
-        ref = sys.argv[4]
-    except IndexError:
-        ref = None
-    eval(collinearities, orthologs, gff, ref)
+def evaluate_main(**kargs):
+	eval(**kargs)
 
 
-def plot_eval(d_rcs, outfig, legend_fontsize=9):
-    fig = plt.figure(figsize=(10, 12))
+def eval(collinearities, orthologs, gff, ref=None, pre=None, figsize=(10, 12)):
+	d_rcs = {}
+	d_refgenes = {}
+	for rc in XCollinearity(collinearities, orthologs=orthologs, gff=gff):
+		rc.fr = rc.fractionation_rate(ref=ref)
+		if ref and rc.fr is None:
+			continue
+		sp1, sp2 = rc.species1, rc.species2
+		genes1, genes2 = rc.genes
+		if sp1 == sp2:
+			continue
+		if sp2 == ref:
+			sp1, sp2 = sp2, sp1
+			genes1, genes2 = genes2, genes1
+		xrc = SynRec(rc)
+		key = (sp1, sp2)
+		try:
+			d_rcs[key] += [xrc]
+		except KeyError:
+			d_rcs[key] = [xrc]
+		try:
+			d_refgenes[key] += genes1
+		except KeyError:
+			d_refgenes[key] = genes1
+
+	for spp, rcs in d_rcs.items():
+		rcs = SynRecs(rcs)
+		counts = collections.Counter(d_refgenes[spp])
+		rcs.refcounts = np.array(
+			sorted(collections.Counter(counts.values()).items()))
+		d_rcs[spp] = rcs
+	pre = pre or 'evaluate'
+	outfig = '{}.png'.format(pre)
+	plot_eval(d_rcs, outfig, figsize=figsize)
+	logger.info('Saved: %s', outfig)
+
+
+
+def plot_eval(d_rcs, outfig, legend_fontsize=9, figsize=(10, 12)):
+    fig = plt.figure(figsize=figsize)
     gs = GridSpec(4, 7)
 
     ax0 = fig.add_subplot(gs[:, 6])  # legend
@@ -74,7 +95,7 @@ def plot_eval(d_rcs, outfig, legend_fontsize=9):
     line = ['species1', 'species2',  'block number', 'gene number', 'min size',
             'max size', 'median size', 'mean size', 'size 50',
             'FR50', 'OI50']
-    print('\t'.join(line))
+    logger.info('\t'.join(line))
     for i, ((sp1, sp2), rcs) in enumerate(sorted(d_rcs.items())):
         _sp = convert_sp(sp2)
         i50, sn50, fn50 = rcs.xn50  # index 50, block size 50, frac rate 50
@@ -100,7 +121,7 @@ def plot_eval(d_rcs, outfig, legend_fontsize=9):
 
         line = [sp1, sp2, nb, bm, int(min(ns)), int(max(ns)), int(np.median(ns)),
                 round(np.mean(ns), 1), sm, round(fm, 2), round(om, 2)]
-        print('\t'.join(map(str, line)))
+        logger.info('\t'.join(map(str, line)))
     # ax
     # 1	4
     # 2	5

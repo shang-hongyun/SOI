@@ -14,22 +14,22 @@ from .RunCmdsMP import logger
 
 
 def evaluate_args(parser):
-	parser.add_argument('-s', '--synteny', required=True, nargs='+',
+	parser.add_argument('-s', '-synteny', required=True, nargs='+',
 						dest='collinearities', metavar='FILE',
 						help='Collinearity files [required]')
-	parser.add_argument('-o', '--orthology', required=True, nargs='+',
+	parser.add_argument('-o', '-orthology', required=True, nargs='+',
 						dest='orthologs', metavar='FILE',
 						help='Ortholog files [required]')
-	parser.add_argument('-g', '--gff', required=True, nargs='+',
+	parser.add_argument('-g', '-gff', required=True, nargs='+',
 						dest='gff', metavar='GFF',
 						help='GFF file [required]')
-	parser.add_argument('-r', '--ref', required=True, type=str,
+	parser.add_argument('-r', '-ref', required=True, type=str,
 						dest='ref', metavar='SPECIES',
 						help='Reference species for fractionation rate calculation [required]')
-	parser.add_argument('-q', '--qry', type=str, nargs='+', default=None,
+	parser.add_argument('-q', '-qry', type=str, nargs='+', default=None,
 						dest='qry', metavar='SPECIES',
 						help='Target query species to evaluate (only pairs involving these species)')
-	parser.add_argument('-pre', '--prefix', type=str, default=None,
+	parser.add_argument('-pre', '-prefix', type=str, default=None,
 						dest='pre', metavar='PREFIX',
 						help='Output prefix [default: <synteny>_<ref>]')
 	parser.add_argument('--figsize', type=float, nargs=2, default=(10, 12),

@@ -303,8 +303,8 @@ soi ksplot --kaks wgdi_ks.tsv -o ks_hist -p hist --max-ks 1.5
 ```
 
 #### `evaluate` ####
-The subcommand `evaluate` generates diagnostic multi-panel plots to assess synteny quality,
-including fractionation rate, Orthology Index, block size distribution, and copy-number statistics.
+The subcommand `evaluate` generates multi-panel diagnostic plots to evaluate and compare synteny patterns,
+including fractionation rate, block size decay, Orthology Index, and copy-number statistics.
 
 Usage examples:
 ```

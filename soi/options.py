@@ -432,7 +432,7 @@ CMD_GROUPS = OrderedDict([
 		('dotplot', 'Generate Ks/OI/subgenome/ancestor-colored dot plots with versatile functions.'),
 		('depth',   'Generate mutiple bar charts for synteny depth (indicator of relative ploidy).'),
 		('ksplot',  'Plot mutiple Ks distributions: histogram, density, and ridge plots.'),
-		('evaluate', 'Evaluate synteny quality: fractionation rate, OI, and block size statistics.'),
+		('evaluate', 'Evaluate and compare synteny: fractionation rate, block size decay, OI, and copy-number.'),
 	]),
 	('Syntenic Orthogroups', [
 		('filter',   'Filter synteny by Orthology Index to generate orthologous synteny.'),

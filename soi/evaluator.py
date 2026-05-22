@@ -17,15 +17,15 @@ def evaluate_args(parser):
 	parser.add_argument('-s', '--synteny', required=True, nargs='+',
 						dest='collinearities', metavar='FILE',
 						help='Collinearity files [required]')
-	parser.add_argument('-o', '--orthologs', required=True, nargs='+',
+	parser.add_argument('-o', '--orthology', required=True, nargs='+',
 						dest='orthologs', metavar='FILE',
 						help='Ortholog files [required]')
 	parser.add_argument('-g', '--gff', required=True,
 						dest='gff', metavar='GFF',
 						help='GFF file [required]')
-	parser.add_argument('-qry', '--query', type=str, default=None,
+	parser.add_argument('-qry', '--query', type=str, nargs='+', default=None,
 						dest='qry', metavar='SPECIES',
-						help='Target query species to evaluate (only pairs involving this species)')
+						help='Target query species to evaluate (only pairs involving these species)')
 	parser.add_argument('-ref', '--reference', type=str, default=None,
 						dest='ref', metavar='SPECIES',
 						help='Reference species for fractionation rate calculation')
@@ -52,7 +52,7 @@ def eval(collinearities, orthologs, gff, qry=None, ref=None, pre=None, figsize=(
 		genes1, genes2 = rc.genes
 		if sp1 == sp2:
 			continue
-		if qry and sp1 != qry and sp2 != qry:
+		if qry and sp1 not in qry and sp2 not in qry:
 			continue
 		if sp2 == ref:
 			sp1, sp2 = sp2, sp1

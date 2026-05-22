@@ -23,6 +23,9 @@ def evaluate_args(parser):
 	parser.add_argument('-g', '--gff', required=True,
 						dest='gff', metavar='GFF',
 						help='GFF file [required]')
+	parser.add_argument('-qry', '--query', type=str, default=None,
+						dest='qry', metavar='SPECIES',
+						help='Target query species to evaluate (only pairs involving this species)')
 	parser.add_argument('-ref', '--reference', type=str, default=None,
 						dest='ref', metavar='SPECIES',
 						help='Reference species for fractionation rate calculation')
@@ -38,7 +41,7 @@ def evaluate_main(**kargs):
 	eval(**kargs)
 
 
-def eval(collinearities, orthologs, gff, ref=None, pre=None, figsize=(10, 12)):
+def eval(collinearities, orthologs, gff, qry=None, ref=None, pre=None, figsize=(10, 12)):
 	d_rcs = {}
 	d_refgenes = {}
 	for rc in XCollinearity(collinearities, orthologs=orthologs, gff=gff):
@@ -48,6 +51,8 @@ def eval(collinearities, orthologs, gff, ref=None, pre=None, figsize=(10, 12)):
 		sp1, sp2 = rc.species1, rc.species2
 		genes1, genes2 = rc.genes
 		if sp1 == sp2:
+			continue
+		if qry and sp1 != qry and sp2 != qry:
 			continue
 		if sp2 == ref:
 			sp1, sp2 = sp2, sp1

@@ -12,8 +12,8 @@ def add_ksplot_args(parser):
 		help='KaKs input file [required]')
 	parser.add_argument('--pair', metavar='FILE', type=str, default=None,
 		help='Species pair control file [optional]')
-	parser.add_argument('--figure', '-o', metavar='FILE', type=str, default=None,
-		help='Output figure prefix [default=--pair or --kaks + suffix + .pdf]')
+	parser.add_argument('-pre', '--prefix', metavar='PREFIX', type=str, default=None,
+		dest='figure', help='Output prefix [default: --pair or --kaks + suffix + .pdf]')
 	parser.add_argument('--max-ks', metavar='FLOAT', type=float, default=2,
 		help='Max Ks [default=%(default)s]')
 	parser.add_argument('--bins-per-ks', metavar='INT', type=int, default=50,

@@ -23,10 +23,10 @@ def evaluate_args(parser):
 	parser.add_argument('-g', '--gff', required=True,
 						dest='gff', metavar='GFF',
 						help='GFF file [required]')
-	parser.add_argument('-ref', '--reference', required=True, type=str,
+	parser.add_argument('-r', '--ref', required=True, type=str,
 						dest='ref', metavar='SPECIES',
 						help='Reference species for fractionation rate calculation [required]')
-	parser.add_argument('-qry', '--query', type=str, nargs='+', default=None,
+	parser.add_argument('-q', '--qry', type=str, nargs='+', default=None,
 						dest='qry', metavar='SPECIES',
 						help='Target query species to evaluate (only pairs involving these species)')
 	parser.add_argument('-pre', '--prefix', type=str, default=None,

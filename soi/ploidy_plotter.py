@@ -47,12 +47,12 @@ def ploidy_args(parser):
 	parser.add_argument('-g', metavar='FILE', type=str, required=True, nargs='+',
 						dest='gff',
 						help="gene annotation gff file (*.gff, one of MCSCANX/WGDI input)[required]")
-	parser.add_argument('-r', '--ref', metavar='reference', type=str, required=True,
-						help="reference species")
-	parser.add_argument('-q', '--qry', metavar='queries', nargs='+', type=str,
-						required=True, help="query species")
-	parser.add_argument('-o', '--output', metavar='STR', type=str,
-						default=None, help="the output file prefix.")
+	parser.add_argument('-r', '--ref', metavar='SPECIES', type=str, required=True,
+						help="reference species [required]")
+	parser.add_argument('-q', '--qry', metavar='SPECIES', nargs='+', type=str,
+						required=True, help="query species [required]")
+	parser.add_argument('-pre', '--prefix', metavar='PREFIX', type=str,
+						dest='output', default=None, help="output prefix")
 	parser.add_argument('--format', metavar='figure file out format', action='append',
 						default=['pdf', 'png'], help="default=%(default)s")
 	parser.add_argument('--nrow', metavar='nrow', type=int, default=None,

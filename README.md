@@ -309,16 +309,12 @@ including fractionation rate, Orthology Index, block size distribution, and copy
 Usage examples:
 ```
 # basic evaluation
-soi evaluate -s collinearity.ortho -o orthologs.txt -g all.gff -ref Vitis_vinifera -pre eval
+soi evaluate -s collinearity.ortho -o orthologs.txt -g all.gff -r Vitis_vinifera -pre eval
 
 # filter by query species
-soi evaluate -s collinearity.ortho -o orthologs.txt -g all.gff -ref Vitis_vinifera -qry Daucus_carota Angelica_sinensis
+soi evaluate -s collinearity.ortho -o orthologs.txt -g all.gff -r Vitis_vinifera -q Daucus_carota Angelica_sinensis
 
-# custom figure size
-soi evaluate -s collinearity.ortho -o orthologs.txt -g all.gff -ref Vitis_vinifera --figsize 14 16
 ```
-
-Outputs both `<prefix>.png` and `<prefix>.pdf` by default.
 
 #### `detandem` ####
 The subcommand `detandem` removes tandem duplicate genes from orthogroups.

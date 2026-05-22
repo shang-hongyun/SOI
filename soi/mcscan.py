@@ -2104,8 +2104,9 @@ class ColinearGroups:
 				sp_pairs.add(rc.species)
 				for pair, ks in zip(rc.pairs, rc.ks):
 					G.add_edge(*pair)
-					key = tuple(sorted(pair))
-					d_ks[key] = ks
+					if self.kaks:
+						key = tuple(sorted(pair))
+						d_ks[key] = ks
 		# print sp_pairs
 		self.d_ks = d_ks
 		if self.orthologs is not None:  # Orthologs without synteny information

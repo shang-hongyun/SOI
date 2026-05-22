@@ -20,7 +20,7 @@ def evaluate_args(parser):
 	parser.add_argument('-o', '--orthology', required=True, nargs='+',
 						dest='orthologs', metavar='FILE',
 						help='Ortholog files [required]')
-	parser.add_argument('-g', '--gff', required=True,
+	parser.add_argument('-g', '--gff', required=True, nargs='+',
 						dest='gff', metavar='GFF',
 						help='GFF file [required]')
 	parser.add_argument('-r', '--ref', required=True, type=str,

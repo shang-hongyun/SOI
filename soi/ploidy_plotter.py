@@ -41,10 +41,10 @@ def ploidy_args(parser):
 						# required=True, help="the blocks (*.collinearity, output of MCSCANX)")
 	# parser.add_argument('-g', '--gff', metavar='INPUT_GENE_GFF_FILE', type=str,
 						# required=True, help="the annotation gff file (one of MCSCANX input)")
-	parser.add_argument('-s', metavar='FILE', type=str, required=True, nargs='+',
+	parser.add_argument('-s', '--synteny', metavar='FILE', type=str, required=True, nargs='+',
 						dest='collinearity',
 						help="syntenic block file (*.collinearity, output of MCSCANX/WGDI)[required]")
-	parser.add_argument('-g', metavar='FILE', type=str, required=True, nargs='+',
+	parser.add_argument('-g', '-gff', metavar='FILE', type=str, required=True, nargs='+',
 						dest='gff',
 						help="gene annotation gff file (*.gff, one of MCSCANX/WGDI input)[required]")
 	parser.add_argument('-r', '--ref', metavar='SPECIES', type=str, required=True,

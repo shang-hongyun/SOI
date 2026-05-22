@@ -23,21 +23,25 @@ def evaluate_args(parser):
 	parser.add_argument('-g', '--gff', required=True,
 						dest='gff', metavar='GFF',
 						help='GFF file [required]')
-	parser.add_argument('-qry', '--query', type=str, nargs='+', default=None,
-						dest='qry', metavar='SPECIES',
-						help='Target query species to evaluate (only pairs involving these species)')
 	parser.add_argument('-ref', '--reference', required=True, type=str,
 						dest='ref', metavar='SPECIES',
 						help='Reference species for fractionation rate calculation [required]')
-	parser.add_argument('-pre', '--prefix', type=str, default='evaluate',
+	parser.add_argument('-qry', '--query', type=str, nargs='+', default=None,
+						dest='qry', metavar='SPECIES',
+						help='Target query species to evaluate (only pairs involving these species)')
+	parser.add_argument('-pre', '--prefix', type=str, default=None,
 						dest='pre', metavar='PREFIX',
-						help='Output prefix [default: %(default)s]')
+						help='Output prefix [default: <synteny>_<ref>]')
 	parser.add_argument('--figsize', type=float, nargs=2, default=(10, 12),
 						dest='figsize', metavar=('W', 'H'),
 						help='Figure size in inches [default: 10 12]')
 
 
 def evaluate_main(**kargs):
+	import os
+	if kargs.get('pre') is None:
+		basename = os.path.splitext(os.path.basename(kargs['collinearities'][0]))[0]
+		kargs['pre'] = '{}_{}'.format(basename, kargs['ref'])
 	eval(**kargs)
 
 
@@ -75,9 +79,10 @@ def eval(collinearities, orthologs, gff, qry=None, ref=None, pre=None, figsize=(
 			sorted(collections.Counter(counts.values()).items()))
 		d_rcs[spp] = rcs
 	pre = pre or 'evaluate'
-	outfig = '{}.png'.format(pre)
-	plot_eval(d_rcs, outfig, figsize=figsize)
-	logger.info('Saved: %s', outfig)
+	for fmt in ('png', 'pdf'):
+		outfig = '{}.{}'.format(pre, fmt)
+		plot_eval(d_rcs, outfig, figsize=figsize)
+		logger.info('Saved: %s', outfig)
 
 
 

@@ -79,10 +79,9 @@ def eval(collinearities, orthologs, gff, qry=None, ref=None, pre=None, figsize=(
 			sorted(collections.Counter(counts.values()).items()))
 		d_rcs[spp] = rcs
 	pre = pre or 'evaluate'
-	for fmt in ('png', 'pdf'):
-		outfig = '{}.{}'.format(pre, fmt)
-		plot_eval(d_rcs, outfig, figsize=figsize)
-		logger.info('Saved: %s', outfig)
+	outfig = pre  # without extension, plot_eval appends .png and .pdf
+	plot_eval(d_rcs, outfig, figsize=figsize)
+	logger.info('Saved: %s.png, %s.pdf', outfig, outfig)
 
 
 
@@ -164,7 +163,8 @@ def plot_eval(d_rcs, outfig, legend_fontsize=9, figsize=(10, 12)):
 # ax0.set_title('Species', loc='left')
 
     plt.subplots_adjust(hspace=0.3, wspace=1.8)
-    plt.savefig(outfig, bbox_inches='tight')
+    for fmt in ('png', 'pdf'):
+        plt.savefig('{}.{}'.format(outfig, fmt), bbox_inches='tight')
 
 
 def hist_plot(data, ax, bins=10, alpha=1, **kargs):

@@ -187,21 +187,19 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 	# 从 orthfiles 构建基因 degree 字典（复用 XCollinearity 解析器兼容各种格式）
 	from .mcscan import XCollinearity
 	gene_degree = defaultdict(int)
-	# 将orthfiles转换为排序后的列表，确保处理顺序一致
-	orthfiles_sorted = sorted(hog_args['orthfiles']) if isinstance(hog_args['orthfiles'], list) else [hog_args['orthfiles']]
 	gene_degree_beg=time.time()	
 	# 使用集合来存储唯一的基因对，避免重复计算
 	unique_pairs = set()
-	for orthfile in orthfiles_sorted:
-		for rc in XCollinearity([orthfile]):
-			# 对pairs进行排序以确保处理顺序一致
-			for g1, g2 in rc.pairs:
-				spg1, spg2 = gene_format_o(g1), gene_format_o(g2)
-				if spg1 == spg2:  # 确保是不同物种的基因
-					continue
-				# 创建标准化的基因对（较小的基因名在前），避免方向性问题
-				standard_pair = (min(g1, g2), max(g1, g2))
-				unique_pairs.add(standard_pair)
+
+	for rc in XCollinearity(hog_args['orthfiles']):
+		# 对pairs进行排序以确保处理顺序一致
+		for g1, g2 in rc.pairs:
+			spg1, spg2 = gene_format_o(g1), gene_format_o(g2)
+			if spg1 == spg2:  # 确保是不同物种的基因
+				continue
+			# 创建标准化的基因对（较小的基因名在前），避免方向性问题
+			standard_pair = (min(g1, g2), max(g1, g2))
+			unique_pairs.add(standard_pair)
 	
 	# 统计每个基因的度数
 	for g1, g2 in unique_pairs:

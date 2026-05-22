@@ -56,7 +56,7 @@ def remove_hog_and_descendants(hog, node_to_hogs, all_hogs):
 			try:
 				node_list.remove(cur)
 			except ValueError:
-				pass  # 可能已经被移除了
+				pass	# 可能已经被移除了
 		# 将它的孩子加入栈，以便处理后代
 		for child_id in cur.children:
 			child_hog = all_hogs.get(child_id)
@@ -94,7 +94,7 @@ def build_deletion_map(all_hogs, tree, gene_degree=None):
 			# 对每组sog，只保留物种数最多的 HOG（已按物种数降序），其余删除
 			for og_id, hogs in hogs_by_og.items():
 				if len(hogs) > 1:
-					hogs.sort(key=lambda x: len({gene_format_o(g)[0] for g in x['genes']}), reverse=True)
+					hogs.sort(key=lambda x: (-len({gene_format_o(g)[0] for g in x['genes']}), x['hog_id']))
 					# hogs[0] 已为物种数最多，删除其余
 					for hog in hogs[1:]:
 						deleted_genes.update(hog['genes'])
@@ -124,20 +124,20 @@ def build_deletion_map(all_hogs, tree, gene_degree=None):
 					if sp == node_name and gene not in deleted_genes:
 						leaf_species_genes.append(gene)
 						
-			# 对这个HOG中的该物种的基因，如果多于一个，则只保留一个
-			if len(leaf_species_genes) > 1:
-				if gene_degree:
-					# 保留 degree 最高的基因
-					leaf_species_genes.sort(key=lambda g: gene_degree.get(g, 0), reverse=True)
-				else:
-					leaf_species_genes.sort()  # fallback: 字母序
-				# 保留第一个基因，将其余的标记为删除
-				deleted_genes.update(leaf_species_genes[1:])
+				# 对这个HOG中的该物种的基因，如果多于一个，则只保留一个
+				if len(leaf_species_genes) > 1:
+					if gene_degree:
+						# 保留 degree 最高的基因
+						leaf_species_genes.sort(key=lambda g: (-gene_degree.get(g, 0), g))
+					else:
+						leaf_species_genes.sort()	# fallback: 字母序
+						# 保留第一个基因，将其余的标记为删除
+					deleted_genes.update(leaf_species_genes[1:])
 			else:
 				# 中间节点：对于当前HOG的每一个子HOG，按您描述的新逻辑处理
 				# 直接使用HOG记录中的children属性获取当前HOG的子HOG
 				children_by_node = defaultdict(list)
-				for child_hog_id in sorted(hog_record['children']):  # 预先排序子HOG
+				for child_hog_id in sorted(hog_record['children']):	# 预先排序子HOG
 					child_hog = all_hogs.get(child_hog_id)
 					if child_hog:
 						children_by_node[child_hog.node_id].append((child_hog, set(child_hog.genes)))
@@ -175,7 +175,7 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 	:param restore_log: 记录恢复基因的日志文件路径
 	:param debug_output: 调试输出文件路径，用于输出all_deleted_genes集合内容
 	"""
-	start_time = time.time()  # 添加开始时间记录
+	start_time = time.time()	# 添加开始时间记录
 	# 从HOG类加载信息
 	all_hogs, tree = load_hog_info_from_class(
 		ogfile=hog_args['ogfile'], 
@@ -187,11 +187,28 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 	# 从 orthfiles 构建基因 degree 字典（复用 XCollinearity 解析器兼容各种格式）
 	from .mcscan import XCollinearity
 	gene_degree = defaultdict(int)
-	for rc in XCollinearity(hog_args['orthfiles']):
-		for g1, g2 in rc.pairs:
-			gene_degree[g1] += 1
-			gene_degree[g2] += 1
-		
+	# 将orthfiles转换为排序后的列表，确保处理顺序一致
+	orthfiles_sorted = sorted(hog_args['orthfiles']) if isinstance(hog_args['orthfiles'], list) else [hog_args['orthfiles']]
+	gene_degree_beg=time.time()	
+	# 使用集合来存储唯一的基因对，避免重复计算
+	unique_pairs = set()
+	for orthfile in orthfiles_sorted:
+		for rc in XCollinearity([orthfile]):
+			# 对pairs进行排序以确保处理顺序一致
+			for g1, g2 in rc.pairs:
+				spg1, spg2 = gene_format_o(g1), gene_format_o(g2)
+				if spg1 == spg2:  # 确保是不同物种的基因
+					continue
+				# 创建标准化的基因对（较小的基因名在前），避免方向性问题
+				standard_pair = (min(g1, g2), max(g1, g2))
+				unique_pairs.add(standard_pair)
+	
+	# 统计每个基因的度数
+	for g1, g2 in unique_pairs:
+		gene_degree[g1] += 1
+		gene_degree[g2] += 1
+	gene_degree_end=time.time()	
+	logger.info('Building gene_degree took %.2f s', gene_degree_end - gene_degree_beg)
 	# 构建删除基因的映射，只遍历一次树
 	all_deleted_genes = build_deletion_map(all_hogs, tree, gene_degree)
 	end_time = time.time()
@@ -261,16 +278,16 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 			if len(restored_species_for_og) > 0 and log_file:
 				log_file.write(f"{og_id}\t{';'.join(restored_species_for_og)}\n")
 			
-		# 最终保留的基因（restore时保留所有，否则排除被删基因）
-		if restore_gene:
-			final_kept = sorted(kept_genes)
-		else:
-			final_kept = sorted(kept_genes - all_deleted_genes)
-			
+			# 最终保留的基因（restore时保留所有，否则排除被删基因）
+			if restore_gene:
+				final_kept = sorted(kept_genes)
+			else:
+				final_kept = sorted(kept_genes - all_deleted_genes)
+				
 			# 输出处理后的OG行
-		if final_kept:
-			output_line = "{}: {}".format(og_id, ' '.join(sorted(final_kept)))
-			fout.write(output_line + '\n')
+			if final_kept:
+				output_line = "{}: {}".format(og_id, ' '.join(sorted(final_kept)))
+				fout.write(output_line + '\n')
 
 	# 关闭日志文件（如果打开）
 	if log_file:

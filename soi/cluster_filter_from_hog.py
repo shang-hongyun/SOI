@@ -186,10 +186,10 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 	
 	# 从 orthfiles 构建基因 degree 字典（复用 XCollinearity 解析器兼容各种格式）
 	from .mcscan import XCollinearity
-	gene_degree = defaultdict(int)
+	# 使用图结构来计算基因度数
+	import networkx as nx
 	gene_degree_beg=time.time()	
-	# 使用集合来存储唯一的基因对，避免重复计算
-	unique_pairs = set()
+	G = nx.Graph()
 
 	for rc in XCollinearity(hog_args['orthfiles']):
 		# 对pairs进行排序以确保处理顺序一致
@@ -197,14 +197,11 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 			spg1, spg2 = gene_format_o(g1), gene_format_o(g2)
 			if spg1 == spg2:  # 确保是不同物种的基因
 				continue
-			# 创建标准化的基因对（较小的基因名在前），避免方向性问题
-			standard_pair = (min(g1, g2), max(g1, g2))
-			unique_pairs.add(standard_pair)
+			# 添加边到图中，自动处理重复边（NetworkX会自动忽略重复边）
+			G.add_edge(g1, g2)
 	
-	# 统计每个基因的度数
-	for g1, g2 in unique_pairs:
-		gene_degree[g1] += 1
-		gene_degree[g2] += 1
+	# 从图中获取每个节点的度数
+	gene_degree = dict(G.degree())
 	gene_degree_end=time.time()	
 	logger.info('Building gene_degree took %.2f s', gene_degree_end - gene_degree_beg)
 	# 构建删除基因的映射，只遍历一次树

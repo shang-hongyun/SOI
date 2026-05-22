@@ -94,7 +94,7 @@ def build_deletion_map(all_hogs, tree, gene_degree=None):
 			# 对每组sog，只保留物种数最多的 HOG（已按物种数降序），其余删除
 			for og_id, hogs in hogs_by_og.items():
 				if len(hogs) > 1:
-					hogs.sort(key=lambda x: (-len({gene_format_o(g)[0] for g in x['genes']}), x['hog_id']))
+					hogs.sort(key=lambda x: (len({gene_format_o(g)[0] for g in x['genes']}), x['hog_id']), reverse=True)
 					# hogs[0] 已为物种数最多，删除其余
 					for hog in hogs[1:]:
 						deleted_genes.update(hog['genes'])
@@ -128,7 +128,7 @@ def build_deletion_map(all_hogs, tree, gene_degree=None):
 				if len(leaf_species_genes) > 1:
 					if gene_degree:
 						# 保留 degree 最高的基因
-						leaf_species_genes.sort(key=lambda g: (-gene_degree.get(g, 0), g))
+						leaf_species_genes.sort(key=lambda g: (gene_degree.get(g, 0), g), reverse=True)
 					else:
 						leaf_species_genes.sort()	# fallback: 字母序
 						# 保留第一个基因，将其余的标记为删除
@@ -185,23 +185,15 @@ def process_og_with_hog(og_file, hog_args, output_file, restore_gene=False, rest
 	)
 	
 	# 从 orthfiles 构建基因 degree 字典（复用 XCollinearity 解析器兼容各种格式）
-	from .mcscan import XCollinearity
+	from .mcscan import ColinearGroups
 	# 使用图结构来计算基因度数
 	import networkx as nx
 	gene_degree_beg=time.time()	
-	G = nx.Graph()
-
-	for rc in XCollinearity(hog_args['orthfiles']):
-		# 对pairs进行排序以确保处理顺序一致
-		for g1, g2 in rc.pairs:
-			spg1, spg2 = gene_format_o(g1), gene_format_o(g2)
-			if spg1 == spg2:  # 确保是不同物种的基因
-				continue
-			# 添加边到图中，自动处理重复边（NetworkX会自动忽略重复边）
-			G.add_edge(g1, g2)
-	
+	gene_degree_graph = ColinearGroups(hog_args['orthfiles'], #spsd=spsd,
+									noparalog=False).graph
 	# 从图中获取每个节点的度数
-	gene_degree = dict(G.degree())
+	gene_degree = dict(gene_degree_graph.degree())
+	# 假设字典名为 my_dict
 	gene_degree_end=time.time()	
 	logger.info('Building gene_degree took %.2f s', gene_degree_end - gene_degree_beg)
 	# 构建删除基因的映射，只遍历一次树

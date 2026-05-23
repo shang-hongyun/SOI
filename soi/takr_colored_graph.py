@@ -1573,15 +1573,145 @@ class ColoredGraph:
     # ==================== 可视化 ====================
 
     def draw_block_graph(self, outpath: str, dpi: int = 200,
-                         title: str = None):
-        """Draw block-level colored adjacency graph.
+                         title: str = None, show_hogs: bool = False):
+        """Draw block-level colored adjacency graph using Graphviz.
 
         Nodes = synteny blocks (sized by HOG count).
-        Edges colored by child species:
-          - Shared (multi-child): thick solid
-          - Unique (single-child): thin dashed
-        Cycles highlighted in red.
+        Edges:
+          - Shared (multi-child): thick black solid
+          - Unique (single-child): thin colored solid, one color per child
+        Telomere-adjacent blocks: double-octagon shape, orange fill.
+
+        Args:
+            outpath: Output PNG path
+            dpi: Resolution
+            title: Plot title
+            show_hogs: If True, show individual HOG names in block labels
         """
+        try:
+            import graphviz
+            # Check if dot binary is available
+            import shutil
+            if not shutil.which('dot'):
+                raise ImportError('dot binary not found')
+        except (ImportError, Exception):
+            logger.debug("graphviz dot not available, using matplotlib fallback")
+            self._draw_block_graph_mpl(outpath, dpi, title)
+            return
+
+        if not hasattr(self, '_block_graph') or not self._block_graph:
+            self._build_synteny_blocks()
+            self._compress_to_block_level()
+
+        bg = self._block_graph
+        if bg.number_of_nodes() == 0:
+            return
+
+        # Build telomere block set
+        telomere_blocks = set()
+        for cid, tels in self._child_telomeres.items():
+            for tel_hog in tels:
+                bid = self._hog_to_block.get(tel_hog)
+                if bid:
+                    telomere_blocks.add(bid)
+
+        # Cycle nodes
+        cycles = []
+        try:
+            cycles = nx.cycle_basis(bg)
+        except Exception:
+            pass
+        cycle_nodes = set()
+        for cyc in cycles:
+            cycle_nodes.update(cyc)
+
+        # Child color palette
+        children = sorted(self.children())
+        palette = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12',
+                   '#9b59b6', '#1abc9c', '#e67e22', '#34495e']
+        child_colors = {c: palette[i % len(palette)]
+                        for i, c in enumerate(children)}
+
+        # Build graphviz DOT
+        dot = graphviz.Digraph(format='png')
+        dot.attr(rankdir='LR', label=title or f'Block Graph: {self.hog_level}',
+                 labelloc='t', fontsize='16', fontname='Helvetica-Bold',
+                 bgcolor='white', pad='0.5')
+        dot.attr('node', fontname='Helvetica', fontsize='10')
+        dot.attr('edge', fontname='Helvetica', fontsize='8')
+
+        # Nodes
+        for n in bg.nodes():
+            hog_list = self._blocks.get(n, [])
+            hog_count = len(hog_list)
+            label = f'{n}\n({hog_count})'
+            if show_hogs and hog_count <= 5:
+                label += '\n' + ', '.join(str(h) for h in hog_list[:5])
+
+            attrs = {'label': label, 'width': str(max(0.3, hog_count * 0.03)),
+                     'height': str(max(0.3, hog_count * 0.03))}
+
+            if n in telomere_blocks:
+                attrs['shape'] = 'doubleoctagon'
+                attrs['style'] = 'filled'
+                attrs['fillcolor'] = '#ffeaa7'  # orange highlight
+                attrs['color'] = '#e17055'
+                attrs['penwidth'] = '2'
+            elif n in cycle_nodes:
+                attrs['shape'] = 'ellipse'
+                attrs['style'] = 'filled'
+                attrs['fillcolor'] = '#fab1a0'  # red for cycle
+                attrs['color'] = '#d63031'
+                attrs['penwidth'] = '2'
+            else:
+                attrs['shape'] = 'box'
+                attrs['style'] = 'filled,rounded'
+                attrs['fillcolor'] = '#dfe6e9'
+                attrs['color'] = '#636e72'
+
+            dot.node(str(n), **attrs)
+
+        # Edges
+        for h1, h2, data in bg.edges(data=True):
+            colors = data.get('colors', set())
+            child_ids = sorted(set(c for c, _ in colors))
+
+            if len(child_ids) > 1:
+                # Shared edge: thick black solid
+                dot.edge(str(h1), str(h2),
+                         color='#2d3436', penwidth='3.0',
+                         style='solid', alpha='0.8')
+            elif len(child_ids) == 1:
+                cid = child_ids[0]
+                color = child_colors.get(cid, '#999')
+                dot.edge(str(h1), str(h2),
+                         color=color, penwidth='1.5',
+                         style='solid', alpha='0.7')
+
+        # Legend as subgraph
+        with dot.subgraph(name='cluster_legend') as legend:
+            legend.attr(label='Legend', style='dashed', fontsize='10')
+            legend.node('_lg_shared', 'shared\n(multi-child)',
+                        shape='box', style='filled', fillcolor='#dfe6e9')
+            legend.node('_lg_cycle', 'in cycle',
+                        shape='ellipse', style='filled', fillcolor='#fab1a0')
+            legend.node('_lg_tel', 'telomere',
+                        shape='doubleoctagon', style='filled', fillcolor='#ffeaa7')
+            for cid in children:
+                color = child_colors.get(cid, '#999')
+                legend.node(f'_lg_{cid}', f'{cid}\n(unique)',
+                            shape='box', style='filled', fillcolor=color,
+                            fontcolor='white')
+            legend.edge('_lg_shared', '_lg_cycle', style='invis')
+
+        # Render
+        base = outpath.rsplit('.', 1)[0]
+        dot.render(base, cleanup=True)
+        logger.info("  [viz] block graph saved to %s", base + '.png')
+
+    def _draw_block_graph_mpl(self, outpath: str, dpi: int = 200,
+                              title: str = None):
+        """Fallback matplotlib block graph (original implementation)."""
         try:
             import matplotlib
             matplotlib.use('Agg')
@@ -1598,88 +1728,89 @@ class ColoredGraph:
         if bg.number_of_nodes() == 0:
             return
 
-        # Layout
         fig, ax = plt.subplots(1, 1, figsize=(12, 10))
-        pos = nx.spring_layout(bg, k=2.0, seed=42)
+        try:
+            pos = nx.kamada_kawai_layout(bg)
+        except Exception:
+            pos = nx.spring_layout(bg, k=2.0, seed=42)
 
-        # Node sizes proportional to block HOG count
         node_sizes = []
         for n in bg.nodes():
             hog_count = len(self._blocks.get(n, []))
             node_sizes.append(max(200, hog_count * 15))
 
-        # Node colors: cycle membership
         cycles = []
-        if hasattr(self, '_block_graph'):
-            try:
-                cycles = nx.cycle_basis(bg)
-            except Exception:
-                pass
+        try:
+            cycles = nx.cycle_basis(bg)
+        except Exception:
+            pass
         cycle_nodes = set()
         for cyc in cycles:
             cycle_nodes.update(cyc)
 
-        node_colors = ['#ff6b6b' if n in cycle_nodes else '#4ecdc4'
-                       for n in bg.nodes()]
+        # Telomere blocks
+        telomere_blocks = set()
+        for cid, tels in self._child_telomeres.items():
+            for tel_hog in tels:
+                bid = self._hog_to_block.get(tel_hog)
+                if bid:
+                    telomere_blocks.add(bid)
 
-        # Draw nodes
-        nx.draw_networkx_nodes(bg, pos, ax=ax,
-                               node_size=node_sizes,
-                               node_color=node_colors,
-                               alpha=0.9, edgecolors='#333', linewidths=1.5)
-
-        # Draw node labels (block IDs)
-        labels = {}
+        node_colors = []
         for n in bg.nodes():
-            hog_count = len(self._blocks.get(n, []))
-            labels[n] = f"{n}\n({hog_count})"
+            if n in telomere_blocks:
+                node_colors.append('#ffeaa7')  # orange = telomere
+            elif n in cycle_nodes:
+                node_colors.append('#fab1a0')  # red = cycle
+            else:
+                node_colors.append('#dfe6e9')  # gray = normal
+
+        nx.draw_networkx_nodes(bg, pos, ax=ax, node_size=node_sizes,
+                               node_color=node_colors, alpha=0.9,
+                               edgecolors='#333', linewidths=1.5)
+
+        labels = {n: f'{n}\n({len(self._blocks.get(n, []))})' for n in bg.nodes()}
         nx.draw_networkx_labels(bg, pos, labels, ax=ax, font_size=7)
 
-        # Get child species for coloring
         children = sorted(self.children())
         cmap = plt.cm.Set2
         child_colors = {c: cmap(i / max(len(children), 1))
                         for i, c in enumerate(children)}
 
-        # Draw edges
         for h1, h2, data in bg.edges(data=True):
             colors = data.get('colors', set())
             child_ids = sorted(set(c for c, _ in colors))
-
             if len(child_ids) > 1:
-                # Shared edge: thick solid, blend colors
-                ax.plot([pos[h1][0], pos[h2][0]],
-                        [pos[h1][1], pos[h2][1]],
+                ax.plot([pos[h1][0], pos[h2][0]], [pos[h1][1], pos[h2][1]],
                         color='#333', linewidth=3.0, alpha=0.8, zorder=1)
             elif len(child_ids) == 1:
                 cid = child_ids[0]
                 color = child_colors.get(cid, '#999')
-                # Unique edge: thin dashed
-                ax.plot([pos[h1][0], pos[h2][0]],
-                        [pos[h1][1], pos[h2][1]],
-                        color=color, linewidth=1.5, alpha=0.6,
-                        linestyle='dashed', zorder=0)
+                ax.plot([pos[h1][0], pos[h2][0]], [pos[h1][1], pos[h2][1]],
+                        color=color, linewidth=1.5, alpha=0.6, zorder=0)
 
-        # Legend
-        legend_handles = []
+        legend_handles = [
+            plt.Line2D([0], [0], marker='o', color='w',
+                       markerfacecolor='#ffeaa7', markersize=10,
+                       markeredgecolor='#e17055', markeredgewidth=2,
+                       label='telomere'),
+            plt.Line2D([0], [0], marker='o', color='w',
+                       markerfacecolor='#fab1a0', markersize=10,
+                       markeredgecolor='#d63031', markeredgewidth=2,
+                       label='in cycle'),
+            plt.Line2D([0], [0], color='#333', linewidth=3,
+                       label='shared (multi-child)'),
+        ]
         for cid in children:
             color = child_colors.get(cid, '#999')
             legend_handles.append(
                 plt.Line2D([0], [0], color=color, linewidth=2,
-                           linestyle='dashed', label=f'{cid} (unique)'))
-        legend_handles.append(
-            plt.Line2D([0], [0], color='#333', linewidth=3,
-                       label='shared (multi-child)'))
-        legend_handles.append(
-            plt.Line2D([0], [0], marker='o', color='w',
-                       markerfacecolor='#ff6b6b', markersize=10,
-                       label='in cycle'))
+                           label=f'{cid} (unique)'))
 
         ax.legend(handles=legend_handles, loc='upper left', fontsize=8)
         ax.set_title(title or f'Block Graph: {self.hog_level}',
                      fontsize=12, fontweight='bold')
         ax.axis('off')
-
         fig.tight_layout()
         fig.savefig(outpath, dpi=dpi, bbox_inches='tight')
         plt.close(fig)

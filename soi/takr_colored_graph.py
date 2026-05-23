@@ -378,6 +378,60 @@ class ColoredGraph:
                     support=len(spanned_hogs),
                 ))
 
+        # 插入节点检测: 度=2 且所有边都是 unique 的节点
+        # 模式: h4--[unique]--h5--[unique]--h6, 且 h4-h6 有 shared 边
+        # → h5 是插入产物，删除 h5 恢复祖先 h4-h6
+        self._resolve_inserted_nodes(outgroups)
+
+    def _resolve_inserted_nodes(self, outgroups: Dict = None):
+        """检测并删除插入节点。
+
+        插入节点: 度=2，两条边都是 unique (单孩子)，且两个邻居有 shared 边。
+        祖先态: 邻居直接相邻 (shared 边)
+        衍生态: 插入了中间节点 (unique 边)
+        → 删除插入节点及其边，恢复祖先邻接。
+        """
+        removed = set()
+        for h in list(self._graph.nodes()):
+            if h in removed:
+                continue
+            if h not in self.all_hogs():
+                continue
+            deg = self._graph.degree(h)
+            if deg != 2:
+                continue
+
+            # 检查两条边是否都是 unique
+            neighbors = list(self._graph.neighbors(h))
+            if len(neighbors) != 2:
+                continue
+            n1, n2 = neighbors
+            c1 = self.get_colors(h, n1)
+            c2 = self.get_colors(h, n2)
+            if len(c1) != 1 or len(c2) != 1:
+                continue  # 有 shared 边，不是插入节点
+
+            # 检查两个邻居之间是否有 shared 边
+            if not self._graph.has_edge(n1, n2):
+                continue
+            shared_colors = self.get_colors(n1, n2)
+            if len(shared_colors) < 2:
+                continue  # 邻居之间也是 unique，不是简单的插入
+
+            # 确认是插入节点: 删除 h 及其边
+            child_id = next(iter(c1))[0]
+            self._graph.remove_node(h)
+            removed.add(h)
+            logger.debug("  [indel] inserted node: remove %s between %s-%s (%s)",
+                         h, n1, n2, child_id)
+            self.events.append(TAKREvent(
+                event_type='gene_gain',
+                branch=f"{self.hog_level}-{child_id}",
+                genes_involved=[h],
+                desc=f"gene_gain: {h} inserted between {n1}-{n2} in {child_id}",
+                support=1,
+            ))
+
     # ==================== 环检测 + 事件分类 ====================
 
     def find_cycles(self) -> List[List]:
@@ -1018,14 +1072,15 @@ class ColoredGraph:
                         blocks[bid] = path
                         for h in path:
                             hog_to_block[h] = bid
-                    elif len(path) > 0:
-                        # 小块（1个HOG）也记录为块
-                        bid = "blk_{}".format(len(blocks))
-                        blocks[bid] = path
-                        for h in path:
-                            hog_to_block[h] = bid
+                    else:
+                        # 路径太短 (<min_block_size): 不建块，标记为未分配
+                        # 留给后续合并阶段处理
+                        pass
 
-        # 不在共享图中的 HOG → 单例块
+        # 不在共享图中的 HOG → 可能是 insertion 产物
+        # 留给 Phase 2 indel 检测处理，不在此合并
+
+        # 剩余仍未分配的 HOG (无邻居或邻居也未分配) → 单独成块
         for h in self.all_hogs():
             if h not in hog_to_block:
                 bid = "blk_{}".format(len(blocks))
@@ -1571,6 +1626,10 @@ class ColoredGraph:
                 involved_hogs = list(self._blocks.get(b1, [])) + list(self._blocks.get(b2, []))
                 involved_hogs = list(set(involved_hogs))
 
+                logger.debug("  [bridge] %s: %s(%d HOGs,comp%d) <-> %s(%d HOGs,comp%d) via %s",
+                            etype, b1, len(self._blocks.get(b1, [])), c1,
+                            b2, len(self._blocks.get(b2, [])), c2, child_id)
+
                 self.events.append(TAKREvent(
                     event_type=etype,
                     branch=self.hog_level,
@@ -1835,6 +1894,10 @@ class ColoredGraph:
         logger.info("  [colored] resolve_all_events for %s: %d nodes, %d edges",
                      self.hog_level, self.node_count(), self.edge_count())
 
+        # 记录初始染色体数（来自孩子的染色体数之和）
+        initial_chroms = sum(self._child_chrom_counts.values())
+        n_events_before = len(self.events)
+
         # ====== Phase 2: 单基因 indel/loss/gain ======
         # (Phase 1 dedup 在 orchestrator 中 add_child 前完成)
         self.resolve_indels(outgroups)
@@ -1856,17 +1919,9 @@ class ColoredGraph:
         except RuntimeError as e:
             logger.warning("  [colored] %s", e)
 
-        # ====== Phase 4c-4e: HOG 级 + 块级结构重排 ======
-        # 先解决 HOG 级 4-cycles (inversion/RT)
-        self.resolve_structural_events(outgroup_adjacency=outgroup_adjacency)
-        logger.info("  [colored] Phase 4c-4e (HOG structural): %d events",
-                     len(self.events))
-        try:
-            self._postcondition_no_cycles("Phase 4c-4e HOG")
-        except RuntimeError as e:
-            logger.warning("  [colored] %s", e)
+        # ====== Phase 4: 块级事件 (按复杂度递增) ======
 
-        # ====== Phase 4b: unidir_trans ======
+        # Phase 4b: unidir_trans
         n_ut = self._resolve_unidir_trans(outgroup_adjacency=outgroup_adjacency)
         if n_ut:
             logger.info("  [colored] Phase 4b (unidir_trans): %d events", n_ut)
@@ -1918,6 +1973,30 @@ class ColoredGraph:
         type_str = ', '.join(f"{t}={c}" for t, c in sorted(type_counts.items()))
         logger.info("  [colored] done: %d events %s (after min_hogs=%d), %d chroms",
                      len(self.events), type_str, min_hogs, n_chrom)
+
+        # === 染色体数一致性检查 ===
+        # 只有 bridge 事件改变染色体数:
+        #   eej/ncf: -1 (融合), fission: +1 (断裂), bridge_unclassified: ±1
+        new_events = self.events[n_events_before:]
+        n_fusion = sum(1 for e in new_events if e.event_type in ('eej', 'ncf'))
+        n_fission = sum(1 for e in new_events if e.event_type == 'fission')
+        n_bridge_unc = sum(1 for e in new_events if e.event_type == 'bridge_unclassified')
+        expected_chroms = initial_chroms - n_fusion + n_fission
+        # bridge_unclassified 可能是 +1 或 -1，取绝对值范围
+        expected_min = initial_chroms - n_fusion - n_bridge_unc + n_fission
+        expected_max = initial_chroms - n_fusion + n_bridge_unc + n_fission
+
+        if not (expected_min <= n_chrom <= expected_max):
+            logger.error(
+                "  [colored] CHROM COUNT MISMATCH for %s: "
+                "initial=%d, fusion=%d, fission=%d, bridge_unc=%d, "
+                "expected=[%d,%d], actual=%d",
+                self.hog_level, initial_chroms, n_fusion, n_fission,
+                n_bridge_unc, expected_min, expected_max, n_chrom)
+        else:
+            logger.info(
+                "  [colored] chrom check OK: %d - %d + %d = %d (actual=%d)",
+                initial_chroms, n_fusion, n_fission, expected_chroms, n_chrom)
 
         return self.events
 

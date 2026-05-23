@@ -1570,6 +1570,207 @@ class ColoredGraph:
 
         return self.events
 
+    # ==================== 可视化 ====================
+
+    def draw_block_graph(self, outpath: str, dpi: int = 200,
+                         title: str = None):
+        """Draw block-level colored adjacency graph.
+
+        Nodes = synteny blocks (sized by HOG count).
+        Edges colored by child species:
+          - Shared (multi-child): thick solid
+          - Unique (single-child): thin dashed
+        Cycles highlighted in red.
+        """
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except ImportError:
+            logger.warning("matplotlib not available, skipping block graph")
+            return
+
+        if not hasattr(self, '_block_graph') or not self._block_graph:
+            self._build_synteny_blocks()
+            self._compress_to_block_level()
+
+        bg = self._block_graph
+        if bg.number_of_nodes() == 0:
+            return
+
+        # Layout
+        fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+        pos = nx.spring_layout(bg, k=2.0, seed=42)
+
+        # Node sizes proportional to block HOG count
+        node_sizes = []
+        for n in bg.nodes():
+            hog_count = len(self._blocks.get(n, []))
+            node_sizes.append(max(200, hog_count * 15))
+
+        # Node colors: cycle membership
+        cycles = []
+        if hasattr(self, '_block_graph'):
+            try:
+                cycles = nx.cycle_basis(bg)
+            except Exception:
+                pass
+        cycle_nodes = set()
+        for cyc in cycles:
+            cycle_nodes.update(cyc)
+
+        node_colors = ['#ff6b6b' if n in cycle_nodes else '#4ecdc4'
+                       for n in bg.nodes()]
+
+        # Draw nodes
+        nx.draw_networkx_nodes(bg, pos, ax=ax,
+                               node_size=node_sizes,
+                               node_color=node_colors,
+                               alpha=0.9, edgecolors='#333', linewidths=1.5)
+
+        # Draw node labels (block IDs)
+        labels = {}
+        for n in bg.nodes():
+            hog_count = len(self._blocks.get(n, []))
+            labels[n] = f"{n}\n({hog_count})"
+        nx.draw_networkx_labels(bg, pos, labels, ax=ax, font_size=7)
+
+        # Get child species for coloring
+        children = sorted(self.children())
+        cmap = plt.cm.Set2
+        child_colors = {c: cmap(i / max(len(children), 1))
+                        for i, c in enumerate(children)}
+
+        # Draw edges
+        for h1, h2, data in bg.edges(data=True):
+            colors = data.get('colors', set())
+            child_ids = sorted(set(c for c, _ in colors))
+
+            if len(child_ids) > 1:
+                # Shared edge: thick solid, blend colors
+                ax.plot([pos[h1][0], pos[h2][0]],
+                        [pos[h1][1], pos[h2][1]],
+                        color='#333', linewidth=3.0, alpha=0.8, zorder=1)
+            elif len(child_ids) == 1:
+                cid = child_ids[0]
+                color = child_colors.get(cid, '#999')
+                # Unique edge: thin dashed
+                ax.plot([pos[h1][0], pos[h2][0]],
+                        [pos[h1][1], pos[h2][1]],
+                        color=color, linewidth=1.5, alpha=0.6,
+                        linestyle='dashed', zorder=0)
+
+        # Legend
+        legend_handles = []
+        for cid in children:
+            color = child_colors.get(cid, '#999')
+            legend_handles.append(
+                plt.Line2D([0], [0], color=color, linewidth=2,
+                           linestyle='dashed', label=f'{cid} (unique)'))
+        legend_handles.append(
+            plt.Line2D([0], [0], color='#333', linewidth=3,
+                       label='shared (multi-child)'))
+        legend_handles.append(
+            plt.Line2D([0], [0], marker='o', color='w',
+                       markerfacecolor='#ff6b6b', markersize=10,
+                       label='in cycle'))
+
+        ax.legend(handles=legend_handles, loc='upper left', fontsize=8)
+        ax.set_title(title or f'Block Graph: {self.hog_level}',
+                     fontsize=12, fontweight='bold')
+        ax.axis('off')
+
+        fig.tight_layout()
+        fig.savefig(outpath, dpi=dpi, bbox_inches='tight')
+        plt.close(fig)
+        logger.info("  [viz] block graph saved to %s", outpath)
+
+    def draw_adjacency_heatmap(self, outpath: str, dpi: int = 200,
+                               title: str = None):
+        """Draw adjacency matrix heatmap: rows/cols = HOGs, cells = edge colors.
+
+        Useful for seeing the global structure of shared vs unique adjacencies.
+        """
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError:
+            logger.warning("matplotlib not available, skipping heatmap")
+            return
+
+        # Order HOGs by block, then by position within block
+        if not hasattr(self, '_blocks'):
+            self._build_synteny_blocks()
+
+        hog_order = []
+        for bid in sorted(self._blocks.keys()):
+            hog_order.extend(self._blocks[bid])
+
+        # Add HOGs not in any block
+        all_hogs = set()
+        for n in self._graph.nodes():
+            all_hogs.add(n)
+        for h in sorted(all_hogs, key=str):
+            if h not in set(hog_order):
+                hog_order.append(h)
+
+        n = len(hog_order)
+        if n == 0 or n > 500:
+            logger.info("  [viz] skipping heatmap: %d HOGs (too many or zero)", n)
+            return
+
+        hog_idx = {h: i for i, h in enumerate(hog_order)}
+
+        # Build color matrix: 0=none, 1=unique, 2=shared
+        mat = np.zeros((n, n), dtype=int)
+        children = sorted(self.children())
+        child_list = list(children)
+
+        for h1, h2, data in self._graph.edges(data=True):
+            if h1 in hog_idx and h2 in hog_idx:
+                i, j = hog_idx[h1], hog_idx[h2]
+                colors = data.get('colors', set())
+                if len(colors) > 1:
+                    mat[i][j] = 2
+                    mat[j][i] = 2
+                else:
+                    mat[i][j] = 1
+                    mat[j][i] = 1
+
+        fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+        cmap = matplotlib.colors.ListedColormap(['#ffffff', '#4ecdc4', '#ff6b6b'])
+        ax.imshow(mat, cmap=cmap, interpolation='nearest', aspect='equal')
+
+        # Block boundaries
+        offset = 0
+        for bid in sorted(self._blocks.keys()):
+            blen = len(self._blocks[bid])
+            ax.axhline(y=offset + blen - 0.5, color='gray', linewidth=0.5)
+            ax.axvline(x=offset + blen - 0.5, color='gray', linewidth=0.5)
+            offset += blen
+
+        ax.set_title(title or f'Adjacency Matrix: {self.hog_level}',
+                     fontsize=12, fontweight='bold')
+        ax.set_xlabel('HOG index')
+        ax.set_ylabel('HOG index')
+
+        legend_handles = [
+            plt.Line2D([0], [0], marker='s', color='w',
+                       markerfacecolor='#ffffff', markersize=10, label='no edge'),
+            plt.Line2D([0], [0], marker='s', color='w',
+                       markerfacecolor='#4ecdc4', markersize=10, label='unique'),
+            plt.Line2D([0], [0], marker='s', color='w',
+                       markerfacecolor='#ff6b6b', markersize=10, label='shared'),
+        ]
+        ax.legend(handles=legend_handles, loc='upper right', fontsize=8)
+
+        fig.tight_layout()
+        fig.savefig(outpath, dpi=dpi, bbox_inches='tight')
+        plt.close(fig)
+        logger.info("  [viz] adjacency heatmap saved to %s", outpath)
+
     def __repr__(self):
         return (f"ColoredGraph(hog_level={self.hog_level!r}, "
                 f"nodes={self.node_count()}, edges={self.edge_count()}, "

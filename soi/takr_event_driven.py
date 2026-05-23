@@ -19,6 +19,7 @@ Events are differences between each child and the consensus.
 
 import copy
 import logging
+import os
 import time
 from collections import defaultdict
 from typing import Dict, List, Optional, Set
@@ -338,6 +339,20 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         G.resolve_all_events(outgroups=outgroup_hogs,
                              outgroup_adjacency=outgroup_adjacency,
                              min_hogs=min_hogs)
+
+        # Visualization: block graph + adjacency heatmap
+        try:
+            viz_dir = os.path.dirname(akr.outpre) if hasattr(akr, 'outpre') else '.'
+            viz_base = os.path.basename(akr.outpre) if hasattr(akr, 'outpre') else 'AKR'
+            G.draw_block_graph(
+                os.path.join(viz_dir, f'{viz_base}.{node_id}.block_graph.png'),
+                title=f'Block Graph: {node_id}')
+            G.draw_adjacency_heatmap(
+                os.path.join(viz_dir, f'{viz_base}.{node_id}.adj_heatmap.png'),
+                title=f'Adjacency Matrix: {node_id}')
+        except Exception as e:
+            logger.debug("  [viz] skipped: %s", e)
+
         ancestor = G.to_ancestral_graph()
         akr.anc_graphs[node_id] = ancestor
         n_chrom = len(list(ancestor.chromosomes))

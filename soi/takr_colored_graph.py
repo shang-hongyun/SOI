@@ -56,14 +56,22 @@ class ColoredGraph:
     # ==================== 构建 ====================
 
     def add_edge(self, h1, h2, child_id: str, chrom_idx: int):
-        """添加一条边，记录颜色 (child_id, chrom_idx)。
-        如果边已存在，只把颜色加入已有边的 colors 集。
+        """添加一条边，记录颜色 (child_id, chrom_idx) 和方向。
+
+        direction: +1 = h1 在 h2 左边 (h1→h2), -1 = h2 在 h1 左边。
+        如果边已存在，只把颜色和方向加入已有边的集合。
         """
         if self._graph.has_edge(h1, h2):
             colors = self._graph[h1][h2]['colors']
             colors.add((child_id, chrom_idx))
+            # 更新方向
+            directions = self._graph[h1][h2].get('directions', set())
+            directions.add((child_id, chrom_idx, 1))
+            self._graph[h1][h2]['directions'] = directions
         else:
-            self._graph.add_edge(h1, h2, colors={(child_id, chrom_idx)})
+            self._graph.add_edge(h1, h2,
+                                 colors={(child_id, chrom_idx)},
+                                 directions={(child_id, chrom_idx, 1)})
 
     def add_child(self, source_id: str, child_graph) -> int:
         """把一个孩子的所有染色体邻接以该孩子的颜色加入。
@@ -98,6 +106,58 @@ class ColoredGraph:
         return chrom_count
 
     # ==================== 查询 ====================
+
+    def get_directions(self, h1, h2) -> set:
+        """获取边 (h1, h2) 的方向集合: {(child_id, chrom_idx, direction), ...}"""
+        if not self._graph.has_edge(h1, h2):
+            return set()
+        return self._graph[h1][h2].get('directions', set())
+
+    def edge_has_direction_conflict(self, h1, h2) -> bool:
+        """检查边 (h1, h2) 是否有方向冲突 — 不同孩子方向相反。
+
+        如果 child A 认为 h1→h2 (+1)，child B 认为 h2→h1 (-1)，
+        则存在方向冲突，说明发生了 inversion。
+        """
+        directions = self.get_directions(h1, h2)
+        if len(directions) <= 1:
+            return False
+        has_forward = any(d == 1 for _, _, d in directions)
+        has_reverse = any(d == -1 for _, _, d in directions)
+        return has_forward and has_reverse
+
+    def find_indel_shortcuts(self) -> List[Tuple]:
+        """找 indel shortcuts: 跨越边 (spanning edge) 且无方向冲突。
+
+        indel 模式: child A 有 A→B→C, child B 有 A→C。
+        在图中: A-C 是 unique edge, A 和 C 在 child A 中通过 B 连通。
+        A-C 边的方向: child B 认为 A→C (+1)。
+        A-B 和 B-C 边的方向: child A 认为 A→B (+1), B→C (+1)。
+        无方向冲突 → 这是 indel shortcut，不是 inversion。
+
+        Returns: [(h1, h2, child_id, spanned_hogs), ...]
+        """
+        shortcuts = []
+        for h1, h2 in self.unique_edges():
+            # 检查是否有方向冲突 — 有冲突则不是 indel
+            if self.edge_has_direction_conflict(h1, h2):
+                continue
+            # 检查是否是 spanning edge
+            colors = self.get_colors(h1, h2)
+            if not colors:
+                continue
+            child_id, _ = next(iter(colors))
+            for other_id in self.children():
+                if other_id == child_id:
+                    continue
+                other_hogs = self._child_hogs.get(other_id, set())
+                if h1 not in other_hogs or h2 not in other_hogs:
+                    continue
+                path = self._shortest_path_through_hogs(h1, h2, other_id)
+                if path and len(path) > 2:
+                    shortcuts.append((h1, h2, child_id, path[1:-1]))
+                    break
+        return shortcuts
 
     def consensus_telomeres(self, min_children: int = 2) -> Set:
         """共识端粒：在 ≥min_children 个孩子中都是端粒邻接的 HOG。
@@ -267,12 +327,16 @@ class ColoredGraph:
             return None
 
     def resolve_indels(self, outgroups: Dict = None):
-        """检测并解决 indel/loss 冲突。移除所有跨越边，记录 events。"""
+        """检测并解决 indel/loss 冲突。移除所有 indel shortcuts，记录 events。
+
+        使用方向感知: 只移除无方向冲突的跨越边 (indel shortcuts)。
+        有方向冲突的跨越边 (inversion) 留给 Phase 4 处理。
+        """
         while True:
-            spanning = self.find_spanning_edges()
-            if not spanning:
+            shortcuts = self.find_indel_shortcuts()
+            if not shortcuts:
                 break
-            for h1, h2, child_id, spanned_hogs in spanning:
+            for h1, h2, child_id, spanned_hogs in shortcuts:
                 # 确定极性
                 if outgroups and child_id in outgroups:
                     og_hogs = outgroups[child_id]
@@ -326,6 +390,10 @@ class ColoredGraph:
     def classify_cycle(self, cycle: List) -> Tuple[Optional[str], List, Dict]:
         """分析环的颜色模式，判断事件类型。
 
+        方向感知: 先检查环中是否有方向冲突的边对。
+        - 有方向冲突 → 真实结构事件 (inversion/RT)
+        - 无方向冲突 → indel shortcut 假环 (不应存在，标记为 gene_indel)
+
         Returns:
             (event_type, conflict_edges, info_dict)
             event_type = None 表示无法分类
@@ -347,6 +415,20 @@ class ColoredGraph:
             'n_unique': sum(1 for c in edge_colors if len(c) == 1),
             'n_shared': sum(1 for c in edge_colors if len(c) > 1),
         }
+
+        # == 方向冲突检查: 区分真实环 (inversion/RT) 和 indel 假环 ==
+        has_dir_conflict = False
+        for (u, v) in edges:
+            if self.edge_has_direction_conflict(u, v):
+                has_dir_conflict = True
+                break
+        info['has_direction_conflict'] = has_dir_conflict
+
+        if not has_dir_conflict:
+            # 无方向冲突 → indel shortcut 假环
+            # 这些边不应该形成环，标记为 gene_indel 让 resolve_indels 处理
+            info['resolution'] = 'no_direction_conflict_indel'
+            return 'gene_indel', list(edges), info
 
         # 统计每种颜色的出现次数
         color_counts = Counter()
@@ -646,7 +728,7 @@ class ColoredGraph:
                 paths.append(path)
                 visited.update(path)
 
-        # 处理剩余未访问节点（无端粒的连通分量）
+        # 处理剩余未访问节点（无端粒的连通分量 + 孤立节点）
         all_nodes = self.all_hogs()
         unvisited = all_nodes - visited
         if unvisited:
@@ -659,6 +741,9 @@ class ColoredGraph:
                     if path:
                         paths.append(path)
                         visited.update(path)
+                elif len(comp) == 1:
+                    # 孤立节点：不单独成染色体（noise），跳过
+                    visited.update(comp)
 
         return paths
 
@@ -727,13 +812,14 @@ class ColoredGraph:
     def to_ancestral_graph(self):
         """转换为 AncestralAdjacencyGraph。
 
-        调用 path_cover() 获取染色体路径，然后构建有向图。
+        复用 resolve_all_events 中缓存的 paths，避免重复计算。
         """
         from .AK import AncestralAdjacencyGraph
 
         result = AncestralAdjacencyGraph(node_id=self.hog_level)
 
-        paths = self.path_cover()
+        # 复用缓存的 paths
+        paths = getattr(self, '_cached_paths', None) or self.path_cover()
         if not paths:
             logger.warning("  [colored] no paths found for %s", self.hog_level)
             return result
@@ -759,12 +845,6 @@ class ColoredGraph:
             result.telomeres.add(right_tel)
             result.graph.add_edge(left_tel, path[0])
             result.graph.add_edge(path[-1], right_tel)
-
-        # 添加所有孤立的 HOG
-        for n in self._graph.nodes:
-            if n in self.all_hogs() and n not in result.gene_nodes:
-                result.graph.add_node(n)
-                result.gene_nodes.add(n)
 
         result.events = self.events
         return result
@@ -1761,7 +1841,6 @@ class ColoredGraph:
         logger.info("  [colored] Phase 2 (indels): %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
         try:
-            self._postcondition_no_cycles("Phase 2")
             self._postcondition_no_cross_edges("Phase 2")
         except RuntimeError as e:
             logger.warning("  [colored] %s", e)
@@ -1777,10 +1856,15 @@ class ColoredGraph:
         except RuntimeError as e:
             logger.warning("  [colored] %s", e)
 
-        # ====== Phase 4a: seg_deletion / seg_insertion ======
-        n_seg = self._resolve_seg_events(outgroup_adjacency=outgroup_adjacency)
-        if n_seg:
-            logger.info("  [colored] Phase 4a (seg_del/ins): %d events", n_seg)
+        # ====== Phase 4c-4e: HOG 级 + 块级结构重排 ======
+        # 先解决 HOG 级 4-cycles (inversion/RT)
+        self.resolve_structural_events(outgroup_adjacency=outgroup_adjacency)
+        logger.info("  [colored] Phase 4c-4e (HOG structural): %d events",
+                     len(self.events))
+        try:
+            self._postcondition_no_cycles("Phase 4c-4e HOG")
+        except RuntimeError as e:
+            logger.warning("  [colored] %s", e)
 
         # ====== Phase 4b: unidir_trans ======
         n_ut = self._resolve_unidir_trans(outgroup_adjacency=outgroup_adjacency)
@@ -1805,6 +1889,7 @@ class ColoredGraph:
 
         # ====== Phase 5: 端粒约束路径覆盖 ======
         paths = self.path_cover()
+        self._cached_paths = paths  # 缓存给 to_ancestral_graph 复用
         all_hogs = self.all_hogs()
         covered = set()
         for p in paths:

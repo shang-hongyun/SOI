@@ -1901,9 +1901,12 @@ class ColoredGraph:
                      len(self._child_chrom_counts))
 
         # ====== Phase 2: 单基因 indel/loss/gain ======
+        n0, e0 = self.node_count(), self.edge_count()
         self.resolve_indels(outgroups)
-        logger.info("  [colored] Phase 2 (indels): %d nodes, %d edges, %d events",
-                     self.node_count(), self.edge_count(), len(self.events))
+        n1, e1 = self.node_count(), self.edge_count()
+        logger.info("  [colored] Phase 2 (indels): %d events, nodes %d→%d (-%d), edges %d→%d (-%d)",
+                     len(self.events) - n_events_before,
+                     n0, n1, n0 - n1, e0, e1, e0 - e1)
         try:
             self._postcondition_no_cross_edges("Phase 2")
         except RuntimeError as e:
@@ -1928,16 +1931,24 @@ class ColoredGraph:
             logger.info("  [colored] Phase 4b (unidir_trans): %d events", n_ut)
 
         # ====== Phase 4c-4e: 块级结构重排 (inversion, RT) ======
+        n_before_struct = len(self.events)
+        n2, e2 = self.node_count(), self.edge_count()
         n_struct = self._resolve_block_structural_events(
             outgroup_adjacency=outgroup_adjacency)
-        if n_struct:
-            logger.info("  [colored] Phase 4c-4e (structural): %d events", n_struct)
+        n3, e3 = self.node_count(), self.edge_count()
+        logger.info("  [colored] Phase 4c-4e (structural): %d events, nodes %d→%d (-%d), edges %d→%d (-%d)",
+                     len(self.events) - n_before_struct,
+                     n2, n3, n2 - n3, e2, e3, e2 - e3)
 
         # ====== Phase 4f: 块级桥接 (EEJ/NCF/fission) ======
+        n_before_bridge = len(self.events)
+        n4, e4 = self.node_count(), self.edge_count()
         n_bridge = self._resolve_block_bridge_events(
             outgroup_adjacency=outgroup_adjacency)
-        if n_bridge:
-            logger.info("  [colored] Phase 4f (bridge): %d events", n_bridge)
+        n5, e5 = self.node_count(), self.edge_count()
+        logger.info("  [colored] Phase 4f (bridge): %d events, nodes %d→%d (-%d), edges %d→%d (-%d)",
+                     len(self.events) - n_before_bridge,
+                     n4, n5, n4 - n5, e4, e5, e4 - e5)
         try:
             self._postcondition_no_bridge_edges("Phase 4f")
         except RuntimeError as e:

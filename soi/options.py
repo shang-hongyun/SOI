@@ -213,6 +213,14 @@ def func_rak(**kargs):
 	akr = AKR(**kargs)
 	akr.run()
 
+def args_rakeval(parser):
+	from .eval_ak import add_eval_args
+	add_eval_args(parser)
+
+def func_rakeval(**kargs):
+	from .eval_ak import eval_main
+	eval_main(**kargs)
+
 def args_cluster(parser):
 	parser.add_argument('-s', '-synteny', required=True,  type=str,  nargs='*',
 						dest='collinearities',  metavar='FILE',
@@ -443,6 +451,7 @@ CMD_GROUPS = OrderedDict([
 	('Karyotype Evolution', [
 		('rak', 'Reconstruct ancestral karyotypes based on HOGs and telomere-centric model. [experimental]'),
 		('sim', 'Simulate chromosome rearrangement evolution.'),
+		('rakeval', 'Evaluate karyotype reconstruction against simulation truth. [experimental]'),
 	]),
 ])
 
@@ -455,6 +464,7 @@ _ARGS_FN = {
 	'prune': args_prune,
 	'phylo': args_phylo, 'stats': args_stats,
 	'rak': args_rak, 'sim': args_sim,
+	'rakeval': args_rakeval,
 }
 
 
@@ -495,6 +505,7 @@ FUNC = {
 	'detandem': func_detandem,
 	'rak': func_rak,
 	'sim': func_sim,
+	'rakeval': func_rakeval,
 	'ksplot': func_ksplot,
 	'evaluate': func_evaluate,
 	'prune': func_prune,

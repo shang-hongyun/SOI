@@ -673,24 +673,8 @@ __all__ = [
 #  CLI entry point
 # ===========================================================================
 
-def main():
-    """Command-line entry: run full evaluation and print summary.
-
-    Usage:
-        python3 -m soi.eval_ak \\
-            --truth events.tsv \\
-            --detected AKR.events.tsv \\
-            --tree species_tree.nwk \\
-            --karyotype ancestors_karyotypes.txt \\
-            --lens-dir . \\
-            [--report eval_report.tsv]
-
-    Or minimal (no chrom counts):
-        python3 -m soi.eval_ak --truth events.tsv --detected AKR.events.tsv --tree species_tree.nwk
-    """
-    import argparse
-    parser = argparse.ArgumentParser(
-        description='TAKR v4 Evaluation: compare truth vs detected events')
+def add_eval_args(parser):
+    """Add evaluation arguments to a parser (for soi rakeval subcommand)."""
     parser.add_argument('--truth', required=True, help='Truth events.tsv (simulator output)')
     parser.add_argument('--detected', required=True, help='Detected AKR.events.tsv')
     parser.add_argument('--tree', required=True, help='Species tree .nwk file')
@@ -702,21 +686,28 @@ def main():
                         help='Matching mode: type_only (count), genes (Jaccard), ancestors (HOG-level)')
     parser.add_argument('--detailed', action='store_true',
                         help='Print per-event detailed comparison')
-    args = parser.parse_args()
+    # Adjacency-level evaluation
+    parser.add_argument('--adj-eval', action='store_true',
+                        help='Run adjacency-level evaluation (requires --karyotype and --gene-map)')
+    parser.add_argument('--gene-map', help='gene_ancestor_map.tsv for adjacency evaluation')
+    parser.add_argument('--gfa-dir', help='Directory with AKR.*.anc.gfa for adjacency evaluation')
 
+
+def eval_main(**kargs):
+    """Main evaluation logic (shared by CLI and soi rakeval)."""
     from .takr_events import parse_tree
 
-    tree, parent_of, _ = parse_tree(args.tree)
-    truth = load_events(args.truth, parent_of=parent_of)
-    detected = load_events(args.detected, parent_of=parent_of, source='detected')
+    tree, parent_of, _ = parse_tree(kargs['tree'])
+    truth = load_events(kargs['truth'], parent_of=parent_of)
+    detected = load_events(kargs['detected'], parent_of=parent_of, source='detected')
 
     print("=" * 72)
     print("  TAKR v4 Evaluation")
     print("=" * 72)
 
     # Chromosome counts
-    if args.karyotype:
-        compare_chrom_counts(args.karyotype, lens_dir=args.lens_dir)
+    if kargs.get('karyotype'):
+        compare_chrom_counts(kargs['karyotype'], lens_dir=kargs.get('lens_dir'))
 
     # Event evaluation
     common = set(truth.keys()) & set(detected.keys())
@@ -727,19 +718,33 @@ def main():
     results, gm = evaluate_branches(
         {b: truth[b] for b in common},
         {b: detected[b] for b in common},
-        match_mode=args.match_mode)
+        match_mode=kargs.get('match_mode', 'type_only'))
     print_summary(results, gm)
 
     # Detailed comparison (optional)
-    if args.detailed:
+    if kargs.get('detailed'):
         print("\n" + "=" * 72)
         print("  Detailed Event Comparison")
         print("=" * 72)
         print_event_comparison(truth, detected)
 
+    # Adjacency-level evaluation
+    if kargs.get('adj_eval'):
+        karyo_file = kargs.get('karyotype')
+        gene_map_file = kargs.get('gene_map')
+        gfa_dir = kargs.get('gfa_dir')
+        if karyo_file and gene_map_file:
+            print("=" * 72)
+            adj_results = evaluate_adjacency(
+                karyo_file, gene_map_file,
+                recon_gfa_dir=gfa_dir)
+            print_adjacency_summary(adj_results)
+        else:
+            print("WARNING: --adj-eval requires --karyotype and --gene-map")
+
     # Report file
-    if args.report:
-        generate_report(results, gm, args.report)
+    if kargs.get('report'):
+        generate_report(results, gm, kargs['report'])
 
 
 # ===========================================================================
@@ -936,4 +941,9 @@ def print_adjacency_summary(results: dict):
 
 
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='TAKR v4 Evaluation: compare truth vs detected events')
+    add_eval_args(parser)
+    args = parser.parse_args()
+    eval_main(**vars(args))

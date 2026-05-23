@@ -1896,8 +1896,11 @@ class ColoredGraph:
 
         n_events_before = len(self.events)
 
+        # Phase 1 dedup 在 orchestrator 中 add_child 前完成
+        logger.info("  [colored] Phase 1 (dedup): done in orchestrator, %d children",
+                     len(self._child_chrom_counts))
+
         # ====== Phase 2: 单基因 indel/loss/gain ======
-        # (Phase 1 dedup 在 orchestrator 中 add_child 前完成)
         self.resolve_indels(outgroups)
         logger.info("  [colored] Phase 2 (indels): %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
@@ -2003,7 +2006,15 @@ class ColoredGraph:
         if len(set(values)) > 1:
             logger.error("  [chrom] INCONSISTENT ancestor chroms: %s", inferred_ancestor_chroms)
         else:
-            logger.info("  [chrom] consistent: ancestor has %d chromosomes", values[0])
+            inferred = values[0]
+            logger.info("  [chrom] consistent: ancestor inferred %d chromosomes", inferred)
+            # 对比 path_cover 实际结果
+            if inferred != n_chrom:
+                logger.error("  [chrom] MISMATCH: inferred=%d, actual path_cover=%d",
+                             inferred, n_chrom)
+            else:
+                logger.info("  [chrom] OK: inferred=%d == path_cover=%d",
+                            inferred, n_chrom)
 
         return self.events
 

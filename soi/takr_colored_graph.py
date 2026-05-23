@@ -1567,13 +1567,21 @@ class ColoredGraph:
             for b in comp:
                 block_to_comp[b] = ci
 
-        # 共识端粒块：包含共识端粒 HOG 的块
-        cons_tels = self.consensus_telomeres(min_children=2)
+        # 共识端粒块：包含端粒 HOG 的块 (min_children=1 更宽松)
+        cons_tels = self.consensus_telomeres(min_children=1)
         telomere_blocks = set()
         for hog in cons_tels:
             bid = self._hog_to_block.get(hog)
             if bid:
                 telomere_blocks.add(bid)
+
+        # 共享分量 → 检查是否包含端粒块（真正的染色体，不是碎片）
+        comp_has_telomere = set()
+        for ci, comp in enumerate(components):
+            for b in comp:
+                if b in telomere_blocks:
+                    comp_has_telomere.add(ci)
+                    break
 
         events_found = 0
         for b1, b2, data in list(bg.edges(data=True)):
@@ -1583,8 +1591,8 @@ class ColoredGraph:
             c1 = block_to_comp.get(b1)
             c2 = block_to_comp.get(b2)
             if c1 is not None and c2 is not None and c1 != c2:
-                # 端粒保护：不移除涉及端粒块的边
-                if b1 in telomere_blocks or b2 in telomere_blocks:
+                # 关键验证：两个分量都必须包含端粒块（真正的染色体）
+                if c1 not in comp_has_telomere or c2 not in comp_has_telomere:
                     continue
                 # 块级桥接
                 color = next(iter(colors))
@@ -1622,17 +1630,27 @@ class ColoredGraph:
                     etype = 'bridge_unclassified'
                     suffix = " (no outgroup, root node)"
 
+                # 确定事件发生的分支:
+                # - 唯一边属于 child_id
+                # - fission: 另一个孩子丢失了邻接 → 事件在另一个孩子分支
+                # - fusion (eej/ncf): child_id 获得了邻接 → 事件在 child_id 分支
+                other_children = [c for c in self.children() if c != child_id]
+                if etype == 'fission' and other_children:
+                    event_branch = f"{self.hog_level}-{other_children[0]}"
+                else:
+                    event_branch = f"{self.hog_level}-{child_id}"
+
                 # 展开 HOG
                 involved_hogs = list(self._blocks.get(b1, [])) + list(self._blocks.get(b2, []))
                 involved_hogs = list(set(involved_hogs))
 
-                logger.debug("  [bridge] %s: %s(%d HOGs,comp%d) <-> %s(%d HOGs,comp%d) via %s",
+                logger.debug("  [bridge] %s: %s(%d HOGs,comp%d) <-> %s(%d HOGs,comp%d) via %s → branch=%s",
                             etype, b1, len(self._blocks.get(b1, [])), c1,
-                            b2, len(self._blocks.get(b2, [])), c2, child_id)
+                            b2, len(self._blocks.get(b2, [])), c2, child_id, event_branch)
 
                 self.events.append(TAKREvent(
                     event_type=etype,
-                    branch=f"{self.hog_level}-{child_id}",
+                    branch=event_branch,
                     genes_involved=involved_hogs,
                     desc="{} block-bridge: {} + {}{}".format(
                         etype, b1, b2, suffix),
@@ -1688,14 +1706,23 @@ class ColoredGraph:
 
         # Check each unique edge for bridge pattern
         cons_tels = self.consensus_telomeres(min_children=2)
+
+        # 共享分量 → 检查是否包含端粒 HOG（真正的染色体）
+        comp_has_telomere = set()
+        for ci, comp in enumerate(components):
+            for h in comp:
+                if h in cons_tels:
+                    comp_has_telomere.add(ci)
+                    break
+
         for h1, h2, data in list(self._graph.edges(data=True)):
             if len(data['colors']) != 1:
                 continue  # not a unique edge
             c1 = hog_to_comp.get(h1)
             c2 = hog_to_comp.get(h2)
             if c1 is not None and c2 is not None and c1 != c2:
-                # 端粒保护：不移除涉及共识端粒 HOG 的边
-                if h1 in cons_tels or h2 in cons_tels:
+                # 关键验证：两个分量都必须包含端粒 HOG
+                if c1 not in comp_has_telomere or c2 not in comp_has_telomere:
                     continue
                 # Bridge: connects two different shared components
                 color = next(iter(data['colors']))
@@ -1738,9 +1765,16 @@ class ColoredGraph:
                     etype = 'bridge_unclassified'
                     branch_suffix = " (no outgroup, root node)"
 
+                # 确定事件发生的分支
+                other_children = [c for c in self.children() if c != child_id]
+                if etype == 'fission' and other_children:
+                    event_branch = f"{self.hog_level}-{other_children[0]}"
+                else:
+                    event_branch = f"{self.hog_level}-{child_id}"
+
                 self.events.append(TAKREvent(
                     event_type=etype,
-                    branch=f"{self.hog_level}-{child_id}",
+                    branch=event_branch,
                     genes_involved=[h1, h2],
                     desc=f"{etype} bridge: comp{c1} ({comp1_size} HOGs)"
                          f" + comp{c2} ({comp2_size} HOGs)"

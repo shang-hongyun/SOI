@@ -1613,59 +1613,93 @@ class ColoredGraph:
     def resolve_all_events(self, outgroups: Dict = None,
                            outgroup_adjacency: Set = None,
                            min_hogs: int = 3) -> List[TAKREvent]:
-        """按优先级解决所有冲突。
+        """Telomere-centric event resolution pipeline.
 
-        Pipeline:
-        1. 共线性块压缩 (synteny blocks from shared edges)
-        2. 块级结构重排 (block-graph cycle detection + classification)
-        3. 块级桥接检测 (block-level bridge = EEJ/NCF/fission)
-        4. HOG 级剩余结构重排 (remaining cycles after block resolution)
-        5. HOG 级桥接检测 (remaining bridge edges)
-        6. HOG 级 indel/loss (gene-level spanning edges)
-        7. 路径覆盖 (telomere walk)
+        Pipeline (reordered: HOG-level first, then block-level):
+        1. HOG 级结构重排 (inversion/RT cycle detection)
+        2. 共线性块压缩 (synteny blocks from shared edges)
+        3. 块级结构重排 (block-graph cycle + breakpoint graph)
+        4. 块级桥接检测 (EEJ/NCF/fission)
+        5. indel/loss (gene-level spanning edges)
+        6. 路径覆盖 (telomere walk)
 
-        Returns: 所有检测到的事件
+        事件类型图结构说明:
+        ─────────────────────────────────────────────────────────────
+
+        【Inversion (倒位)】
+        邻接图: 4-cycle A-B-D-C-A, 颜色交替 (Sp_1, Sp_4, Sp_1, Sp_4)
+          解开前: A-B (Sp_4), B-D (Sp_1), D-C (Sp_4), C-A (Sp_1)
+          解开后: A-B (shared), B-C (shared), C-D (shared), D-... (shared)
+          操作: 移除 Sp_1 的边 (B-D, C-A), 保留 Sp_4 的边 (A-B, D-C)
+          端粒信号: 保留与端粒 HOG 相连的颜色
+
+        【Reciprocal Translocation (相互易位)】
+        邻接图: 4-cycle, 但涉及不同染色体 (chrom_idx 不一致)
+          解开前: A-B (Sp_4,chr1), B-G (Sp_1,chr2), G-H (Sp_4,chr2), H-A (Sp_1,chr1)
+          解开后: A-B (shared,chr1), B-C (shared,chr1), ... G-H (shared,chr2), ...
+          操作: 移除跨染色体的边, 保留同染色体的边
+          断点图: 4-cycle 交替色 → 确认为 RT
+
+        【EEJ (端粒融合)】
+        邻接图: 唯一边连接两个共享分量, 两个分量都有端粒
+          解开前: 分量1(含端粒T1) -- 唯一边 -- 分量2(含端粒T2)
+          解开后: 分量1 + 分量2 合并为一条染色体
+          操作: 保留唯一边 (融合是祖先态)
+          外类群: 外类群有该邻接 → 祖先态 → 保留
+
+        【NCF (非相互染色体重排)】
+        邻接图: 唯一边连接大分量和小分量
+          解开前: 大分量 -- 唯一边 -- 小分量(≤10 HOGs)
+          解开后: 小分量插入大分量
+          操作: 保留唯一边 (插入是祖先态)
+
+        【Fission (裂变)】
+        邻接图: 唯一边连接两个共享分量, 外类群有该邻接
+          解开前: 分量1 -- 唯一边 -- 分量2 (外类群有该邻接)
+          解开后: 分量1 和 分量2 分离为两条染色体
+          操作: 移除唯一边 (裂变是衍生态)
+          外类群: 外类群有该邻接 → 祖先有连接 → 当前丢失 → fission
+
+        【Gene indel (基因插入/缺失)】
+        邻接图: 3-cycle (不可能在正常染色体中)
+          操作: 移除环中所有边
+
+        ─────────────────────────────────────────────────────────────
         """
         logger.info("  [colored] resolve_all_events for %s: %d nodes, %d edges",
                      self.hog_level, self.node_count(), self.edge_count())
 
-        # ====== Phase 1: 共线性块压缩 ======
+        # ====== Phase 1: HOG 级结构重排 ======
+        # 在块压缩前处理，保留 HOG 级精确信息
+        self.resolve_structural_events(outgroup_adjacency=outgroup_adjacency)
+        logger.info("  [colored] after hog-structural: %d nodes, %d edges, %d events",
+                     self.node_count(), self.edge_count(), len(self.events))
+
+        # ====== Phase 2: 共线性块压缩 ======
         self._build_synteny_blocks()
         self._compress_to_block_level()
         logger.info("  [colored] blocks: %d (%.1f HOG/block avg)",
                      len(self._blocks),
                      self.node_count() / max(len(self._blocks), 1))
 
-        # ====== Phase 2: 块级结构重排 ======
+        # ====== Phase 3: 块级结构重排 (邻接图 + 断点图) ======
         n_block_struct = self._resolve_block_structural_events(
             outgroup_adjacency=outgroup_adjacency)
         if n_block_struct:
             logger.info("  [colored] block-structural: %d events", n_block_struct)
 
-        # ====== Phase 3: 块级桥接 ======
+        # ====== Phase 4: 块级桥接 (EEJ/NCF/fission) ======
         n_block_bridge = self._resolve_block_bridge_events(
             outgroup_adjacency=outgroup_adjacency)
         if n_block_bridge:
             logger.info("  [colored] block-bridge: %d events", n_block_bridge)
 
-        # ====== Phase 4: HOG 级结构重排（残差） ======
-        self.resolve_structural_events(outgroup_adjacency=outgroup_adjacency)
-        logger.info("  [colored] after hog-structural: %d nodes, %d edges, %d events",
-                     self.node_count(), self.edge_count(), len(self.events))
-
-        # ====== Phase 5: HOG 级桥接（残差） ======
-        n_before_bridge = len(self.events)
-        self.resolve_bridge_events(outgroup_adjacency=outgroup_adjacency)
-        n_bridges = len(self.events) - n_before_bridge
-        if n_bridges:
-            logger.info("  [colored] hog-bridge: %d events", n_bridges)
-
-        # ====== Phase 6: indel/loss (基因级差异) ======
+        # ====== Phase 5: indel/loss ======
         self.resolve_indels(outgroups)
         logger.info("  [colored] after indels: %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
 
-        # 过滤小事件 (min_hogs) — 跳过桥接事件（EEJ/NCF/fission 都是小事件）
+        # 过滤小事件 (min_hogs)
         kept = []
         for e in self.events:
             if e.event_type in ('eej', 'ncf', 'fission', 'bridge_unclassified',
@@ -1676,7 +1710,6 @@ class ColoredGraph:
             elif len(e.genes_involved) >= min_hogs:
                 kept.append(e)
         self.events = kept
-        # 按类型统计
         from collections import Counter
         type_counts = Counter(e.event_type for e in self.events)
         type_str = ', '.join(f"{t}={c}" for t, c in sorted(type_counts.items()))

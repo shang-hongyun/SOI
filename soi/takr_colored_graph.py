@@ -679,7 +679,7 @@ class ColoredGraph:
                 # 记录事件
                 event = TAKREvent(
                     event_type=etype,
-                    branch=self.hog_level,
+                    branch=f"{self.hog_level}-{derived_child_id}" if derived_child_id else self.hog_level,
                     genes_involved=list(cycle),
                     desc=f"{etype}: {len(cycle)} HOG cycle resolved (iter {iteration})",
                     support=1,
@@ -1434,7 +1434,7 @@ class ColoredGraph:
 
                 event = TAKREvent(
                     event_type='inversion',
-                    branch=self.hog_level,
+                    branch=f"{self.hog_level}-{derived_cid}" if derived_cid else self.hog_level,
                     genes_involved=involved_hogs,
                     desc="inversion (block-level): {} blocks, {} HOGs".format(
                         len(blocks_set), len(involved_hogs)),
@@ -1516,7 +1516,7 @@ class ColoredGraph:
 
                 event = TAKREvent(
                     event_type=etype,
-                    branch=self.hog_level,
+                    branch=f"{self.hog_level}-{derived_cid2}" if derived_cid2 else self.hog_level,
                     genes_involved=involved_hogs2,
                     desc="{} (block-level): {} blocks, {} HOGs".format(
                         etype, len(cycle), len(involved_hogs2)),
@@ -1632,7 +1632,7 @@ class ColoredGraph:
 
                 self.events.append(TAKREvent(
                     event_type=etype,
-                    branch=self.hog_level,
+                    branch=f"{self.hog_level}-{child_id}",
                     genes_involved=involved_hogs,
                     desc="{} block-bridge: {} + {}{}".format(
                         etype, b1, b2, suffix),
@@ -1740,7 +1740,7 @@ class ColoredGraph:
 
                 self.events.append(TAKREvent(
                     event_type=etype,
-                    branch=self.hog_level,
+                    branch=f"{self.hog_level}-{child_id}",
                     genes_involved=[h1, h2],
                     desc=f"{etype} bridge: comp{c1} ({comp1_size} HOGs)"
                          f" + comp{c2} ({comp2_size} HOGs)"
@@ -1894,8 +1894,6 @@ class ColoredGraph:
         logger.info("  [colored] resolve_all_events for %s: %d nodes, %d edges",
                      self.hog_level, self.node_count(), self.edge_count())
 
-        # 记录初始染色体数（来自孩子的染色体数之和）
-        initial_chroms = sum(self._child_chrom_counts.values())
         n_events_before = len(self.events)
 
         # ====== Phase 2: 单基因 indel/loss/gain ======
@@ -1974,29 +1972,38 @@ class ColoredGraph:
         logger.info("  [colored] done: %d events %s (after min_hogs=%d), %d chroms",
                      len(self.events), type_str, min_hogs, n_chrom)
 
-        # === 染色体数一致性检查 ===
-        # 只有 bridge 事件改变染色体数:
-        #   eej/ncf: -1 (融合), fission: +1 (断裂), bridge_unclassified: ±1
+        # === 染色体数一致性检查 (按孩子分支) ===
+        # 每个孩子独立推算祖先染色体数:
+        #   祖先_chroms = child_chroms - fissions + fusions
+        # 所有孩子推算结果应一致
         new_events = self.events[n_events_before:]
-        n_fusion = sum(1 for e in new_events if e.event_type in ('eej', 'ncf'))
-        n_fission = sum(1 for e in new_events if e.event_type == 'fission')
-        n_bridge_unc = sum(1 for e in new_events if e.event_type == 'bridge_unclassified')
-        expected_chroms = initial_chroms - n_fusion + n_fission
-        # bridge_unclassified 可能是 +1 或 -1，取绝对值范围
-        expected_min = initial_chroms - n_fusion - n_bridge_unc + n_fission
-        expected_max = initial_chroms - n_fusion + n_bridge_unc + n_fission
+        # 按分支分组事件
+        from collections import defaultdict
+        branch_events = defaultdict(lambda: {'fission': 0, 'fusion': 0})
+        for e in new_events:
+            # branch 格式: "N1-Sp_1"
+            branch = e.branch
+            if e.event_type == 'fission':
+                branch_events[branch]['fission'] += 1
+            elif e.event_type in ('eej', 'ncf'):
+                branch_events[branch]['fusion'] += 1
 
-        if not (expected_min <= n_chrom <= expected_max):
-            logger.error(
-                "  [colored] CHROM COUNT MISMATCH for %s: "
-                "initial=%d, fusion=%d, fission=%d, bridge_unc=%d, "
-                "expected=[%d,%d], actual=%d",
-                self.hog_level, initial_chroms, n_fusion, n_fission,
-                n_bridge_unc, expected_min, expected_max, n_chrom)
+        inferred_ancestor_chroms = {}
+        for cid, child_chroms in self._child_chrom_counts.items():
+            branch_key = f"{self.hog_level}-{cid}"
+            ev = branch_events.get(branch_key, {'fission': 0, 'fusion': 0})
+            # 祖先 = 孩子 - fissions + fusions
+            anc_chroms = child_chroms - ev['fission'] + ev['fusion']
+            inferred_ancestor_chroms[cid] = anc_chroms
+            logger.info("  [chrom] %s: %d chroms, fission=%d, fusion=%d → ancestor=%d",
+                        cid, child_chroms, ev['fission'], ev['fusion'], anc_chroms)
+
+        # 检查所有孩子推算的祖先染色体数是否一致
+        values = list(inferred_ancestor_chroms.values())
+        if len(set(values)) > 1:
+            logger.error("  [chrom] INCONSISTENT ancestor chroms: %s", inferred_ancestor_chroms)
         else:
-            logger.info(
-                "  [colored] chrom check OK: %d - %d + %d = %d (actual=%d)",
-                initial_chroms, n_fusion, n_fission, expected_chroms, n_chrom)
+            logger.info("  [chrom] consistent: ancestor has %d chromosomes", values[0])
 
         return self.events
 

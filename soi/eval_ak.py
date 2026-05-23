@@ -66,7 +66,8 @@ def load_events(tsv_path: str, parent_of: Optional[Dict[str, str]] = None,
             fmt = 'unified'
 
         for row in reader:
-            row = {k.strip().lower(): v.strip() for k, v in row.items()}
+            row = {k.strip().lower(): (v.strip() if v else '') for k, v in row.items()}
+            ancestors = ''  # default, populated in unified format
 
             if fmt == 'old_sim':
                 # Old simulator format: node, event_type, details (Python dict string)
@@ -101,16 +102,20 @@ def load_events(tsv_path: str, parent_of: Optional[Dict[str, str]] = None,
                     support = 1
 
             else:
-                # Unified format: branch, event_type, [genes], [chroms], desc, support
+                # Unified format: branch, event_type, [genes], [ancestors], [chroms], desc, support
                 branch = row.get('branch', '')
                 event_type = row.get('event_type', '')
                 genes = row.get('genes', '')
+                ancestors = row.get('ancestors', '')
                 chroms = row.get('chroms', '')
                 desc = row.get('desc', '')
                 try:
                     support = int(row.get('support', 1))
                 except (ValueError, TypeError):
                     support = 1
+                # If branch is a node name (no '-'), infer from parent_of
+                if parent_of and '-' not in branch and branch in parent_of:
+                    branch = _infer_branch(branch, parent_of)
 
             # Skip summary events if any slipped through
             if event_type in ('rearrangements',):
@@ -129,6 +134,7 @@ def load_events(tsv_path: str, parent_of: Optional[Dict[str, str]] = None,
                 'branch': branch,
                 'event_type': event_type,
                 'genes': genes,
+                'ancestors': ancestors,
                 'chroms': chroms,
                 'desc': desc,
                 'support': support,
@@ -156,15 +162,18 @@ def match_events_branch(
 ) -> dict:
     """Match detected events to truth events within a single branch.
 
-    Two modes:
+    Three modes:
     - 'genes' (default): Greedy matching by event_type + highest gene Jaccard
     - 'type_only': Count-based matching, ignore gene IDs (for cross-namespace)
+    - 'ancestors': Greedy matching by event_type + ancestor ID Jaccard
+      (works when truth has 'ancestors' column from simulator and detected
+       has 'genes' column containing HOG IDs that map to ancestors)
 
     Args:
         truth_events: List of truth event dicts for one branch
         detected_events: List of detected event dicts for one branch
-        min_jaccard: Minimum Jaccard similarity for gene set match
-        match_mode: 'genes' or 'type_only'
+        min_jaccard: Minimum Jaccard similarity for gene/ancestor set match
+        match_mode: 'genes', 'type_only', or 'ancestors'
 
     Returns:
         dict with keys: tp, fp, fn, matched, false_positives, false_negatives
@@ -194,6 +203,29 @@ def match_events_branch(
                 false_negatives.append(t_list[i])
             for i in range(tp_count, len(d_list)):
                 false_positives.append(d_list[i])
+        elif match_mode == 'ancestors':
+            # Ancestor ID Jaccard matching
+            # Truth events have 'ancestors' field; detected events use 'genes' (HOG IDs)
+            # We match by comparing ancestor ID sets
+            used_t, used_d = set(), set()
+            for di, d in enumerate(d_list):
+                best_j, best_ti = 0, -1
+                for ti, t in enumerate(t_list):
+                    if ti in used_t:
+                        continue
+                    j = _ancestors_jaccard(t, d)
+                    if j > best_j:
+                        best_j, best_ti = j, ti
+                if best_j >= min_jaccard:
+                    used_t.add(best_ti)
+                    used_d.add(di)
+                    matched_pairs.append((t_list[best_ti], d))
+            for ti, t in enumerate(t_list):
+                if ti not in used_t:
+                    false_negatives.append(t)
+            for di, d in enumerate(d_list):
+                if di not in used_d:
+                    false_positives.append(d)
         else:
             # Gene Jaccard matching
             used_t, used_d = set(), set()
@@ -239,6 +271,45 @@ def _genes_jaccard(genes_a: str, genes_b: str) -> float:
         return 1.0
     intersection = set_a & set_b
     union = set_a | set_b
+    return len(intersection) / len(union) if union else 0.0
+
+
+def _ancestors_jaccard(truth_event: dict, detected_event: dict) -> float:
+    """Jaccard similarity using ancestor IDs.
+
+    For truth events: use the 'ancestors' field (comma-separated ancestor IDs).
+    For detected events: extract ancestor-level identifiers from 'genes' field.
+    Detected genes are HOG IDs like 'SOG79.N1.hog0' — the ancestor ID is
+    the OG part ('SOG79') which corresponds to the simulator's ancestor group.
+    """
+    # Truth: use ancestors field directly
+    truth_ancs = truth_event.get('ancestors', '')
+    if not truth_ancs:
+        # Fallback: use genes field
+        truth_ancs = truth_event.get('genes', '')
+    set_t = set(truth_ancs.split(',')) if truth_ancs else set()
+    set_t = {g.strip() for g in set_t if g.strip()}
+
+    # Detected: extract ancestor-level IDs from HOG IDs
+    det_genes = detected_event.get('genes', '')
+    set_d = set()
+    if det_genes:
+        for g in det_genes.split(','):
+            g = g.strip()
+            if not g:
+                continue
+            # HOG IDs are like 'SOG79.N1.hog0' → ancestor group = 'SOG79'
+            # or could be plain ancestor IDs
+            if '.' in g:
+                og_part = g.split('.')[0]
+                set_d.add(og_part)
+            else:
+                set_d.add(g)
+
+    if not set_t and not set_d:
+        return 1.0
+    intersection = set_t & set_d
+    union = set_t | set_d
     return len(intersection) / len(union) if union else 0.0
 
 
@@ -626,8 +697,9 @@ def main():
     parser.add_argument('--karyotype', help='ancestors_karyotypes.txt (for chrom counts)')
     parser.add_argument('--lens-dir', help='Directory with AKR.*.lens files')
     parser.add_argument('--report', help='Output path for eval report TSV')
-    parser.add_argument('--match-mode', choices=['type_only', 'genes'], default='type_only',
-                        help='Matching mode (default: type_only)')
+    parser.add_argument('--match-mode', choices=['type_only', 'genes', 'ancestors'],
+                        default='type_only',
+                        help='Matching mode: type_only (count), genes (Jaccard), ancestors (HOG-level)')
     parser.add_argument('--detailed', action='store_true',
                         help='Print per-event detailed comparison')
     args = parser.parse_args()
@@ -668,6 +740,199 @@ def main():
     # Report file
     if args.report:
         generate_report(results, gm, args.report)
+
+
+# ===========================================================================
+#  Adjacency-level evaluation (gene_ancestor_map based)
+# ===========================================================================
+
+def load_gene_ancestor_map(tsv_path: str) -> Dict[str, str]:
+    """Load gene_ancestor_map.tsv, return {gene_id: ancestor_id}.
+
+    For WGD copies (e.g. g2.1), maps to the original ancestor (g2).
+    For each (gene, species) pair, only the latest entry is kept.
+    """
+    mapping = {}
+    if not os.path.exists(tsv_path):
+        return mapping
+    with open(tsv_path) as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        for row in reader:
+            gene = row.get('gene', '').strip()
+            ancestor = row.get('ancestor', '').strip()
+            if gene and ancestor:
+                mapping[gene] = ancestor
+    return mapping
+
+
+def load_karyotype_adjacencies(tsv_path: str) -> Dict[str, set]:
+    """Load ancestors_karyotypes.txt, return {node: set_of_adjacent_gene_pairs}.
+
+    Each adjacency is a frozenset({gene_a, gene_b}) for two consecutive genes
+    on the same chromosome.  Using froset makes order irrelevant.
+    """
+    adjacencies = {}  # node -> set of frozenset pairs
+    if not os.path.exists(tsv_path):
+        return adjacencies
+
+    current_node = None
+    with open(tsv_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('>'):
+                current_node = line[1:].split('\t')[0]
+                adjacencies[current_node] = set()
+                continue
+            if current_node is None:
+                continue
+            parts = line.split('\t')
+            if len(parts) < 2:
+                continue
+            genes_str = parts[1]
+            genes = genes_str.split()
+            for i in range(len(genes) - 1):
+                g1 = genes[i].lstrip('-')
+                g2 = genes[i + 1].lstrip('-')
+                adjacencies[current_node].add(frozenset({g1, g2}))
+    return adjacencies
+
+
+def gene_adjacencies_to_ancestor(
+    gene_adj: set,
+    gene_to_anc: Dict[str, str],
+) -> set:
+    """Convert gene-level adjacencies to ancestor-level adjacencies.
+
+    Maps each gene to its ancestor ID, then creates ancestor adjacency pairs.
+    Adjacencies where both genes map to the same ancestor (tandem dup) are dropped.
+    """
+    anc_adj = set()
+    for pair in gene_adj:
+        g1, g2 = tuple(pair)
+        a1 = gene_to_anc.get(g1, g1)
+        a2 = gene_to_anc.get(g2, g2)
+        if a1 == a2:
+            continue  # same ancestor — tandem dup or fractionation artifact
+        anc_adj.add(frozenset({a1, a2}))
+    return anc_adj
+
+
+def load_recon_adjacencies_from_gfa(gfa_dir: str, prefix: str = 'AKR') -> Dict[str, set]:
+    """Load reconstructed adjacencies from AKR output GFA files.
+
+    Looks for files like AKR.N0.anc.gfa, AKR.N1.anc.gfa etc.
+    Returns {node: set of frozenset HOG-ID pairs}.
+    """
+    import glob
+    adjacencies = {}
+    pattern = os.path.join(gfa_dir, f'{prefix}.*.anc.gfa')
+    for gfa_path in sorted(glob.glob(pattern)):
+        fname = os.path.basename(gfa_path)
+        # AKR.N0.anc.gfa -> N0
+        node = fname.replace(f'{prefix}.', '').replace('.anc.gfa', '')
+        adj = set()
+        with open(gfa_path) as f:
+            for line in f:
+                if line.startswith('L'):
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 3:
+                        h1, h2 = parts[1], parts[3]
+                        adj.add(frozenset({h1, h2}))
+        adjacencies[node] = adj
+    return adjacencies
+
+
+def evaluate_adjacency(
+    truth_karyo_file: str,
+    gene_ancestor_map_file: str,
+    recon_gfa_dir: str = None,
+    recon_adjacencies: Dict[str, set] = None,
+    recon_prefix: str = 'AKR',
+) -> dict:
+    """Evaluate reconstruction by comparing ancestor-level adjacencies.
+
+    Pipeline:
+    1. Load truth karyotype (gene-level adjacencies per node)
+    2. Map gene adjacencies to ancestor adjacencies using gene_ancestor_map
+    3. Load reconstructed adjacencies (HOG-level, from GFA files or dict)
+    4. Compare ancestor adjacency sets per node → precision/recall/F1
+
+    Args:
+        truth_karyo_file: ancestors_karyotypes.txt from simulator
+        gene_ancestor_map_file: gene_ancestor_map.tsv from simulator
+        recon_gfa_dir: Directory with AKR.*.anc.gfa files
+        recon_adjacencies: Pre-loaded {node: set of frozenset pairs} (HOG-level)
+        recon_prefix: File prefix for GFA files (default 'AKR')
+
+    Returns:
+        {node: {TP, FP, FN, Precision, Recall, F1}, 'global': {...}}
+    """
+    # 1. Load truth
+    truth_gene_adj = load_karyotype_adjacencies(truth_karyo_file)
+    gene_to_anc = load_gene_ancestor_map(gene_ancestor_map_file)
+
+    # 2. Convert truth to ancestor level
+    truth_anc_adj = {}
+    for node, adj in truth_gene_adj.items():
+        truth_anc_adj[node] = gene_adjacencies_to_ancestor(adj, gene_to_anc)
+
+    # 3. Load reconstructed adjacencies
+    if recon_adjacencies is None:
+        recon_adjacencies = load_recon_adjacencies_from_gfa(
+            recon_gfa_dir, prefix=recon_prefix)
+
+    # 4. Compare per node
+    results = {}
+    total_tp, total_fp, total_fn = 0, 0, 0
+
+    all_nodes = sorted(set(list(truth_anc_adj.keys()) +
+                           list(recon_adjacencies.keys())))
+
+    for node in all_nodes:
+        t_adj = truth_anc_adj.get(node, set())
+        r_adj = recon_adjacencies.get(node, set())
+
+        tp = len(t_adj & r_adj)
+        fp = len(r_adj - t_adj)
+        fn = len(t_adj - r_adj)
+
+        m = calculate_metrics(tp, fp, fn)
+        results[node] = {
+            'truth_adj': len(t_adj),
+            'recon_adj': len(r_adj),
+            **m,
+        }
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
+
+    results['global'] = calculate_metrics(total_tp, total_fp, total_fn)
+    return results
+
+
+def print_adjacency_summary(results: dict):
+    """Print adjacency-level evaluation summary."""
+    g = results.get('global', {})
+    print()
+    print("Adjacency-Level Evaluation (ancestor HOG adjacencies)")
+    print(f"  Micro F1: {g.get('F1', 0):.3f}  "
+          f"(TP={g.get('TP', 0)}  FP={g.get('FP', 0)}  FN={g.get('FN', 0)})")
+    print(f"  Precision: {g.get('Precision', 0):.3f}  "
+          f"Recall: {g.get('Recall', 0):.3f}")
+    print()
+    print(f"  {'Node':<15} {'Truth':>6} {'Recon':>6} {'TP':>5} {'FP':>5} "
+          f"{'FN':>5} {'Prec':>7} {'Rec':>7} {'F1':>7}")
+    print(f"  {'-' * 68}")
+    for node in sorted(results.keys()):
+        if node == 'global':
+            continue
+        r = results[node]
+        print(f"  {node:<15} {r['truth_adj']:>6} {r['recon_adj']:>6} "
+              f"{r['TP']:>5} {r['FP']:>5} {r['FN']:>5} "
+              f"{r['Precision']:>7.3f} {r['Recall']:>7.3f} {r['F1']:>7.3f}")
+    print()
 
 
 if __name__ == '__main__':

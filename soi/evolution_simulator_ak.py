@@ -329,8 +329,11 @@ class EvolutionSimulator:
             name = node.name
             bl = node.dist if node.dist else 0.0
 
-            # WGD
+            # WGD — save pre-WGD snapshot before applying
             if name in ploidy_map and ploidy_map[name] > 1:
+                pre_wgd_name = "{}_preWGD".format(name)
+                self.all_node_karyotypes[pre_wgd_name] = copy.deepcopy(karyo)
+                self.centromeres[pre_wgd_name] = copy.deepcopy(centros)
                 factor = ploidy_map[name]
                 print("  Applying {}x genome duplication at {} (from tree annotation)".format(
                     factor, name))
@@ -338,6 +341,10 @@ class EvolutionSimulator:
             elif self.wgd_rate > 0 and bl > 0:
                 n_wgd = poisson_sample(self.rng, self.wgd_rate * bl)
                 for _ in range(n_wgd):
+                    pre_wgd_name = "{}_preWGD".format(name)
+                    if pre_wgd_name not in self.all_node_karyotypes:
+                        self.all_node_karyotypes[pre_wgd_name] = copy.deepcopy(karyo)
+                        self.centromeres[pre_wgd_name] = copy.deepcopy(centros)
                     factor = sample_wgd_factor(self.rng)
                     print("  Applying {}x genome duplication at {} (rate-based)".format(
                         factor, name))
@@ -938,6 +945,8 @@ class EvolutionSimulator:
         output_files.append(os.path.join(outdir, "true_hogs.tsv"))
         self._write_ancestor_karyotypes(outdir, tree)
         output_files.append(os.path.join(outdir, "ancestors_karyotypes.txt"))
+        self._write_gene_ancestor_map(outdir, tree)
+        output_files.append(os.path.join(outdir, "gene_ancestor_map.tsv"))
         draw_ancestor_dotplots(
             tree, self.all_node_karyotypes, outdir,
             ancestor_fn=self.tracker.get_ancestor)
@@ -1046,6 +1055,45 @@ class EvolutionSimulator:
                     gene_str = " ".join(
                         ("-" + g if o == "-" else g) for g, o in genes)
                     f.write("{}\t{}\n".format(chrom_id, gene_str))
+            # Write pre-WGD snapshots (not in tree, but in all_node_karyotypes)
+            for name, karyo in sorted(self.all_node_karyotypes.items()):
+                if not name.endswith("_preWGD"):
+                    continue
+                f.write(">{}\t{} chromosomes\n".format(name, len(karyo)))
+                sorted_cids = self._sorted_chr_ids(karyo)
+                for cid in sorted_cids:
+                    chrom_id = "{}|{}".format(name, cid)
+                    genes = karyo[cid]
+                    gene_str = " ".join(
+                        ("-" + g if o == "-" else g) for g, o in genes)
+                    f.write("{}\t{}\n".format(chrom_id, gene_str))
+
+    def _write_gene_ancestor_map(self, outdir, tree):
+        """Write gene → ancestor (HOG) mapping.
+
+        Output: gene_ancestor_map.tsv
+        Columns: gene, species, ancestor, wgd_copies, chromosome
+
+        The 'ancestor' column is the true HOG identifier — genes sharing
+        the same ancestor belong to the same ortholog group (SOG).
+        """
+        path = os.path.join(outdir, "gene_ancestor_map.tsv")
+        with open(path, 'w') as f:
+            f.write("gene\tspecies\tancestor\twgd_copies\tchromosome\n")
+            for node in tree.traverse("preorder"):
+                name = node.name
+                if name not in self.all_node_karyotypes:
+                    continue
+                karyo = self.all_node_karyotypes[name]
+                for cid, genes in karyo.items():
+                    for gid, orient in genes:
+                        anc = self.tracker.get_ancestor(gid)
+                        wgd = self.tracker.gene_wgd_copies.get(gid, {})
+                        wgd_str = ";".join(
+                            "{}:{}".format(k, v) for k, v in sorted(wgd.items())
+                        ) if wgd else ""
+                        f.write("{}\t{}\t{}\t{}\t{}\n".format(
+                            gid, name, anc, wgd_str, cid))
 
     def _write_og(self, outdir, species):
         anc_to_genes = defaultdict(list)
@@ -1121,9 +1169,13 @@ class EvolutionSimulator:
 
     def _write_events(self, outdir, tree, path="events.tsv"):
         """Write events in unified branch-level format.
-        
-        Format: branch, event_type, genes, chroms, desc, support
-        where branch = parent->child identifier.
+
+        Format: branch, event_type, genes, ancestors, chroms, desc, support
+        where branch = parent->child identifier,
+              ancestors = comma-separated ancestor (HOG) IDs for each gene.
+
+        For WGD nodes, an extra row is emitted for the parent→preWGD branch
+        so that the reconstruction's pre-WGD node has a corresponding truth.
         """
         # Build parent_of mapping from tree
         parent_of = {}
@@ -1131,9 +1183,22 @@ class EvolutionSimulator:
             if not node.is_root():
                 parent_of[node.name] = node.up.name
 
+        # Collect WGD nodes for pre-WGD branch emission
+        wgd_nodes = set()
+        for e in self.events:
+            if e['type'] == 'WGD':
+                wgd_nodes.add(e['node'])
+
         evt_path = os.path.join(outdir, path)
         with open(evt_path, 'w') as f:
-            f.write("branch\tevent_type\tgenes\tchroms\tdesc\tsupport\n")
+            f.write("branch\tevent_type\tgenes\tancestors\tchroms\tdesc\tsupport\n")
+            # Emit pre-WGD branch placeholder for each WGD node
+            for wgd_node in sorted(wgd_nodes):
+                parent = parent_of.get(wgd_node, '?')
+                pre_wgd = "{}_preWGD".format(wgd_node)
+                f.write("{}-{}\t{}\t\t\t\tpre-WGD snapshot\n".format(
+                    parent, pre_wgd, "pre_wgd_reference"))
+
             for e in self.events:
                 if e['type'] in ('rearrangements',):
                     continue  # skip summary events
@@ -1146,6 +1211,8 @@ class EvolutionSimulator:
                 etype = canonicalize_event_type(e['type'])
                 # extract fields
                 genes = self._fmt_genes(e)
+                # build ancestor (HOG) string for involved genes
+                ancestors = self._fmt_ancestors(e)
                 chroms = e.get('chroms', e.get('chrom', ''))
                 if isinstance(chroms, list):
                     chroms = ','.join(str(x) for x in chroms)
@@ -1153,8 +1220,8 @@ class EvolutionSimulator:
                 if not desc:
                     desc = "{}: {}".format(etype, chroms)
                 support = e.get('support', 1)
-                f.write("{}\t{}\t{}\t{}\t{}\t{}\n".format(
-                    branch, etype, genes, chroms, desc, support))
+                f.write("{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                    branch, etype, genes, ancestors, chroms, desc, support))
 
     def _fmt_genes(self, e):
         """Extract genes string from event dict."""
@@ -1165,6 +1232,26 @@ class EvolutionSimulator:
                     return ','.join(str(v) for v in vals)
                 return str(vals)
         return ''
+
+    def _fmt_ancestors(self, e):
+        """Map genes in event to their ancestor (HOG) IDs."""
+        genes = e.get('genes') or e.get('gene')
+        if not genes:
+            # fractionation events have 'gene' (singular)
+            gid = e.get('gene')
+            if gid:
+                anc = self.tracker.get_ancestor(gid)
+                return str(anc) if anc else ''
+            return ''
+        if isinstance(genes, list):
+            ancs = []
+            for g in genes:
+                anc = self.tracker.get_ancestor(g)
+                ancs.append(str(anc) if anc else '')
+            return ','.join(ancs)
+        # single gene string
+        anc = self.tracker.get_ancestor(str(genes))
+        return str(anc) if anc else ''
 
     def _write_true_hogs(self, outdir, tree, species):
         tree_copy = tree.copy("deepcopy")

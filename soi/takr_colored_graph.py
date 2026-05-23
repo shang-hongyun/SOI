@@ -1610,8 +1610,10 @@ class ColoredGraph:
                 c1 = block_to_comp.get(b1)
                 c2 = block_to_comp.get(b2)
             if c1 is not None and c2 is not None and c1 != c2:
-                # 验证：至少一个分量包含端粒块
-                if c1 not in comp_has_telomere and c2 not in comp_has_telomere:
+                # 验证：至少一个块包含端粒 HOG
+                b1_has_tel = b1 in telomere_blocks
+                b2_has_tel = b2 in telomere_blocks
+                if not (b1_has_tel or b2_has_tel):
                     continue
                 # 块级桥接
                 color = next(iter(colors))

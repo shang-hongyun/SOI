@@ -448,10 +448,10 @@ CMD_GROUPS = OrderedDict([
 		('phylo', 'Reconstruct gene trees from SOGs.'),
 		('stats', 'Make summary of SOGs for phylogeny.'),
 	]),
-	('Karyotype Evolution', [
+	('Karyotype Evolution [experimental]', [
 		('rak', 'Reconstruct ancestral karyotypes based on HOGs and telomere-centric model. [experimental]'),
 		('sim', 'Simulate chromosome rearrangement evolution.'),
-		('rakeval', 'Evaluate karyotype reconstruction against simulation truth. [experimental]'),
+		('rakeval', 'Evaluate karyotype reconstruction against simulation truth.'),
 	]),
 ])
 

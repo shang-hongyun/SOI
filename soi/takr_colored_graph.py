@@ -628,16 +628,20 @@ class ColoredGraph:
         degree_ends = {n for n, deg in self._graph.degree()
                        if deg == 1 and n in self.all_hogs()}
 
-        # 优先级：共识端粒 > 所有端粒 > 度=1
-        # 起点用共识端粒，终点可以是任意端粒或度=1
-        start_nodes = cons_tels if cons_tels else (all_tels if all_tels else degree_ends)
+        # 选择端粒锚点集：共识端粒 > 度=1 > 所有端粒
+        if cons_tels:
+            anchor_tels = cons_tels
+        elif degree_ends:
+            anchor_tels = degree_ends
+        else:
+            anchor_tels = all_tels
 
-        # 从每个端粒起点出发行走
-        for start in sorted(start_nodes, key=str):
+        # 从每个锚点出发行走
+        for start in sorted(anchor_tels, key=str):
             if start in visited or not self._graph.has_node(start):
                 continue
 
-            path = self._walk_telomere_path(start, visited, all_tels, degree_ends)
+            path = self._walk_telomere_path(start, visited, anchor_tels)
             if path and len(path) >= 1:
                 paths.append(path)
                 visited.update(path)
@@ -659,13 +663,13 @@ class ColoredGraph:
         return paths
 
     def _walk_telomere_path(self, start, visited: Set,
-                            all_tels: Set, degree_ends: Set) -> Optional[List]:
+                            anchor_tels: Set) -> Optional[List]:
         """从端粒 HOG 出发，走到另一个端粒 HOG。
 
         行走策略：
         - 度=1 的邻居优先（端点）
-        - 端粒邻接 HOG 优先
-        - 遇到另一个端粒时停止
+        - 端粒锚点 HOG 次之
+        - 遇到另一个锚点时停止
         """
         path = [start]
         curr = start
@@ -682,13 +686,10 @@ class ColoredGraph:
             else:
                 # 多个邻居时，按优先级排序
                 def neighbor_priority(n):
-                    # 度=1 最高优先（端点）
                     if self._graph.degree(n) == 1:
                         return 0
-                    # 端粒邻接 HOG 次之
-                    if n in all_tels or n in degree_ends:
+                    if n in anchor_tels:
                         return 1
-                    # 普通节点
                     return 2
                 neighbors.sort(key=neighbor_priority)
                 nxt = neighbors[0]
@@ -697,8 +698,8 @@ class ColoredGraph:
             path.append(nxt)
             curr = nxt
 
-            # 到达另一个端粒 → 停止
-            if curr != start and (curr in all_tels or curr in degree_ends):
+            # 到达另一个锚点 → 停止
+            if curr != start and curr in anchor_tels:
                 break
 
         return path if len(path) >= 1 else None
@@ -1409,6 +1410,7 @@ class ColoredGraph:
         """在块级图上检测桥接事件。
 
         块级桥接：块级唯一边连接两个块级共享分量。
+        端粒保护：不移除涉及共识端粒块的边。
         """
         if not hasattr(self, '_block_graph'):
             self._compress_to_block_level()
@@ -1430,6 +1432,14 @@ class ColoredGraph:
             for b in comp:
                 block_to_comp[b] = ci
 
+        # 共识端粒块：包含共识端粒 HOG 的块
+        cons_tels = self.consensus_telomeres(min_children=2)
+        telomere_blocks = set()
+        for hog in cons_tels:
+            bid = self._hog_to_block.get(hog)
+            if bid:
+                telomere_blocks.add(bid)
+
         events_found = 0
         for b1, b2, data in list(bg.edges(data=True)):
             colors = data.get('colors', set())
@@ -1438,6 +1448,9 @@ class ColoredGraph:
             c1 = block_to_comp.get(b1)
             c2 = block_to_comp.get(b2)
             if c1 is not None and c2 is not None and c1 != c2:
+                # 端粒保护：不移除涉及端粒块的边
+                if b1 in telomere_blocks or b2 in telomere_blocks:
+                    continue
                 # 块级桥接
                 color = next(iter(colors))
                 child_id = color[0]
@@ -1535,12 +1548,16 @@ class ColoredGraph:
                 hog_to_comp[h] = ci
 
         # Check each unique edge for bridge pattern
+        cons_tels = self.consensus_telomeres(min_children=2)
         for h1, h2, data in list(self._graph.edges(data=True)):
             if len(data['colors']) != 1:
                 continue  # not a unique edge
             c1 = hog_to_comp.get(h1)
             c2 = hog_to_comp.get(h2)
             if c1 is not None and c2 is not None and c1 != c2:
+                # 端粒保护：不移除涉及共识端粒 HOG 的边
+                if h1 in cons_tels or h2 in cons_tels:
+                    continue
                 # Bridge: connects two different shared components
                 color = next(iter(data['colors']))
                 child_id = color[0]

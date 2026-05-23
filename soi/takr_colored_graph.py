@@ -1625,19 +1625,21 @@ class ColoredGraph:
         for cyc in cycles:
             cycle_nodes.update(cyc)
 
-        # Child color palette
+        # Child color palette (saturated, distinct)
         children = sorted(self.children())
-        palette = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12',
-                   '#9b59b6', '#1abc9c', '#e67e22', '#34495e']
+        palette = ['#c0392b', '#2980b9', '#27ae60', '#f39c12',
+                   '#8e44ad', '#16a085', '#d35400', '#2c3e50']
         child_colors = {c: palette[i % len(palette)]
                         for i, c in enumerate(children)}
 
         # Build graphviz DOT
         dot = graphviz.Digraph(format='png')
         dot.attr(rankdir='LR', label=title or f'Block Graph: {self.hog_level}',
-                 labelloc='t', fontsize='16', fontname='Helvetica-Bold',
-                 bgcolor='white', pad='0.5')
-        dot.attr('node', fontname='Helvetica', fontsize='10')
+                 labelloc='t', fontsize='18', fontname='Helvetica-Bold',
+                 fontcolor='#1a1a2e', bgcolor='white', pad='0.5',
+                 nodesep='0.4', ranksep='0.6')
+        dot.attr('node', fontname='Helvetica-Bold', fontsize='11',
+                 fontcolor='#1a1a2e', margin='0.15,0.08')
         dot.attr('edge', fontname='Helvetica', fontsize='8')
 
         # Nodes
@@ -1648,26 +1650,31 @@ class ColoredGraph:
             if show_hogs and hog_count <= 5:
                 label += '\n' + ', '.join(str(h) for h in hog_list[:5])
 
-            attrs = {'label': label, 'width': str(max(0.3, hog_count * 0.03)),
-                     'height': str(max(0.3, hog_count * 0.03))}
+            attrs = {'label': label,
+                     'width': str(max(0.4, hog_count * 0.03)),
+                     'height': str(max(0.3, hog_count * 0.02)),
+                     'fontcolor': '#1a1a2e', 'fontsize': '11'}
 
             if n in telomere_blocks:
                 attrs['shape'] = 'doubleoctagon'
-                attrs['style'] = 'filled'
-                attrs['fillcolor'] = '#ffeaa7'  # orange highlight
-                attrs['color'] = '#e17055'
-                attrs['penwidth'] = '2'
+                attrs['style'] = 'filled,bold'
+                attrs['fillcolor'] = '#fff3cd'  # light yellow
+                attrs['color'] = '#e67e22'       # orange border
+                attrs['penwidth'] = '2.5'
+                attrs['fontcolor'] = '#7d5a00'   # dark gold text
             elif n in cycle_nodes:
-                attrs['shape'] = 'ellipse'
-                attrs['style'] = 'filled'
-                attrs['fillcolor'] = '#fab1a0'  # red for cycle
-                attrs['color'] = '#d63031'
-                attrs['penwidth'] = '2'
+                attrs['shape'] = 'octagon'
+                attrs['style'] = 'filled,bold'
+                attrs['fillcolor'] = '#fce4ec'   # light pink
+                attrs['color'] = '#c62828'       # dark red border
+                attrs['penwidth'] = '2.5'
+                attrs['fontcolor'] = '#b71c1c'   # dark red text
             else:
                 attrs['shape'] = 'box'
                 attrs['style'] = 'filled,rounded'
-                attrs['fillcolor'] = '#dfe6e9'
-                attrs['color'] = '#636e72'
+                attrs['fillcolor'] = '#e3f2fd'   # light blue
+                attrs['color'] = '#1565c0'       # blue border
+                attrs['penwidth'] = '1.5'
 
             dot.node(str(n), **attrs)
 
@@ -1677,31 +1684,38 @@ class ColoredGraph:
             child_ids = sorted(set(c for c, _ in colors))
 
             if len(child_ids) > 1:
-                # Shared edge: thick black solid
+                # Shared edge: dark navy, very thick
                 dot.edge(str(h1), str(h2),
-                         color='#2d3436', penwidth='3.0',
-                         style='solid', alpha='0.8')
+                         color='#1a1a2e', penwidth='3.5',
+                         style='solid')
             elif len(child_ids) == 1:
                 cid = child_ids[0]
-                color = child_colors.get(cid, '#999')
+                color = child_colors.get(cid, '#7f8c8d')
                 dot.edge(str(h1), str(h2),
-                         color=color, penwidth='1.5',
-                         style='solid', alpha='0.7')
+                         color=color, penwidth='2.0',
+                         style='solid')
 
         # Legend as subgraph
         with dot.subgraph(name='cluster_legend') as legend:
-            legend.attr(label='Legend', style='dashed', fontsize='10')
+            legend.attr(label='Legend', style='dashed', fontsize='12',
+                        fontcolor='#1a1a2e', bgcolor='#f5f5f5')
             legend.node('_lg_shared', 'shared\n(multi-child)',
-                        shape='box', style='filled', fillcolor='#dfe6e9')
+                        shape='box', style='filled,rounded',
+                        fillcolor='#e3f2fd', color='#1565c0',
+                        fontcolor='#1a1a2e')
             legend.node('_lg_cycle', 'in cycle',
-                        shape='ellipse', style='filled', fillcolor='#fab1a0')
+                        shape='octagon', style='filled,bold',
+                        fillcolor='#fce4ec', color='#c62828',
+                        fontcolor='#b71c1c')
             legend.node('_lg_tel', 'telomere',
-                        shape='doubleoctagon', style='filled', fillcolor='#ffeaa7')
+                        shape='doubleoctagon', style='filled,bold',
+                        fillcolor='#fff3cd', color='#e67e22',
+                        fontcolor='#7d5a00')
             for cid in children:
-                color = child_colors.get(cid, '#999')
+                color = child_colors.get(cid, '#7f8c8d')
                 legend.node(f'_lg_{cid}', f'{cid}\n(unique)',
-                            shape='box', style='filled', fillcolor=color,
-                            fontcolor='white')
+                            shape='box', style='filled,rounded',
+                            fillcolor=color, fontcolor='white')
             legend.edge('_lg_shared', '_lg_cycle', style='invis')
 
         # Render
@@ -1757,24 +1771,30 @@ class ColoredGraph:
                     telomere_blocks.add(bid)
 
         node_colors = []
+        node_edge_colors = []
         for n in bg.nodes():
             if n in telomere_blocks:
-                node_colors.append('#ffeaa7')  # orange = telomere
+                node_colors.append('#fff3cd')   # light yellow
+                node_edge_colors.append('#e67e22')
             elif n in cycle_nodes:
-                node_colors.append('#fab1a0')  # red = cycle
+                node_colors.append('#fce4ec')   # light pink
+                node_edge_colors.append('#c62828')
             else:
-                node_colors.append('#dfe6e9')  # gray = normal
+                node_colors.append('#e3f2fd')   # light blue
+                node_edge_colors.append('#1565c0')
 
         nx.draw_networkx_nodes(bg, pos, ax=ax, node_size=node_sizes,
-                               node_color=node_colors, alpha=0.9,
-                               edgecolors='#333', linewidths=1.5)
+                               node_color=node_colors, alpha=0.95,
+                               edgecolors=node_edge_colors, linewidths=2.0)
 
         labels = {n: f'{n}\n({len(self._blocks.get(n, []))})' for n in bg.nodes()}
-        nx.draw_networkx_labels(bg, pos, labels, ax=ax, font_size=7)
+        nx.draw_networkx_labels(bg, pos, labels, ax=ax, font_size=8,
+                                font_color='#1a1a2e', font_weight='bold')
 
         children = sorted(self.children())
-        cmap = plt.cm.Set2
-        child_colors = {c: cmap(i / max(len(children), 1))
+        palette = ['#c0392b', '#2980b9', '#27ae60', '#f39c12',
+                   '#8e44ad', '#16a085', '#d35400', '#2c3e50']
+        child_colors = {c: palette[i % len(palette)]
                         for i, c in enumerate(children)}
 
         for h1, h2, data in bg.edges(data=True):
@@ -1782,29 +1802,29 @@ class ColoredGraph:
             child_ids = sorted(set(c for c, _ in colors))
             if len(child_ids) > 1:
                 ax.plot([pos[h1][0], pos[h2][0]], [pos[h1][1], pos[h2][1]],
-                        color='#333', linewidth=3.0, alpha=0.8, zorder=1)
+                        color='#1a1a2e', linewidth=3.5, alpha=0.9, zorder=1)
             elif len(child_ids) == 1:
                 cid = child_ids[0]
-                color = child_colors.get(cid, '#999')
+                color = child_colors.get(cid, '#7f8c8d')
                 ax.plot([pos[h1][0], pos[h2][0]], [pos[h1][1], pos[h2][1]],
-                        color=color, linewidth=1.5, alpha=0.6, zorder=0)
+                        color=color, linewidth=2.0, alpha=0.8, zorder=0)
 
         legend_handles = [
             plt.Line2D([0], [0], marker='o', color='w',
-                       markerfacecolor='#ffeaa7', markersize=10,
-                       markeredgecolor='#e17055', markeredgewidth=2,
+                       markerfacecolor='#fff3cd', markersize=12,
+                       markeredgecolor='#e67e22', markeredgewidth=2,
                        label='telomere'),
             plt.Line2D([0], [0], marker='o', color='w',
-                       markerfacecolor='#fab1a0', markersize=10,
-                       markeredgecolor='#d63031', markeredgewidth=2,
+                       markerfacecolor='#fce4ec', markersize=12,
+                       markeredgecolor='#c62828', markeredgewidth=2,
                        label='in cycle'),
-            plt.Line2D([0], [0], color='#333', linewidth=3,
+            plt.Line2D([0], [0], color='#1a1a2e', linewidth=3.5,
                        label='shared (multi-child)'),
         ]
         for cid in children:
-            color = child_colors.get(cid, '#999')
+            color = child_colors.get(cid, '#7f8c8d')
             legend_handles.append(
-                plt.Line2D([0], [0], color=color, linewidth=2,
+                plt.Line2D([0], [0], color=color, linewidth=2.5,
                            label=f'{cid} (unique)'))
 
         ax.legend(handles=legend_handles, loc='upper left', fontsize=8)

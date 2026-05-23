@@ -297,6 +297,16 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         for mc, cid in zip(mapped_children, child_source_ids):
             G.add_child(cid, mc)
 
+        # Visualization: raw graph (before event resolution)
+        try:
+            viz_dir = os.path.dirname(akr.outpre) if hasattr(akr, 'outpre') else '.'
+            viz_base = os.path.basename(akr.outpre) if hasattr(akr, 'outpre') else 'AKR'
+            G.draw_block_graph(
+                os.path.join(viz_dir, f'{viz_base}.{node_id}.raw_block_graph.png'),
+                title=f'Raw Block Graph: {node_id} (before resolution)')
+        except Exception as e:
+            logger.debug("  [viz] raw graph skipped: %s", e)
+
         # === 收集外类群邻接信息 ===
         # 外类群在 parent HOG level, 用于 bridge 事件极性判定
         outgroup_adjacency = None

@@ -176,6 +176,21 @@ soi rakeval \
     2>&1 | grep -A 30 "Chromosome Counts"
 
 echo ""
+
+# 3d. 共线性评估 (inter/intra-chromosomal)
+echo "--- Synteny Evaluation ---"
+soi rakeval \
+    --truth "$SIM_DIR/events.tsv" \
+    --detected "$RECON_DIR/AKR.events.tsv" \
+    --tree "$SIM_DIR/species_tree.nwk" \
+    --karyotype "$SIM_DIR/ancestors_karyotypes.txt" \
+    --gene-map "$SIM_DIR/gene_ancestor_map.tsv" \
+    --gfa-dir "$RECON_DIR" \
+    --og-file "$SIM_DIR/ortholog_groups.txt" \
+    --synteny-eval \
+    2>&1 | grep -A 30 "Synteny"
+
+echo ""
 echo "============================================================"
 echo "  Benchmark complete. Results in: $OUTDIR/"
 echo "============================================================"

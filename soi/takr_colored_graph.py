@@ -99,6 +99,61 @@ class ColoredGraph:
 
     # ==================== 查询 ====================
 
+    def consensus_telomeres(self, min_children: int = 2) -> Set:
+        """共识端粒：在 ≥min_children 个孩子中都是端粒邻接的 HOG。
+
+        生物学原理：端粒位置保守，不会无缘无故获得或丢失。
+        如果一个 HOG 在多个孩子中都与端粒相邻，它在祖先中也是端粒邻接的。
+        """
+        tel_counts = defaultdict(int)
+        for cid, tels in self._child_telomeres.items():
+            for hog in tels:
+                tel_counts[hog] += 1
+        return {h for h, cnt in tel_counts.items() if cnt >= min_children}
+
+    def child_telomere_set(self) -> Set:
+        """所有孩子的端粒邻接 HOG 的并集。"""
+        all_tels = set()
+        for tels in self._child_telomeres.values():
+            all_tels.update(tels)
+        return all_tels
+
+    def is_telomere_adjacent(self, hog) -> bool:
+        """该 HOG 是否在任意孩子中与端粒相邻。"""
+        for tels in self._child_telomeres.values():
+            if hog in tels:
+                return True
+        return False
+
+    def telomere_preserving_color(self, cycle_edges, edge_colors) -> Optional[str]:
+        """在交替色环中，找出保留端粒邻接的颜色。
+
+        对每种颜色，检查该颜色的边是否涉及端粒 HOG。
+        保留端粒的颜色 = 祖先态（不应被移除）。
+        """
+        # 统计每种颜色涉及的端粒 HOG 数
+        color_tel_count = defaultdict(int)
+        color_total = defaultdict(int)
+        for (h1, h2), colors in zip(cycle_edges, edge_colors):
+            for cid, _ in colors:
+                color_total[cid] += 1
+                if self.is_telomere_adjacent(h1) or self.is_telomere_adjacent(h2):
+                    color_tel_count[cid] += 1
+
+        # 找端粒比例最高的颜色
+        best_color = None
+        best_ratio = -1
+        for cid in color_total:
+            ratio = color_tel_count.get(cid, 0) / color_total[cid]
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_color = cid
+
+        # 只有当端粒比例有明显差异时才返回
+        if best_ratio > 0:
+            return best_color
+        return None
+
     def get_colors(self, h1, h2) -> Set[Tuple[str, int]]:
         """返回 (h1, h2) 上的颜色集。"""
         if not self._graph.has_edge(h1, h2):
@@ -346,22 +401,30 @@ class ColoredGraph:
                     etype = 'unbalanced_reciprocal_translocation' if has_tel else 'reciprocal_translocation'
                     return etype, conflict_edges, info
                 else:
-                    # 2 种颜色 → 同一 child 的染色体内某段倒置 → inversion
-                    # 只需移除一个 child 的冲突边（另一组的边保留）
-                    # 选 color_counts 中出现次数较少的颜色组移除
-                    min_count = min(color_counts.values())
-                    rare_colors = {c for c, cnt in color_counts.items()
-                                   if cnt == min_count}
-                    # 如果两种颜色出现次数相同（完美交替），选第一个
-                    if len(rare_colors) > 1 and list(color_counts.values()).count(min_count) == len(color_counts):
-                        # 所有颜色出现次数相同 → 选任一种，这里选第一个
-                        rare_colors = {next(iter(color_counts.keys()))}
+                    # 2 种颜色 → inversion
+                    # 端粒驱动：保留端粒邻接的颜色，移除另一种
+                    tel_color = self.telomere_preserving_color(edges, edge_colors)
+
+                    if tel_color is not None:
+                        # 端粒信号明确：移除不保留端粒的颜色
+                        remove_colors = {c for c in color_counts if c != tel_color}
+                        info['resolution'] = 'telomere-driven'
+                        info['kept_color'] = tel_color
+                    else:
+                        # 无端粒信号：用外类群或回退到出现次数
+                        min_count = min(color_counts.values())
+                        remove_colors = {c for c, cnt in color_counts.items()
+                                         if cnt == min_count}
+                        if len(remove_colors) > 1:
+                            remove_colors = {next(iter(remove_colors))}
+                        info['resolution'] = 'count-based fallback'
+
                     conflict_edges = []
                     for (h1, h2), colors in zip(edges, edge_colors):
-                        if rare_colors & colors:
+                        if remove_colors & colors:
                             conflict_edges.append((h1, h2))
-                    info['conflict_colors'] = rare_colors
-                    # 检查是否含端粒
+                    info['conflict_colors'] = remove_colors
+
                     has_tel = any(
                         isinstance(n, tuple) and len(n) == 2 and n[1] in ('L', 'R')
                         for n in cycle
@@ -373,12 +436,19 @@ class ColoredGraph:
         if n == 3:
             return 'gene_indel', list(edges), info
 
-        # 无法分类的环 → 移除最少出现的颜色的边
-        min_count = min(color_counts.values())
-        rare_colors = {c for c, cnt in color_counts.items() if cnt == min_count}
+        # 无法分类的环 → 优先用端粒信号，否则移除最少出现的颜色
+        tel_color = self.telomere_preserving_color(edges, edge_colors)
+        if tel_color is not None:
+            remove_colors = {c for c in color_counts if c != tel_color}
+            info['resolution'] = 'telomere-driven fallback'
+        else:
+            min_count = min(color_counts.values())
+            remove_colors = {c for c, cnt in color_counts.items() if cnt == min_count}
+            info['resolution'] = 'count-based fallback'
+
         conflict_edges = []
         for (h1, h2), colors in zip(edges, edge_colors):
-            if rare_colors & colors:
+            if remove_colors & colors:
                 conflict_edges.append((h1, h2))
         info['fallback'] = True
         info['fallback_reason'] = 'unclassified_cycle'
@@ -534,94 +604,122 @@ class ColoredGraph:
     def path_cover(self) -> List[List]:
         """端粒约束路径覆盖。
 
-        使用当前图中的所有剩余边（所有颜色），
-        从端粒节点出发沿唯一邻接行走。
+        生物学约束：每条祖先染色体有且仅有 2 个端粒（两端各一个）。
+        端粒位置通过多个孩子的共识确定。
+
+        算法：
+        1. 找共识端粒 HOG（≥2 个孩子中都与端粒相邻）
+        2. 从共识端粒出发，沿邻接行走
+        3. 行走时优先选择端粒邻接度高的邻居
+        4. 到达另一个端粒时停止 → 一条完整染色体
+        5. 处理剩余节点（无端粒的连通分量）
 
         Returns:
             [[hog1, hog2, ...], ...] — 每条染色体一条路径
-            路径中不包含 telomere 节点
         """
         paths = []
         visited = set()
 
-        # 找端粒节点: 度为 1 的节点
-        degree_counts = dict(self._graph.degree())
-        telomeres = {n for n, deg in degree_counts.items()
-                     if deg == 1 and n in self.all_hogs()}
+        # 共识端粒：≥2 个孩子中都与端粒相邻的 HOG
+        cons_tels = self.consensus_telomeres(min_children=2)
+        # 备用：所有孩子的端粒并集
+        all_tels = self.child_telomere_set()
+        # 度=1 的节点（图结构上的端点）
+        degree_ends = {n for n, deg in self._graph.degree()
+                       if deg == 1 and n in self.all_hogs()}
 
-        # 从每个端粒出发行走
-        for start in telomeres:
-            if start in visited:
+        # 优先级：共识端粒 > 所有端粒 > 度=1
+        # 起点用共识端粒，终点可以是任意端粒或度=1
+        start_nodes = cons_tels if cons_tels else (all_tels if all_tels else degree_ends)
+
+        # 从每个端粒起点出发行走
+        for start in sorted(start_nodes, key=str):
+            if start in visited or not self._graph.has_node(start):
                 continue
 
-            path = self._walk_path(start, visited | {start})
-            if path:
+            path = self._walk_telomere_path(start, visited, all_tels, degree_ends)
+            if path and len(path) >= 1:
                 paths.append(path)
                 visited.update(path)
 
-        # 检查是否有未访问的连通分量（环）
+        # 处理剩余未访问节点（无端粒的连通分量）
         all_nodes = self.all_hogs()
         unvisited = all_nodes - visited
         if unvisited:
-            # 对每个未访问的连通分量，选一个节点并切断最低支撑边
             G_rem = self._graph.subgraph(unvisited)
             for comp_nodes in nx.connected_components(G_rem):
                 comp = list(comp_nodes)
                 if len(comp) >= 2:
-                    # 找到该分量中第一个有边可走的节点
                     start = comp[0]
-                    path = self._walk_path_no_telomere(start)
+                    path = self._walk_simple(start, visited)
                     if path:
                         paths.append(path)
                         visited.update(path)
 
         return paths
 
-    def _walk_path(self, start, visited: Set) -> Optional[List]:
-        """从 start 出发，沿唯一邻接行走直到另一个端粒或没有邻居。"""
+    def _walk_telomere_path(self, start, visited: Set,
+                            all_tels: Set, degree_ends: Set) -> Optional[List]:
+        """从端粒 HOG 出发，走到另一个端粒 HOG。
+
+        行走策略：
+        - 度=1 的邻居优先（端点）
+        - 端粒邻接 HOG 优先
+        - 遇到另一个端粒时停止
+        """
         path = [start]
         curr = start
+        visited_local = visited | {start}
+
         while True:
             neighbors = [n for n in self._graph.neighbors(curr)
-                         if n not in visited]
+                         if n not in visited_local and n in self.all_hogs()]
             if not neighbors:
                 break
-            if len(neighbors) > 1:
-                # 分叉 → 选择边数最少的邻居（度最小的）
-                neighbors.sort(key=lambda n: self._graph.degree(n))
-            nxt = neighbors[0]
-            visited.add(nxt)
+
+            if len(neighbors) == 1:
+                nxt = neighbors[0]
+            else:
+                # 多个邻居时，按优先级排序
+                def neighbor_priority(n):
+                    # 度=1 最高优先（端点）
+                    if self._graph.degree(n) == 1:
+                        return 0
+                    # 端粒邻接 HOG 次之
+                    if n in all_tels or n in degree_ends:
+                        return 1
+                    # 普通节点
+                    return 2
+                neighbors.sort(key=neighbor_priority)
+                nxt = neighbors[0]
+
+            visited_local.add(nxt)
             path.append(nxt)
             curr = nxt
-            # 如果遇到端粒（度=1），停止
-            if self._graph.degree(curr) == 1 and curr != start:
+
+            # 到达另一个端粒 → 停止
+            if curr != start and (curr in all_tels or curr in degree_ends):
                 break
 
-        if len(path) < 2:
-            return None
-        # 过滤 telomere 节点
-        path = [n for n in path if not (isinstance(n, tuple)
-                                        and len(n) == 2 and n[1] in ('L', 'R'))]
-        return path if len(path) >= 2 else None
+        return path if len(path) >= 1 else None
 
-    def _walk_path_no_telomere(self, start) -> Optional[List]:
-        """从一个非端粒节点出发行走，用于处理环。"""
+    def _walk_simple(self, start, visited: Set) -> Optional[List]:
+        """简单行走（无端粒约束），用于处理剩余连通分量。"""
         path = [start]
-        visited = {start}
         curr = start
-        prev = None
+        visited_local = visited | {start}
+
         while True:
             neighbors = [n for n in self._graph.neighbors(curr)
-                         if n != prev]
+                         if n not in visited_local and n in self.all_hogs()]
             if not neighbors:
                 break
             nxt = neighbors[0]
-            if nxt in visited:
-                break
-            visited.add(nxt)
+            visited_local.add(nxt)
             path.append(nxt)
-            prev, curr = curr, nxt
-        return path if len(path) >= 2 else None
+            curr = nxt
+
+        return path if len(path) >= 1 else None
 
     # ==================== 转换 ====================
 

@@ -1575,24 +1575,43 @@ class ColoredGraph:
             if bid:
                 telomere_blocks.add(bid)
 
-        # 共享分量 → 检查是否包含端粒块（真正的染色体，不是碎片）
-        comp_has_telomere = set()
-        for ci, comp in enumerate(components):
-            for b in comp:
-                if b in telomere_blocks:
-                    comp_has_telomere.add(ci)
-                    break
+        # 共享分量 → 检查是否包含端粒块（真正的染色体）
+        # 使用原始共享组件（Phase 2 前），避免 indel 碎片化影响
+        if hasattr(self, '_orig_comp_has_telomere'):
+            block_to_orig_comp = {}
+            for bid, hogs in self._blocks.items():
+                for h in hogs:
+                    if h in self._hog_to_orig_comp:
+                        block_to_orig_comp[bid] = self._hog_to_orig_comp[h]
+                        break
+            comp_has_telomere = set()
+            for bid in block_to_orig_comp:
+                if bid in telomere_blocks:
+                    comp_has_telomere.add(block_to_orig_comp[bid])
+            use_orig_comp = True
+        else:
+            comp_has_telomere = set()
+            for ci, comp in enumerate(components):
+                for b in comp:
+                    if b in telomere_blocks:
+                        comp_has_telomere.add(ci)
+                        break
+            use_orig_comp = False
 
         events_found = 0
         for b1, b2, data in list(bg.edges(data=True)):
             colors = data.get('colors', set())
             if len(colors) != 1:
                 continue
-            c1 = block_to_comp.get(b1)
-            c2 = block_to_comp.get(b2)
+            if use_orig_comp:
+                c1 = block_to_orig_comp.get(b1)
+                c2 = block_to_orig_comp.get(b2)
+            else:
+                c1 = block_to_comp.get(b1)
+                c2 = block_to_comp.get(b2)
             if c1 is not None and c2 is not None and c1 != c2:
-                # 关键验证：两个分量都必须包含端粒块（真正的染色体）
-                if c1 not in comp_has_telomere or c2 not in comp_has_telomere:
+                # 验证：至少一个分量包含端粒块
+                if c1 not in comp_has_telomere and c2 not in comp_has_telomere:
                     continue
                 # 块级桥接
                 color = next(iter(colors))
@@ -1620,7 +1639,12 @@ class ColoredGraph:
                         suffix = f" (outgroup confirms {child_id} preserved)"
                     else:
                         # 检查 NCF 条件
-                        c_size = [len(components[c1]), len(components[c2])]
+                        orig_comps = getattr(self, '_original_shared_components', None)
+                        if use_orig_comp and orig_comps and c1 < len(orig_comps) and c2 < len(orig_comps):
+                            c_size = [len(list(orig_comps[c1])), len(list(orig_comps[c2]))]
+                        else:
+                            c_size = [len(components[c1]) if c1 < len(components) else 0,
+                                      len(components[c2]) if c2 < len(components) else 0]
                         if min(c_size) < 5:
                             etype = 'ncf'
                         else:
@@ -1935,6 +1959,8 @@ class ColoredGraph:
                      len(self._child_chrom_counts))
 
         # ====== Phase 2: 单基因 indel/loss/gain ======
+        # 保存原始共享组件（用于 bridge 检测验证）
+        self._save_original_shared_components()
         n0, e0 = self.node_count(), self.edge_count()
         self.resolve_indels(outgroups)
         n1, e1 = self.node_count(), self.edge_count()
@@ -2064,6 +2090,34 @@ class ColoredGraph:
         return self.events
 
     # ==================== Phase 4a/4b: seg events & unidir_trans ====================
+
+    def _save_original_shared_components(self):
+        """保存 Phase 2 前的原始共享组件和端粒信息。"""
+        import networkx as nx
+        shared_G = nx.Graph()
+        for h1, h2, data in self._graph.edges(data=True):
+            if len(data['colors']) >= 2:
+                shared_G.add_edge(h1, h2)
+
+        self._original_shared_components = list(nx.connected_components(shared_G))
+        hog_to_orig_comp = {}
+        for ci, comp in enumerate(self._original_shared_components):
+            for h in comp:
+                hog_to_orig_comp[h] = ci
+        self._hog_to_orig_comp = hog_to_orig_comp
+
+        cons_tels = self.consensus_telomeres(min_children=1)
+        orig_comp_has_telomere = set()
+        for ci, comp in enumerate(self._original_shared_components):
+            for h in comp:
+                if h in cons_tels:
+                    orig_comp_has_telomere.add(ci)
+                    break
+        self._orig_comp_has_telomere = orig_comp_has_telomere
+
+        logger.debug("  [orig] %d shared components, %d with telomere",
+                     len(self._original_shared_components),
+                     len(orig_comp_has_telomere))
 
     def _resolve_seg_events(self, outgroup_adjacency: Set = None) -> int:
         """Phase 4a: 检测 seg_deletion / seg_insertion。

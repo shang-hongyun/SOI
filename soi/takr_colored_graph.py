@@ -756,21 +756,23 @@ class ColoredGraph:
         paths = []
         visited = set()
 
-        # 共识端粒：≥2 个孩子中都与端粒相邻的 HOG
-        cons_tels = self.consensus_telomeres(min_children=2)
+        # 共识端粒：在任一孩子中与端粒相邻的 HOG
+        # (min_children=1 更宽松，覆盖 rearrangement 后的端粒)
+        cons_tels = self.consensus_telomeres(min_children=1)
         # 备用：所有孩子的端粒并集
         all_tels = self.child_telomere_set()
         # 度=1 的节点（图结构上的端点）
         degree_ends = {n for n, deg in self._graph.degree()
                        if deg == 1 and n in self.all_hogs()}
 
-        # 选择端粒锚点集：共识端粒 > 度=1 > 所有端粒
+        # 选择端粒锚点集：共识端粒 > 所有端粒 > 度=1
+        # 注意：度=1 包含 bridge 移除后的假端点，优先级最低
         if cons_tels:
             anchor_tels = cons_tels
-        elif degree_ends:
-            anchor_tels = degree_ends
-        else:
+        elif all_tels:
             anchor_tels = all_tels
+        else:
+            anchor_tels = degree_ends
 
         # 从每个锚点出发行走
         for start in sorted(anchor_tels, key=str):
@@ -798,6 +800,41 @@ class ColoredGraph:
                 elif len(comp) == 1:
                     # 孤立节点：不单独成染色体（noise），跳过
                     visited.update(comp)
+
+        # 孤儿回收：未覆盖的 HOGs 插入到最近的已覆盖路径
+        all_nodes = self.all_hogs()
+        unvisited = all_nodes - visited
+        if unvisited:
+            logger.debug("  [path_cover] %d uncovered HOGs, attempting recovery",
+                         len(unvisited))
+            recovered = 0
+            for hog in list(unvisited):
+                # 找 hog 在图中的邻居
+                if not self._graph.has_node(hog):
+                    continue
+                neighbors = [n for n in self._graph.neighbors(hog)
+                             if n in visited and n in all_nodes]
+                if not neighbors:
+                    continue
+                # 找邻居所在的路径
+                target_path = None
+                target_idx = None
+                for nb in neighbors:
+                    for pi, p in enumerate(paths):
+                        if nb in p:
+                            idx = p.index(nb)
+                            target_path = pi
+                            target_idx = idx
+                            break
+                    if target_path is not None:
+                        break
+                if target_path is not None:
+                    # 插入到路径中邻居的旁边
+                    paths[target_path].insert(target_idx + 1, hog)
+                    visited.add(hog)
+                    recovered += 1
+            if recovered:
+                logger.debug("  [path_cover] recovered %d orphan HOGs", recovered)
 
         return paths
 
@@ -1683,14 +1720,16 @@ class ColoredGraph:
                     support=1,
                 ))
 
-                # 移除 HOG 级图中对应边
-                for h1 in self._blocks.get(b1, []):
-                    for h2 in self._blocks.get(b2, []):
-                        if self._graph.has_edge(h1, h2):
-                            self.remove_edge_color(h1, h2, color)
-
-                # 移除块级图中的边
-                bg.remove_edge(b1, b2)
+                # 移除边：只移除 fusion (eej/ncf) 的边，保留 fission 边
+                # fission: 外类群有该邻接 → 祖先态 → 保留边（另一个孩子丢失了它）
+                # fusion: 外类群无该邻接 → 衍生态 → 移除边（这个孩子获得了它）
+                if etype in ('eej', 'ncf', 'bridge_unclassified'):
+                    for h1 in self._blocks.get(b1, []):
+                        for h2 in self._blocks.get(b2, []):
+                            if self._graph.has_edge(h1, h2):
+                                self.remove_edge_color(h1, h2, color)
+                    bg.remove_edge(b1, b2)
+                # fission: 不移除边，只记录事件
                 events_found += 1
 
         return events_found

@@ -820,6 +820,66 @@ def build_sog_ancestor_map(
     return sog_to_anc
 
 
+def build_ancestor_sog_map(sog_to_anc: Dict[str, str]) -> Dict[str, str]:
+    """Reverse: {ancestor_id: SOG_id}."""
+    return {anc: sog for sog, anc in sog_to_anc.items()}
+
+
+def build_gene_hog_map(
+    gene_ancestor_map_file: str,
+    ortholog_groups_file: str,
+) -> Dict[Tuple[str, str], str]:
+    """Build {(gene_id, node): HOG_ID} mapping.
+
+    For each entry in gene_ancestor_map.tsv:
+      gene=g1.1, species=N1, ancestor=g1, wgd_copies=N1:1
+      → ancestor_to_sog[g1] = "SOG1"
+      → HOG = "SOG1.N1.hog1"
+
+    For genes without WGD:
+      gene=g1, species=N1, ancestor=g1, wgd_copies=""
+      → HOG = "SOG1.N1.hog0"
+    """
+    gene_to_anc = load_gene_ancestor_map(gene_ancestor_map_file)
+    sog_to_anc = build_sog_ancestor_map(ortholog_groups_file, gene_to_anc)
+    anc_to_sog = build_ancestor_sog_map(sog_to_anc)
+
+    gene_hog_map = {}
+    if not os.path.exists(gene_ancestor_map_file):
+        return gene_hog_map
+
+    import csv
+    with open(gene_ancestor_map_file) as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        for row in reader:
+            gene = row.get('gene', '').strip()
+            node = row.get('species', '').strip()
+            ancestor = row.get('ancestor', '').strip()
+            wgd_str = row.get('wgd_copies', '').strip()
+
+            if not gene or not node or not ancestor:
+                continue
+
+            sog = anc_to_sog.get(ancestor, '')
+            if not sog:
+                continue
+
+            # Parse wgd_copies: "N1:2" → copy_index=2 at node N1
+            if wgd_str and ':' in wgd_str:
+                # wgd_str can be "N1:1" or "N1:1;N2:2" (multiple WGDs)
+                # Take the last one (most recent)
+                parts = wgd_str.split(';')
+                last_part = parts[-1]
+                wgd_node, copy_idx = last_part.split(':', 1)
+                hog_id = f"{sog}.{node}.hog{copy_idx}"
+            else:
+                hog_id = f"{sog}.{node}.hog0"
+
+            gene_hog_map[(gene, node)] = hog_id
+
+    return gene_hog_map
+
+
 def load_karyotype_adjacencies(tsv_path: str) -> Dict[str, set]:
     """Load ancestors_karyotypes.txt, return {node: set_of_adjacent_gene_pairs}.
 
@@ -1106,87 +1166,78 @@ def evaluate_synteny(
     recon_prefix: str = 'AKR',
     og_file: str = None,
 ) -> dict:
-    """Synteny-level evaluation: chromosomal grouping + gene order.
+    """Synteny-level evaluation at HOG granularity.
+
+    Truth genes are mapped to HOG IDs via gene_ancestor_map + ortholog_groups.
+    Reconstruction HOGs are used as-is.  Comparison is at HOG level, so
+    WGD subgenome copies (hog0 vs hog1) are distinguished.
 
     For each ancestor node, computes:
-    - inter-chromosomal: are truth-adjacent gene pairs on the same reconstructed chrom?
-    - intra-chromosomal: are truth gene adjacencies preserved in reconstruction?
-    - synteny blocks: maximal collinear segments between truth and reconstruction
-
-    Args:
-        truth_karyo_file: ancestors_karyotypes.txt from simulator
-        gene_ancestor_map_file: gene_ancestor_map.tsv from simulator
-        recon_gfa_dir: Directory with AKR.*.anc.gfa or AKR.*.gff files
-        recon_chroms: Pre-loaded {node: [[hog_id, ...], ...]}
-        recon_prefix: File prefix for GFA/GFF files
-        og_file: ortholog_groups.txt (for SOG→ancestor mapping)
+    - inter-chromosomal: are truth-adjacent HOG pairs on the same reconstructed chrom?
+    - intra-chromosomal: are truth HOG adjacencies preserved in reconstruction?
+    - synteny blocks: maximal collinear HOG segments
     """
     # Load truth (gene-level)
     truth_gene_chroms = load_karyotype_chroms(truth_karyo_file)
     gene_to_anc = load_gene_ancestor_map(gene_ancestor_map_file)
 
-    # Convert truth to ancestor level
-    truth_anc_chroms = {}
-    for node, chroms in truth_gene_chroms.items():
-        anc_chroms = []
-        for chrom in chroms:
-            anc_chrom = []
-            for g in chrom:
-                anc = gene_to_anc.get(g, g)
-                anc_chrom.append(anc)
-            # Collapse consecutive same-ancestor (tandem dup remnants)
-            collapsed = []
-            for a in anc_chrom:
-                if not collapsed or collapsed[-1] != a:
-                    collapsed.append(a)
-            if collapsed:
-                anc_chroms.append(collapsed)
-        truth_anc_chroms[node] = anc_chroms
+    # Build gene→HOG mapping (HOG level, distinguishes WGD copies)
+    gene_hog_map = {}
+    if og_file:
+        gene_hog_map = build_gene_hog_map(gene_ancestor_map_file, og_file)
 
-    # Load reconstruction (HOG-level)
+    def gene_to_hog(gene_id: str, node: str) -> str:
+        """Convert gene ID to HOG ID at a specific node."""
+        key = (gene_id, node)
+        if key in gene_hog_map:
+            return gene_hog_map[key]
+        # Fallback: try ancestor→SOG mapping
+        anc = gene_to_anc.get(gene_id, gene_id)
+        return anc
+
+    # Convert truth to HOG level
+    truth_hog_chroms = {}
+    for node, chroms in truth_gene_chroms.items():
+        hog_chroms = []
+        for chrom in chroms:
+            hog_chrom = [gene_to_hog(g, node) for g in chrom]
+            # Collapse consecutive same-HOG (tandem dup remnants)
+            collapsed = []
+            for h in hog_chrom:
+                if not collapsed or collapsed[-1] != h:
+                    collapsed.append(h)
+            if collapsed:
+                hog_chroms.append(collapsed)
+        truth_hog_chroms[node] = hog_chroms
+
+    # Load reconstruction (HOG-level, used as-is)
     if recon_chroms is None:
         recon_chroms = load_recon_chroms_from_gfa(recon_gfa_dir, prefix=recon_prefix)
 
-    # Build SOG→ancestor mapping to convert HOG IDs to ancestor IDs
-    sog_to_anc = {}
-    if og_file:
-        sog_to_anc = build_sog_ancestor_map(og_file, gene_to_anc)
-
-    def hog_to_anc(hog_id: str) -> str:
-        """Convert HOG ID (e.g. SOG958.N1.hog0) to ancestor ID (e.g. g958)."""
-        # Extract SOG part: SOG958.N1.hog0 → SOG958
-        if '.' in hog_id:
-            sog_part = hog_id.split('.')[0]
-            if sog_part in sog_to_anc:
-                return sog_to_anc[sog_part]
-        return hog_id  # fallback: use as-is
-
-    # Convert reconstruction to ancestor level
-    recon_anc_chroms = {}
+    # Collapse consecutive same-HOG in reconstruction too
+    recon_hog_chroms = {}
     for node, chroms in recon_chroms.items():
-        anc_chroms = []
+        hog_chroms = []
         for chrom in chroms:
-            anc_chrom = [hog_to_anc(h) for h in chrom]
-            # Collapse consecutive same-ancestor
             collapsed = []
-            for a in anc_chrom:
-                if not collapsed or collapsed[-1] != a:
-                    collapsed.append(a)
+            for h in chrom:
+                if not collapsed or collapsed[-1] != h:
+                    collapsed.append(h)
             if collapsed:
-                anc_chroms.append(collapsed)
-        recon_anc_chroms[node] = anc_chroms
+                hog_chroms.append(collapsed)
+        recon_hog_chroms[node] = hog_chroms
 
     # Compare per node
     results = {}
     total_inter_tp, total_inter_fp, total_inter_fn = 0, 0, 0
     total_intra_tp, total_intra_fp, total_intra_fn = 0, 0, 0
 
-    all_nodes = sorted(set(list(truth_anc_chroms.keys()) +
-                           list(recon_anc_chroms.keys())))
+    all_nodes = sorted(set(list(truth_hog_chroms.keys()) +
+                           list(recon_hog_chroms.keys())))
 
     for node in all_nodes:
-        t_chroms = truth_anc_chroms.get(node, [])
-        r_chroms = recon_anc_chroms.get(node, [])
+        t_chroms = truth_hog_chroms.get(node, [])
+        r_chroms = recon_hog_chroms.get(node, [])
 
         # -- Inter-chromosomal: gene grouping --
         # For each pair of consecutive truth genes (adjacency),

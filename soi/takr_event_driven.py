@@ -293,8 +293,11 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         for cg, cid in zip(child_graphs, child_source_ids):
             mc = akr._map_to_parent_hogs(hog_level, cg, source_id=cid)
             mapped_children.append(mc)
+
+        # Phase 1: 每孩子内部 deduplication (tandem dup 合并)
         G = ColoredGraph(hog_level=node_id)
-        for mc, cid in zip(mapped_children, child_source_ids):
+        deduped_children = G._deduplicate_children(mapped_children, child_source_ids)
+        for mc, cid in zip(deduped_children, child_source_ids):
             G.add_child(cid, mc)
 
         # Visualization: raw graph (before event resolution)

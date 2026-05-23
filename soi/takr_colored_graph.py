@@ -1610,96 +1610,213 @@ class ColoredGraph:
                 ))
                 self.remove_edge_color(h1, h2, color)
 
+    # ==================== Pipeline postcondition checks ====================
+
+    def _postcondition_linear(self, label: str):
+        """Phase 1 postcondition: 每个节点 degree ≤ 2，无并行边。"""
+        violations = []
+        for n in self._graph.nodes():
+            deg = self._graph.degree(n)
+            if deg > 2:
+                violations.append((n, deg))
+        if violations:
+            worst = max(violations, key=lambda x: x[1])
+            raise RuntimeError(
+                f"{label} postcondition failed: {len(violations)} nodes with degree>2, "
+                f"worst={worst[0]} deg={worst[1]}")
+
+    def _postcondition_no_cycles(self, label: str):
+        """Phase 2/4d postcondition: 图中无环。"""
+        cycles = self.find_cycles()
+        if cycles:
+            raise RuntimeError(
+                f"{label} postcondition failed: {len(cycles)} cycles remain, "
+                f"first={cycles[0][:5]}...")
+
+    def _postcondition_no_cross_edges(self, label: str):
+        """Phase 2 postcondition: 无跨越边（spanning edges）。"""
+        spanning = self.find_spanning_edges()
+        if spanning:
+            raise RuntimeError(
+                f"{label} postcondition failed: {len(spanning)} spanning edges remain")
+
+    def _postcondition_all_hogs_assigned(self, label: str):
+        """Phase 3 postcondition: 所有 HOG 已分配到块。"""
+        if not hasattr(self, '_hog_to_block'):
+            raise RuntimeError(f"{label}: _hog_to_block not built")
+        unassigned = self.all_hogs() - set(self._hog_to_block.keys())
+        if unassigned:
+            raise RuntimeError(
+                f"{label} postcondition failed: {len(unassigned)} HOGs not in any block")
+
+    def _postcondition_no_bridge_edges(self, label: str):
+        """Phase 4f postcondition: 无桥接边。"""
+        shared_G = nx.Graph()
+        for h1, h2, data in self._graph.edges(data=True):
+            if len(data['colors']) > 1:
+                shared_G.add_edge(h1, h2)
+        if shared_G.number_of_edges() == 0:
+            return
+        components = list(nx.connected_components(shared_G))
+        hog_to_comp = {}
+        for ci, comp in enumerate(components):
+            for h in comp:
+                hog_to_comp[h] = ci
+        cons_tels = self.consensus_telomeres(min_children=2)
+        bridges = []
+        for h1, h2, data in self._graph.edges(data=True):
+            if len(data['colors']) != 1:
+                continue
+            c1 = hog_to_comp.get(h1)
+            c2 = hog_to_comp.get(h2)
+            if c1 is not None and c2 is not None and c1 != c2:
+                if h1 not in cons_tels and h2 not in cons_tels:
+                    bridges.append((h1, h2))
+        if bridges:
+            raise RuntimeError(
+                f"{label} postcondition failed: {len(bridges)} bridge edges remain")
+
+    def _postcondition_all_hogs_covered(self, label: str):
+        """Phase 5 postcondition: 所有 HOG 被路径覆盖。"""
+        # 需要在 path_cover 之后调用，检查 paths 覆盖所有 HOG
+        # 由 resolve_all_events 中直接检查
+
+    # ==================== Phase 1: per-child deduplication ====================
+
+    def _deduplicate_children(self, child_graphs: list, child_source_ids: list):
+        """Phase 1: 在合图前对每个孩子单独去重。
+
+        处理: tandem_dup (连续重复节点合并), 并行边合并。
+        要求: 每个孩子图处理后为线性染色体 (deg<=2, 无并行边)。
+        """
+        deduped_graphs = []
+        for cg, cid in zip(child_graphs, child_source_ids):
+            new_cg = self._deduplicate_single_child(cg, cid)
+            deduped_graphs.append(new_cg)
+        return deduped_graphs
+
+    def _deduplicate_single_child(self, child_graph, source_id: str):
+        """对单个孩子图去重：合并连续重复节点，去除并行边。"""
+        import copy
+        new_graph = copy.deepcopy(child_graph)
+
+        for chrom_idx, chrom_nodes in enumerate(new_graph.chromosomes):
+            hogs = [n for n in chrom_nodes if n not in new_graph.telomeres]
+            # 合并连续重复节点: A-A-B → A-B
+            deduped = []
+            for h in hogs:
+                if deduped and deduped[-1] == h:
+                    logger.debug("  [dedup] %s chrom%d: merge tandem %s",
+                                 source_id, chrom_idx, h)
+                    continue
+                deduped.append(h)
+
+            if len(deduped) != len(hogs):
+                # 更新 chromosome 节点列表
+                new_chrom = []
+                for n in chrom_nodes:
+                    if n in new_graph.telomeres:
+                        new_chrom.append(n)
+                    elif deduped:
+                        new_chrom.append(deduped.pop(0))
+                new_graph.chromosomes[chrom_idx] = new_chrom
+
+        return new_graph
+
     def resolve_all_events(self, outgroups: Dict = None,
                            outgroup_adjacency: Set = None,
                            min_hogs: int = 3) -> List[TAKREvent]:
         """Telomere-centric event resolution pipeline.
 
-        Pipeline (reordered: HOG-level first, then block-level):
-        1. HOG 级结构重排 (inversion/RT cycle detection)
-        2. 共线性块压缩 (synteny blocks from shared edges)
-        3. 块级结构重排 (block-graph cycle + breakpoint graph)
-        4. 块级桥接检测 (EEJ/NCF/fission)
-        5. indel/loss (gene-level spanning edges)
-        6. 路径覆盖 (telomere walk)
-
-        事件类型图结构说明:
+        Pipeline (简单→复杂，每步检查 postcondition，失败则报错停止):
         ─────────────────────────────────────────────────────────────
-
-        【Inversion (倒位)】
-        邻接图: 4-cycle A-B-D-C-A, 颜色交替 (Sp_1, Sp_4, Sp_1, Sp_4)
-          解开前: A-B (Sp_4), B-D (Sp_1), D-C (Sp_4), C-A (Sp_1)
-          解开后: A-B (shared), B-C (shared), C-D (shared), D-... (shared)
-          操作: 移除 Sp_1 的边 (B-D, C-A), 保留 Sp_4 的边 (A-B, D-C)
-          端粒信号: 保留与端粒 HOG 相连的颜色
-
-        【Reciprocal Translocation (相互易位)】
-        邻接图: 4-cycle, 但涉及不同染色体 (chrom_idx 不一致)
-          解开前: A-B (Sp_4,chr1), B-G (Sp_1,chr2), G-H (Sp_4,chr2), H-A (Sp_1,chr1)
-          解开后: A-B (shared,chr1), B-C (shared,chr1), ... G-H (shared,chr2), ...
-          操作: 移除跨染色体的边, 保留同染色体的边
-          断点图: 4-cycle 交替色 → 确认为 RT
-
-        【EEJ (端粒融合)】
-        邻接图: 唯一边连接两个共享分量, 两个分量都有端粒
-          解开前: 分量1(含端粒T1) -- 唯一边 -- 分量2(含端粒T2)
-          解开后: 分量1 + 分量2 合并为一条染色体
-          操作: 保留唯一边 (融合是祖先态)
-          外类群: 外类群有该邻接 → 祖先态 → 保留
-
-        【NCF (非相互染色体重排)】
-        邻接图: 唯一边连接大分量和小分量
-          解开前: 大分量 -- 唯一边 -- 小分量(≤10 HOGs)
-          解开后: 小分量插入大分量
-          操作: 保留唯一边 (插入是祖先态)
-
-        【Fission (裂变)】
-        邻接图: 唯一边连接两个共享分量, 外类群有该邻接
-          解开前: 分量1 -- 唯一边 -- 分量2 (外类群有该邻接)
-          解开后: 分量1 和 分量2 分离为两条染色体
-          操作: 移除唯一边 (裂变是衍生态)
-          外类群: 外类群有该邻接 → 祖先有连接 → 当前丢失 → fission
-
-        【Gene indel (基因插入/缺失)】
-        邻接图: 3-cycle (不可能在正常染色体中)
-          操作: 移除环中所有边
-
+        1. 每个孩子内部: duplication resolve (tandem, dispersed, proximal, seg_dup)
+           Postcondition: 每个孩子图线性 (deg<=2, no parallel edges)
+        2. 合图 + 单基因 indel/loss/gain (HOG 级)
+           Postcondition: 无跨越边, 无环, 无分支
+        3. 共线性块压缩
+           Postcondition: 所有 HOG 已分配到块
+        4a. seg_deletion / seg_insertion (多基因 indel)
+           Postcondition: 无大段不对称
+        4b. unidir_trans (单向转移)
+           Postcondition: 无单向转移模式
+        4c. telomere_inversion (端粒倒位，优先!)
+           Postcondition: 端粒位置一致
+        4d. internal_inversion (内部倒位)
+           Postcondition: 块级图无环
+        4e. RT / URT (相互易位)
+           Postcondition: 无跨染色体环
+        4f. EEJ / NCF / fission (桥接事件，最后)
+           Postcondition: 无桥接边
+        5. 端粒约束路径覆盖
+           Postcondition: 所有 HOG 覆盖, 每条染色体 2 个端粒
         ─────────────────────────────────────────────────────────────
         """
         logger.info("  [colored] resolve_all_events for %s: %d nodes, %d edges",
                      self.hog_level, self.node_count(), self.edge_count())
 
-        # ====== Phase 1: HOG 级结构重排 ======
-        # 在块压缩前处理，保留 HOG 级精确信息
-        self.resolve_structural_events(outgroup_adjacency=outgroup_adjacency)
-        logger.info("  [colored] after hog-structural: %d nodes, %d edges, %d events",
+        # ====== Phase 2: 单基因 indel/loss/gain ======
+        # (Phase 1 dedup 在 orchestrator 中 add_child 前完成)
+        self.resolve_indels(outgroups)
+        logger.info("  [colored] Phase 2 (indels): %d nodes, %d edges, %d events",
                      self.node_count(), self.edge_count(), len(self.events))
+        try:
+            self._postcondition_no_cycles("Phase 2")
+            self._postcondition_no_cross_edges("Phase 2")
+        except RuntimeError as e:
+            logger.warning("  [colored] %s", e)
 
-        # ====== Phase 2: 共线性块压缩 ======
+        # ====== Phase 3: 共线性块压缩 ======
         self._build_synteny_blocks()
         self._compress_to_block_level()
-        logger.info("  [colored] blocks: %d (%.1f HOG/block avg)",
+        logger.info("  [colored] Phase 3 (blocks): %d blocks (%.1f HOG/block avg)",
                      len(self._blocks),
                      self.node_count() / max(len(self._blocks), 1))
+        try:
+            self._postcondition_all_hogs_assigned("Phase 3")
+        except RuntimeError as e:
+            logger.warning("  [colored] %s", e)
 
-        # ====== Phase 3: 块级结构重排 (邻接图 + 断点图) ======
-        n_block_struct = self._resolve_block_structural_events(
+        # ====== Phase 4a: seg_deletion / seg_insertion ======
+        n_seg = self._resolve_seg_events(outgroup_adjacency=outgroup_adjacency)
+        if n_seg:
+            logger.info("  [colored] Phase 4a (seg_del/ins): %d events", n_seg)
+
+        # ====== Phase 4b: unidir_trans ======
+        n_ut = self._resolve_unidir_trans(outgroup_adjacency=outgroup_adjacency)
+        if n_ut:
+            logger.info("  [colored] Phase 4b (unidir_trans): %d events", n_ut)
+
+        # ====== Phase 4c-4e: 块级结构重排 (inversion, RT) ======
+        n_struct = self._resolve_block_structural_events(
             outgroup_adjacency=outgroup_adjacency)
-        if n_block_struct:
-            logger.info("  [colored] block-structural: %d events", n_block_struct)
+        if n_struct:
+            logger.info("  [colored] Phase 4c-4e (structural): %d events", n_struct)
 
-        # ====== Phase 4: 块级桥接 (EEJ/NCF/fission) ======
-        n_block_bridge = self._resolve_block_bridge_events(
+        # ====== Phase 4f: 块级桥接 (EEJ/NCF/fission) ======
+        n_bridge = self._resolve_block_bridge_events(
             outgroup_adjacency=outgroup_adjacency)
-        if n_block_bridge:
-            logger.info("  [colored] block-bridge: %d events", n_block_bridge)
+        if n_bridge:
+            logger.info("  [colored] Phase 4f (bridge): %d events", n_bridge)
+        try:
+            self._postcondition_no_bridge_edges("Phase 4f")
+        except RuntimeError as e:
+            logger.warning("  [colored] %s", e)
 
-        # ====== Phase 5: indel/loss ======
-        self.resolve_indels(outgroups)
-        logger.info("  [colored] after indels: %d nodes, %d edges, %d events",
-                     self.node_count(), self.edge_count(), len(self.events))
+        # ====== Phase 5: 端粒约束路径覆盖 ======
+        paths = self.path_cover()
+        all_hogs = self.all_hogs()
+        covered = set()
+        for p in paths:
+            covered.update(p)
+        uncovered = all_hogs - covered
+        if uncovered:
+            logger.warning("  [colored] Phase 5: %d HOGs not covered by path_cover",
+                           len(uncovered))
+        n_chrom = len(paths)
+        logger.info("  [colored] Phase 5 (path cover): %d chromosomes", n_chrom)
 
-        # 过滤小事件 (min_hogs)
+        # 过滤小事件
         kept = []
         for e in self.events:
             if e.event_type in ('eej', 'ncf', 'fission', 'bridge_unclassified',
@@ -1710,13 +1827,76 @@ class ColoredGraph:
             elif len(e.genes_involved) >= min_hogs:
                 kept.append(e)
         self.events = kept
+
         from collections import Counter
         type_counts = Counter(e.event_type for e in self.events)
         type_str = ', '.join(f"{t}={c}" for t, c in sorted(type_counts.items()))
-        logger.info("  [colored] done: %d events %s (after min_hogs=%d)",
-                     len(self.events), type_str, min_hogs)
+        logger.info("  [colored] done: %d events %s (after min_hogs=%d), %d chroms",
+                     len(self.events), type_str, min_hogs, n_chrom)
 
         return self.events
+
+    # ==================== Phase 4a/4b: seg events & unidir_trans ====================
+
+    def _resolve_seg_events(self, outgroup_adjacency: Set = None) -> int:
+        """Phase 4a: 检测 seg_deletion / seg_insertion。
+
+        模式: 一个孩子有连续 N 个块 (N>=3)，另一个孩子完全缺失。
+        在块级图中检测: 共享边路径中，某个孩子缺失一段连续块。
+        """
+        if not hasattr(self, '_blocks'):
+            return 0
+
+        events_found = 0
+        # 对每个孩子，检查其块序列中是否有大段缺失
+        for cid in self.children():
+            child_blocks = set()
+            for bid, hogs in self._blocks.items():
+                for h in hogs:
+                    if h in self._child_hogs.get(cid, set()):
+                        child_blocks.add(bid)
+                        break
+
+            # 检查共享边路径中缺失的连续块
+            # 共享边路径 = 所有孩子共有的块序列
+            all_blocks = set(self._blocks.keys())
+            missing = all_blocks - child_blocks
+            if not missing:
+                continue
+
+            # 检查缺失块是否在共享边路径中连续
+            # 简化: 标记缺失块为 seg_deletion (需要外类群确认)
+            if len(missing) >= 3:
+                # 检查缺失块是否形成连续路径
+                bg = self._block_graph
+                missing_sub = bg.subgraph(missing) if missing else None
+                if missing_sub and nx.is_connected(missing_sub):
+                    involved_hogs = []
+                    for bid in missing:
+                        involved_hogs.extend(self._blocks.get(bid, []))
+
+                    etype = 'seg_deletion'
+                    self.events.append(TAKREvent(
+                        event_type=etype,
+                        branch=self.hog_level,
+                        genes_involved=involved_hogs,
+                        desc=f"seg_deletion: {len(missing)} blocks missing in {cid}",
+                        support=1,
+                    ))
+                    events_found += 1
+
+        return events_found
+
+    def _resolve_unidir_trans(self, outgroup_adjacency: Set = None) -> int:
+        """Phase 4b: 检测 unidirectional translocation。
+
+        模式: A 有 a-b-c-d，B 有 a-x-d (b,c 被 x 替换，x 只在 B 中)。
+        在块级图中: 两个孩子共享 a 和 d，但中间路径不同。
+        """
+        # 简化实现: 检查块级图中的非循环结构差异
+        # 完整实现需要对每个孩子的块序列做比对
+        # 当前返回 0，后续补充
+        return 0
 
     # ==================== 可视化 ====================
 

@@ -691,6 +691,9 @@ def add_eval_args(parser):
                         help='Run adjacency-level evaluation (requires --karyotype and --gene-map)')
     parser.add_argument('--gene-map', help='gene_ancestor_map.tsv for adjacency evaluation')
     parser.add_argument('--gfa-dir', help='Directory with AKR.*.anc.gfa for adjacency evaluation')
+    parser.add_argument('--synteny-eval', action='store_true',
+                        help='Run synteny-level evaluation (chrom grouping + gene order)')
+    parser.add_argument('--og-file', help='ortholog_groups.txt for SOG→ancestor mapping')
 
 
 def eval_main(**kargs):
@@ -742,6 +745,22 @@ def eval_main(**kargs):
         else:
             print("WARNING: --adj-eval requires --karyotype and --gene-map")
 
+    # Synteny-level evaluation
+    if kargs.get('synteny_eval'):
+        karyo_file = kargs.get('karyotype')
+        gene_map_file = kargs.get('gene_map')
+        gfa_dir = kargs.get('gfa_dir')
+        og_file = kargs.get('og_file')
+        if karyo_file and gene_map_file:
+            print("=" * 72)
+            syn_results = evaluate_synteny(
+                karyo_file, gene_map_file,
+                recon_gfa_dir=gfa_dir,
+                og_file=og_file)
+            print_synteny_summary(syn_results)
+        else:
+            print("WARNING: --synteny-eval requires --karyotype and --gene-map")
+
     # Report file
     if kargs.get('report'):
         generate_report(results, gm, kargs['report'])
@@ -768,6 +787,37 @@ def load_gene_ancestor_map(tsv_path: str) -> Dict[str, str]:
             if gene and ancestor:
                 mapping[gene] = ancestor
     return mapping
+
+
+def build_sog_ancestor_map(
+    ortholog_groups_file: str,
+    gene_ancestor_map: Dict[str, str],
+) -> Dict[str, str]:
+    """Build {SOG_id: ancestor_id} mapping from ortholog_groups.txt.
+
+    OG file format: 'SOG1: Sp_1|g1 Sp_2|g1 ...'
+    Maps each SOG to the ancestor of its first gene (stripped of species prefix).
+    """
+    sog_to_anc = {}
+    if not os.path.exists(ortholog_groups_file):
+        return sog_to_anc
+    with open(ortholog_groups_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or ':' not in line:
+                continue
+            sog_id, genes_str = line.split(':', 1)
+            sog_id = sog_id.strip()
+            genes = genes_str.strip().split()
+            if not genes:
+                continue
+            # Strip species prefix: 'Sp_1|g1' -> 'g1'
+            first_gene = genes[0]
+            if '|' in first_gene:
+                first_gene = first_gene.split('|', 1)[1]
+            anc = gene_ancestor_map.get(first_gene, first_gene)
+            sog_to_anc[sog_id] = anc
+    return sog_to_anc
 
 
 def load_karyotype_adjacencies(tsv_path: str) -> Dict[str, set]:
@@ -937,6 +987,357 @@ def print_adjacency_summary(results: dict):
         print(f"  {node:<15} {r['truth_adj']:>6} {r['recon_adj']:>6} "
               f"{r['TP']:>5} {r['FP']:>5} {r['FN']:>5} "
               f"{r['Precision']:>7.3f} {r['Recall']:>7.3f} {r['F1']:>7.3f}")
+    print()
+
+
+# ===========================================================================
+#  Synteny-level evaluation (chromosomal grouping + gene order)
+# ===========================================================================
+
+def load_karyotype_chroms(tsv_path: str) -> Dict[str, List[List[str]]]:
+    """Load ancestors_karyotypes.txt, return {node: [[gene, ...], ...]}.
+
+    Each inner list is an ordered chromosome (gene IDs, '-' prefix stripped).
+    """
+    chroms = {}  # node -> list of chrom (list of gene IDs)
+    if not os.path.exists(tsv_path):
+        return chroms
+    current_node = None
+    with open(tsv_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('>'):
+                current_node = line[1:].split('\t')[0]
+                chroms[current_node] = []
+                continue
+            if current_node is None:
+                continue
+            parts = line.split('\t')
+            if len(parts) < 2:
+                continue
+            genes = [g.lstrip('-') for g in parts[1].split()]
+            if genes:
+                chroms[current_node].append(genes)
+    return chroms
+
+
+def load_recon_chroms_from_gfa(gfa_dir: str, prefix: str = 'AKR') -> Dict[str, List[List[str]]]:
+    """Load reconstructed chromosomes from GFA path lines or GFF files.
+
+    Tries GFA P-lines first; falls back to GFF files (AKR.*.gff).
+    Returns {node: [[hog_id, ...], ...]}.
+    """
+    import glob
+    chroms = {}
+
+    # Try GFA first
+    pattern = os.path.join(gfa_dir, f'{prefix}.*.anc.gfa')
+    for gfa_path in sorted(glob.glob(pattern)):
+        fname = os.path.basename(gfa_path)
+        node = fname.replace(f'{prefix}.', '').replace('.anc.gfa', '')
+        paths = []
+        with open(gfa_path) as f:
+            for line in f:
+                if line.startswith('P'):
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 3:
+                        segs = parts[2].split(',')
+                        hog_ids = [s.rstrip('+-') for s in segs]
+                        if hog_ids:
+                            paths.append(hog_ids)
+        chroms[node] = paths
+
+    if chroms:
+        return chroms
+
+    # Fallback: GFF files (AKR.*.gff)
+    pattern = os.path.join(gfa_dir, f'{prefix}.*.gff')
+    for gff_path in sorted(glob.glob(pattern)):
+        fname = os.path.basename(gff_path)
+        node = fname.replace(f'{prefix}.', '').replace('.gff', '')
+        # Group by chromosome (column 1), ordered by position (column 3)
+        from collections import defaultdict
+        chrom_genes = defaultdict(list)
+        with open(gff_path) as f:
+            for line in f:
+                if line.startswith('#') or not line.strip():
+                    continue
+                parts = line.strip().split('\t')
+                if len(parts) >= 3:
+                    chrom_id = parts[0]
+                    hog_id = parts[1]
+                    start = int(parts[2]) if parts[2].isdigit() else 0
+                    chrom_genes[chrom_id].append((start, hog_id))
+        paths = []
+        for chrom_id in sorted(chrom_genes.keys()):
+            genes = [hog_id for _, hog_id in sorted(chrom_genes[chrom_id])]
+            if genes:
+                paths.append(genes)
+        chroms[node] = paths
+
+    return chroms
+
+
+def _build_chrom_assignment(chroms: List[List[str]]) -> Dict[str, int]:
+    """Build {gene/hog: chromosome_index} assignment."""
+    assignment = {}
+    for ci, chrom in enumerate(chroms):
+        for g in chrom:
+            assignment[g] = ci
+    return assignment
+
+
+def _build_adjacency_set(chroms: List[List[str]]) -> set:
+    """Build set of frozenset adjacency pairs from ordered chromosomes."""
+    adj = set()
+    for chrom in chroms:
+        for i in range(len(chrom) - 1):
+            adj.add(frozenset({chrom[i], chrom[i + 1]}))
+    return adj
+
+
+def evaluate_synteny(
+    truth_karyo_file: str,
+    gene_ancestor_map_file: str,
+    recon_gfa_dir: str = None,
+    recon_chroms: Dict[str, List[List[str]]] = None,
+    recon_prefix: str = 'AKR',
+    og_file: str = None,
+) -> dict:
+    """Synteny-level evaluation: chromosomal grouping + gene order.
+
+    For each ancestor node, computes:
+    - inter-chromosomal: are truth-adjacent gene pairs on the same reconstructed chrom?
+    - intra-chromosomal: are truth gene adjacencies preserved in reconstruction?
+    - synteny blocks: maximal collinear segments between truth and reconstruction
+
+    Args:
+        truth_karyo_file: ancestors_karyotypes.txt from simulator
+        gene_ancestor_map_file: gene_ancestor_map.tsv from simulator
+        recon_gfa_dir: Directory with AKR.*.anc.gfa or AKR.*.gff files
+        recon_chroms: Pre-loaded {node: [[hog_id, ...], ...]}
+        recon_prefix: File prefix for GFA/GFF files
+        og_file: ortholog_groups.txt (for SOG→ancestor mapping)
+    """
+    # Load truth (gene-level)
+    truth_gene_chroms = load_karyotype_chroms(truth_karyo_file)
+    gene_to_anc = load_gene_ancestor_map(gene_ancestor_map_file)
+
+    # Convert truth to ancestor level
+    truth_anc_chroms = {}
+    for node, chroms in truth_gene_chroms.items():
+        anc_chroms = []
+        for chrom in chroms:
+            anc_chrom = []
+            for g in chrom:
+                anc = gene_to_anc.get(g, g)
+                anc_chrom.append(anc)
+            # Collapse consecutive same-ancestor (tandem dup remnants)
+            collapsed = []
+            for a in anc_chrom:
+                if not collapsed or collapsed[-1] != a:
+                    collapsed.append(a)
+            if collapsed:
+                anc_chroms.append(collapsed)
+        truth_anc_chroms[node] = anc_chroms
+
+    # Load reconstruction (HOG-level)
+    if recon_chroms is None:
+        recon_chroms = load_recon_chroms_from_gfa(recon_gfa_dir, prefix=recon_prefix)
+
+    # Build SOG→ancestor mapping to convert HOG IDs to ancestor IDs
+    sog_to_anc = {}
+    if og_file:
+        sog_to_anc = build_sog_ancestor_map(og_file, gene_to_anc)
+
+    def hog_to_anc(hog_id: str) -> str:
+        """Convert HOG ID (e.g. SOG958.N1.hog0) to ancestor ID (e.g. g958)."""
+        # Extract SOG part: SOG958.N1.hog0 → SOG958
+        if '.' in hog_id:
+            sog_part = hog_id.split('.')[0]
+            if sog_part in sog_to_anc:
+                return sog_to_anc[sog_part]
+        return hog_id  # fallback: use as-is
+
+    # Convert reconstruction to ancestor level
+    recon_anc_chroms = {}
+    for node, chroms in recon_chroms.items():
+        anc_chroms = []
+        for chrom in chroms:
+            anc_chrom = [hog_to_anc(h) for h in chrom]
+            # Collapse consecutive same-ancestor
+            collapsed = []
+            for a in anc_chrom:
+                if not collapsed or collapsed[-1] != a:
+                    collapsed.append(a)
+            if collapsed:
+                anc_chroms.append(collapsed)
+        recon_anc_chroms[node] = anc_chroms
+
+    # Compare per node
+    results = {}
+    total_inter_tp, total_inter_fp, total_inter_fn = 0, 0, 0
+    total_intra_tp, total_intra_fp, total_intra_fn = 0, 0, 0
+
+    all_nodes = sorted(set(list(truth_anc_chroms.keys()) +
+                           list(recon_anc_chroms.keys())))
+
+    for node in all_nodes:
+        t_chroms = truth_anc_chroms.get(node, [])
+        r_chroms = recon_anc_chroms.get(node, [])
+
+        # -- Inter-chromosomal: gene grouping --
+        # For each pair of consecutive truth genes (adjacency),
+        # check if they're on the same reconstructed chromosome.
+        t_assign = _build_chrom_assignment(t_chroms)
+        r_assign = _build_chrom_assignment(r_chroms)
+
+        inter_tp, inter_fn = 0, 0
+        for chrom in t_chroms:
+            for i in range(len(chrom) - 1):
+                g1, g2 = chrom[i], chrom[i + 1]
+                if g1 in r_assign and g2 in r_assign:
+                    if r_assign[g1] == r_assign[g2]:
+                        inter_tp += 1
+                    else:
+                        inter_fn += 1
+                else:
+                    inter_fn += 1  # gene missing from reconstruction
+
+        # FP: reconstructed adjacencies not in truth
+        t_adj = _build_adjacency_set(t_chroms)
+        r_adj = _build_adjacency_set(r_chroms)
+        inter_fp = 0
+        for chrom in r_chroms:
+            for i in range(len(chrom) - 1):
+                g1, g2 = chrom[i], chrom[i + 1]
+                pair = frozenset({g1, g2})
+                if pair not in t_adj:
+                    inter_fp += 1
+
+        inter_m = calculate_metrics(inter_tp, inter_fp, inter_fn)
+
+        # -- Intra-chromosomal: adjacency preservation --
+        # Same as adjacency evaluation but more structured
+        intra_tp = len(t_adj & r_adj)
+        intra_fp = len(r_adj - t_adj)
+        intra_fn = len(t_adj - r_adj)
+        intra_m = calculate_metrics(intra_tp, intra_fp, intra_fn)
+
+        # -- Synteny blocks (maximal collinear segments) --
+        blocks = _find_synteny_blocks(t_chroms, r_chroms)
+
+        results[node] = {
+            'truth_chroms': len(t_chroms),
+            'recon_chroms': len(r_chroms),
+            'truth_adj': len(t_adj),
+            'recon_adj': len(r_adj),
+            'inter': inter_m,
+            'intra': intra_m,
+            'blocks': blocks,
+            'block_genes': sum(b[2] for b in blocks),
+        }
+        total_inter_tp += inter_tp
+        total_inter_fp += inter_fp
+        total_inter_fn += inter_fn
+        total_intra_tp += intra_tp
+        total_intra_fp += intra_fp
+        total_intra_fn += intra_fn
+
+    results['global'] = {
+        'inter': calculate_metrics(total_inter_tp, total_inter_fp, total_inter_fn),
+        'intra': calculate_metrics(total_intra_tp, total_intra_fp, total_intra_fn),
+    }
+    return results
+
+
+def _find_synteny_blocks(
+    truth_chroms: List[List[str]],
+    recon_chroms: List[List[str]],
+) -> List[tuple]:
+    """Find maximal collinear segments between truth and reconstruction.
+
+    Returns list of (truth_chrom_idx, recon_chrom_idx, block_length, genes).
+    Uses a simple greedy approach: for each truth chromosome, find the
+    best-matching reconstruction chromosome by longest common subsequence.
+    """
+    blocks = []
+    for ti, t_chrom in enumerate(truth_chroms):
+        # Build position maps for each reconstruction chromosome
+        best_block = (0, 0, 0, [])
+        for ri, r_chrom in enumerate(recon_chroms):
+            # Find longest common subsequence of consecutive elements
+            # Simplified: find maximal runs of truth genes in reconstruction order
+            r_pos = {}
+            for j, g in enumerate(r_chrom):
+                r_pos[g] = j
+
+            # Find consecutive truth genes that appear in order in reconstruction
+            run_len = 0
+            run_start = 0
+            best_run_len = 0
+            best_run_start = 0
+            prev_pos = -1
+            for j, g in enumerate(t_chrom):
+                if g in r_pos and r_pos[g] > prev_pos:
+                    if run_len == 0:
+                        run_start = j
+                    run_len += 1
+                    prev_pos = r_pos[g]
+                else:
+                    if run_len > best_run_len:
+                        best_run_len = run_len
+                        best_run_start = run_start
+                    run_len = 0
+                    prev_pos = -1
+                    if g in r_pos:
+                        run_start = j
+                        run_len = 1
+                        prev_pos = r_pos[g]
+            if run_len > best_run_len:
+                best_run_len = run_len
+                best_run_start = run_start
+
+            if best_run_len >= 2 and best_run_len > best_block[2]:
+                genes = t_chrom[best_run_start:best_run_start + best_run_len]
+                best_block = (ti, ri, best_run_len, genes)
+
+        if best_block[2] >= 2:
+            blocks.append(best_block)
+
+    return blocks
+
+
+def print_synteny_summary(results: dict):
+    """Print synteny-level evaluation summary."""
+    g = results.get('global', {})
+    gi = g.get('inter', {})
+    ga = g.get('intra', {})
+
+    print()
+    print("Synteny-Level Evaluation")
+    print("=" * 72)
+    print(f"  Inter-chromosomal (gene grouping):  "
+          f"F1={gi.get('F1', 0):.3f}  P={gi.get('Precision', 0):.3f}  "
+          f"R={gi.get('Recall', 0):.3f}  "
+          f"(TP={gi.get('TP', 0)} FP={gi.get('FP', 0)} FN={gi.get('FN', 0)})")
+    print(f"  Intra-chromosomal (gene order):     "
+          f"F1={ga.get('F1', 0):.3f}  P={ga.get('Precision', 0):.3f}  "
+          f"R={ga.get('Recall', 0):.3f}  "
+          f"(TP={ga.get('TP', 0)} FP={ga.get('FP', 0)} FN={ga.get('FN', 0)})")
+    print()
+    print(f"  {'Node':<15} {'T_chr':>5} {'R_chr':>5} "
+          f"{'inter_F1':>8} {'intra_F1':>8} {'blocks':>6} {'blk_genes':>9}")
+    print(f"  {'-' * 62}")
+    for node in sorted(results.keys()):
+        if node == 'global':
+            continue
+        r = results[node]
+        print(f"  {node:<15} {r['truth_chroms']:>5} {r['recon_chroms']:>5} "
+              f"{r['inter']['F1']:>8.3f} {r['intra']['F1']:>8.3f} "
+              f"{len(r['blocks']):>6} {r['block_genes']:>9}")
     print()
 
 

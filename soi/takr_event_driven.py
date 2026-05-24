@@ -34,54 +34,95 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 def _draw_child_paths(child_graph, child_id, node_id, outpath):
-    """Draw a child's chromosome paths as a simple linear visualization."""
+    """Draw a child's chromosome paths as a graphviz graph (nodes + edges)."""
     try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as mpatches
-    except ImportError:
+        import graphviz
+        import shutil
+        if not shutil.which('dot'):
+            raise ImportError('dot binary not found')
+    except (ImportError, Exception):
+        # fallback to matplotlib
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except ImportError:
+            return
+        chroms = list(child_graph.chromosomes)
+        if not chroms:
+            return
+        palette = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
+                   '#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
+        n_chrom = len(chroms)
+        fig, ax = plt.subplots(figsize=(max(12, n_chrom * 3), max(4, n_chrom * 0.8)))
+        for ci, chrom in enumerate(chroms):
+            hogs = [n for n in chrom if n not in child_graph.telomeres]
+            if not hogs:
+                continue
+            color = palette[ci % len(palette)]
+            y = n_chrom - ci
+            for i in range(len(hogs)):
+                ax.add_patch(plt.Rectangle((i, y - 0.3), 0.9, 0.6,
+                                           facecolor=color, edgecolor='black',
+                                           linewidth=0.5, alpha=0.7))
+            ax.text(-1, y, f'chr{ci}', ha='right', va='center', fontsize=8, fontweight='bold')
+        ax.set_xlim(-3, max(len([n for n in c if n not in child_graph.telomeres])
+                            for c in chroms) + 5)
+        ax.set_ylim(0.3, n_chrom + 0.7)
+        ax.set_title(f'{child_id} ({node_id}): {n_chrom} chromosomes', fontsize=10)
+        ax.set_yticks([])
+        for sp in ('top', 'right', 'left'):
+            ax.spines[sp].set_visible(False)
+        plt.tight_layout()
+        plt.savefig(outpath, dpi=150, bbox_inches='tight')
+        plt.close()
         return
 
     chroms = list(child_graph.chromosomes)
-    n_chrom = len(chroms)
-    if n_chrom == 0:
+    if not chroms:
         return
 
-    fig, ax = plt.subplots(figsize=(max(12, n_chrom * 3), max(4, n_chrom * 0.8)))
-    colors_list = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
-                   '#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
+    palette = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
+               '#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
+    tel_set = set()
+    for t in child_graph.telomeres:
+        tel_set.add(t)
+
+    dot = graphviz.Digraph(format='png')
+    dot.attr(rankdir='LR',
+             label=f'{child_id} ({node_id}): {len(chroms)} chromosomes',
+             labelloc='t', fontsize='14', fontname='Helvetica-Bold',
+             fontcolor='#1a1a2e', bgcolor='white', nodesep='0.3', ranksep='0.5')
+    dot.attr('node', fontname='Helvetica', fontsize='9', fontcolor='#1a1a2e',
+             margin='0.12,0.06')
+    dot.attr('edge', fontname='Helvetica', fontsize='7')
 
     for ci, chrom in enumerate(chroms):
-        hogs = [n for n in chrom if n not in child_graph.telomeres]
+        color = palette[ci % len(palette)]
+        hogs = list(chrom)
         if not hogs:
             continue
-        color = colors_list[ci % len(colors_list)]
-        y = n_chrom - ci  # top to bottom
 
-        # Draw chromosome as a horizontal line of blocks
-        for i, hog in enumerate(hogs):
-            x = i
-            ax.add_patch(plt.Rectangle((x, y - 0.3), 0.9, 0.6,
-                                       facecolor=color, edgecolor='black',
-                                       linewidth=0.5, alpha=0.7))
+        # Add nodes
+        for hog in hogs:
+            hog_str = str(hog) if hasattr(hog, 'hog_id') else str(hog)
+            short = hog_str.split('.')[-1] if '.' in hog_str else hog_str
+            is_tel = hog in tel_set
+            attrs = {'style': 'filled', 'fillcolor': color, 'color': '#333333',
+                     'shape': 'doubleoctagon' if is_tel else 'box'}
+            dot.node(hog_str, label=short, **attrs)
 
-        ax.text(-1, y, f'chr{ci}', ha='right', va='center', fontsize=8, fontweight='bold')
-        ax.text(len(hogs) + 0.5, y, f'{len(hogs)} HOGs', ha='left', va='center', fontsize=7)
+        # Add edges along chromosome order
+        for i in range(len(hogs) - 1):
+            h1 = str(hogs[i]) if hasattr(hogs[i], 'hog_id') else str(hogs[i])
+            h2 = str(hogs[i + 1]) if hasattr(hogs[i + 1], 'hog_id') else str(hogs[i + 1])
+            dot.edge(h1, h2, color=color, penwidth='1.5')
 
-    ax.set_xlim(-3, max(len([n for n in c if n not in child_graph.telomeres])
-                        for c in chroms) + 5)
-    ax.set_ylim(0.3, n_chrom + 0.7)
-    ax.set_title(f'{child_id} ({node_id}): {n_chrom} chromosomes', fontsize=10)
-    ax.set_xlabel('HOG position', fontsize=8)
-    ax.set_yticks([])
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=150, bbox_inches='tight')
-    plt.close()
+    base = outpath.rsplit('.', 1)[0] if outpath.endswith('.png') else outpath
+    try:
+        dot.render(base, cleanup=True)
+    except Exception:
+        pass
 
 
 # =========================================================================

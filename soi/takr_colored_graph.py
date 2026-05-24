@@ -1324,10 +1324,14 @@ class ColoredGraph:
         if not color_counts:
             return None, [], info
 
-        # 检查是否交替模式：edges[i] 和 edges[i+2] 应颜色相同
+        # 检查是否交替模式：edges[i] 和 edges[i+2] 应来自同一孩子
         if n >= 4:
+            # 提取每条边的 child set（忽略 chromosome）
+            edge_children = []
+            for colors in edge_colors:
+                edge_children.append(set(c[0] for c in colors))
             alternating = all(
-                edge_colors[i] == edge_colors[(i + 2) % n]
+                edge_children[i] == edge_children[(i + 2) % n]
                 for i in range(n)
             )
 

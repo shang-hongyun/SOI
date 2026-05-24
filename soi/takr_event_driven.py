@@ -41,41 +41,15 @@ def _draw_child_paths(child_graph, child_id, node_id, outpath):
         if not shutil.which('dot'):
             raise ImportError('dot binary not found')
     except (ImportError, Exception):
-        # fallback to matplotlib
+        # fallback to matplotlib + networkx
         try:
             import matplotlib
             matplotlib.use('Agg')
             import matplotlib.pyplot as plt
+            import networkx as nx
         except ImportError:
             return
-        chroms = list(child_graph.chromosomes)
-        if not chroms:
-            return
-        palette = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
-                   '#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
-        n_chrom = len(chroms)
-        fig, ax = plt.subplots(figsize=(max(12, n_chrom * 3), max(4, n_chrom * 0.8)))
-        for ci, chrom in enumerate(chroms):
-            hogs = [n for n in chrom if n not in child_graph.telomeres]
-            if not hogs:
-                continue
-            color = palette[ci % len(palette)]
-            y = n_chrom - ci
-            for i in range(len(hogs)):
-                ax.add_patch(plt.Rectangle((i, y - 0.3), 0.9, 0.6,
-                                           facecolor=color, edgecolor='black',
-                                           linewidth=0.5, alpha=0.7))
-            ax.text(-1, y, f'chr{ci}', ha='right', va='center', fontsize=8, fontweight='bold')
-        ax.set_xlim(-3, max(len([n for n in c if n not in child_graph.telomeres])
-                            for c in chroms) + 5)
-        ax.set_ylim(0.3, n_chrom + 0.7)
-        ax.set_title(f'{child_id} ({node_id}): {n_chrom} chromosomes', fontsize=10)
-        ax.set_yticks([])
-        for sp in ('top', 'right', 'left'):
-            ax.spines[sp].set_visible(False)
-        plt.tight_layout()
-        plt.savefig(outpath, dpi=150, bbox_inches='tight')
-        plt.close()
+        _draw_child_paths_mpl(child_graph, child_id, node_id, outpath)
         return
 
     chroms = list(child_graph.chromosomes)
@@ -123,6 +97,82 @@ def _draw_child_paths(child_graph, child_id, node_id, outpath):
         dot.render(base, cleanup=True)
     except Exception:
         pass
+
+
+def _draw_child_paths_mpl(child_graph, child_id, node_id, outpath):
+    """Matplotlib fallback: draw child chromosome paths as networkx graph."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import networkx as nx
+
+    chroms = list(child_graph.chromosomes)
+    if not chroms:
+        return
+
+    palette = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
+               '#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
+    tel_set = set(child_graph.telomeres)
+
+    # Build networkx graph
+    G = nx.Graph()
+    for ci, chrom in enumerate(chroms):
+        hogs = list(chrom)
+        for hog in hogs:
+            G.add_node(hog, chrom_idx=ci, is_tel=(hog in tel_set))
+        for i in range(len(hogs) - 1):
+            G.add_edge(hogs[i], hogs[i + 1], chrom_idx=ci)
+
+    if G.number_of_nodes() == 0:
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(max(14, G.number_of_nodes() * 0.3), 8))
+    try:
+        pos = nx.kamada_kawai_layout(G)
+    except Exception:
+        pos = nx.spring_layout(G, k=2.0, seed=42)
+
+    # Draw edges per chromosome
+    for ci, chrom in enumerate(chroms):
+        color = palette[ci % len(palette)]
+        hogs = list(chrom)
+        edges = [(hogs[i], hogs[i + 1]) for i in range(len(hogs) - 1)]
+        if edges:
+            nx.draw_networkx_edges(G, pos, edgelist=edges, ax=ax,
+                                   edge_color=color, width=2.0, alpha=0.8)
+
+    # Draw nodes
+    tel_nodes = [n for n in G.nodes() if G.nodes[n].get('is_tel')]
+    non_tel_nodes = [n for n in G.nodes() if not G.nodes[n].get('is_tel')]
+
+    node_colors = []
+    for n in non_tel_nodes:
+        ci = G.nodes[n].get('chrom_idx', 0)
+        node_colors.append(palette[ci % len(palette)])
+    if non_tel_nodes:
+        nx.draw_networkx_nodes(G, pos, nodelist=non_tel_nodes, ax=ax,
+                               node_size=120, node_color=node_colors,
+                               edgecolors='#333333', linewidths=1.0)
+    if tel_nodes:
+        nx.draw_networkx_nodes(G, pos, nodelist=tel_nodes, ax=ax,
+                               node_size=180, node_color='#fff3cd',
+                               edgecolors='#e67e22', linewidths=2.0,
+                               node_shape='D')
+
+    # Labels: short HOG ID
+    labels = {}
+    for n in G.nodes():
+        s = str(n) if hasattr(n, 'hog_id') else str(n)
+        labels[n] = s.split('.')[-1] if '.' in s else s
+    nx.draw_networkx_labels(G, pos, labels, ax=ax, font_size=6,
+                            font_color='#1a1a2e')
+
+    ax.set_title(f'{child_id} ({node_id}): {len(chroms)} chromosomes, '
+                 f'{G.number_of_nodes()} HOGs', fontsize=12)
+    ax.axis('off')
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=150, bbox_inches='tight')
+    plt.close()
 
 
 # =========================================================================

@@ -1434,11 +1434,15 @@ class ColoredGraph:
             cycles = self._find_block_cycles()
             if not cycles:
                 break
+            logger.debug("  [structural] iteration %d: %d cycles found", iteration, len(cycles))
 
             # Step 1: 对所有环分类
             classified = []
             for cycle in cycles:
                 etype, conflict_edges, info = self._classify_block_cycle(cycle)
+                logger.debug("  [structural] cycle %s → %s, conflicts=%d, info=%s",
+                             [str(b) for b in cycle], etype, len(conflict_edges),
+                             {k: v for k, v in info.items() if k != 'edge_colors'})
                 if etype is not None and conflict_edges:
                     classified.append((etype, conflict_edges, info, cycle))
 
@@ -1711,6 +1715,12 @@ class ColoredGraph:
             use_orig_comp = False
 
         events_found = 0
+        n_unique = sum(1 for _, _, d in bg.edges(data=True) if len(d.get('colors', set())) == 1)
+        n_shared = sum(1 for _, _, d in bg.edges(data=True) if len(d.get('colors', set())) > 1)
+        logger.debug("  [bridge] block graph: %d nodes, %d edges (%d unique, %d shared), %d shared components",
+                     bg.number_of_nodes(), bg.number_of_edges(), n_unique, n_shared, len(components))
+        logger.debug("  [bridge] telomere blocks: %s, comp_has_telomere: %s",
+                     telomere_blocks, comp_has_telomere)
         for b1, b2, data in list(bg.edges(data=True)):
             colors = data.get('colors', set())
             if len(colors) != 1:

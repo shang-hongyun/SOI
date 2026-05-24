@@ -1130,7 +1130,7 @@ class ColoredGraph:
         - 断开点：唯一边、端粒 HOG
         - 单孩子：每条染色体路径 = 一个块（端粒除外）
         """
-        cons_tels = self.consensus_telomeres(min_children=2) if len(self.children()) >= 2 else self.child_telomere_set()
+        cons_tels = self.child_telomere_set()  # all telomere HOGs, never compressed
         hog_set = self.all_hogs()  # cache
         blocks = {}
         hog_to_block = {}

@@ -11,6 +11,7 @@ takr_colored_graph.py - ColoredGraph: 彩色邻接图 + 环检测 + 路径覆盖
 """
 
 import logging
+import math
 from collections import defaultdict, Counter
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -2376,9 +2377,9 @@ class ColoredGraph:
                 label += '\n' + ', '.join(str(h) for h in hog_list[:5])
 
             attrs = {'label': label,
-                     'width': str(max(0.4, hog_count * 0.03)),
-                     'height': str(max(0.3, hog_count * 0.02)),
-                     'fontcolor': '#1a1a2e', 'fontsize': '11'}
+                     'width': str(round(max(0.6, math.log2(hog_count + 1) * 0.4), 2)),
+                     'height': str(round(max(0.4, math.log2(hog_count + 1) * 0.3), 2)),
+                     'fontcolor': '#1a1a2e', 'fontsize': '14'}
 
             if n in telomere_blocks:
                 attrs['shape'] = 'doubleoctagon'
@@ -2476,7 +2477,7 @@ class ColoredGraph:
         node_sizes = []
         for n in bg.nodes():
             hog_count = len(self._blocks.get(n, []))
-            node_sizes.append(max(300, hog_count * 20))
+            node_sizes.append(max(400, int(200 * math.log2(hog_count + 1))))
 
         cycles = []
         try:
@@ -2513,7 +2514,7 @@ class ColoredGraph:
                                edgecolors=node_edge_colors, linewidths=2.0)
 
         labels = {n: f'{n}\n({len(self._blocks.get(n, []))})' for n in bg.nodes()}
-        nx.draw_networkx_labels(bg, pos, labels, ax=ax, font_size=8,
+        nx.draw_networkx_labels(bg, pos, labels, ax=ax, font_size=10,
                                 font_color='#1a1a2e', font_weight='bold')
 
         children = sorted(self.children())

@@ -981,6 +981,16 @@ class EvolutionSimulator:
                 child_label = child_key if child_key else "unnamed"
                 output_files.append(os.path.join(
                     branch_dir, "dotplot_{}_{}.png".format(parent_label, child_label)))
+        # Collect sister dotplot PNGs
+        for node in tree.traverse("preorder"):
+            if node.is_leaf():
+                continue
+            children = [c for c in node.children if c.name in self.all_node_karyotypes]
+            for i in range(len(children)):
+                for j in range(i + 1, len(children)):
+                    c1, c2 = children[i].name, children[j].name
+                    output_files.append(os.path.join(
+                        sister_dir, "dotplot_{}_vs_{}.png".format(c1, c2)))
 
         print("Done! Output files:")
         for f in sorted(output_files):

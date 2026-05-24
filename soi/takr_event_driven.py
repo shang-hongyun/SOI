@@ -34,145 +34,21 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 def _draw_child_paths(child_graph, child_id, node_id, outpath):
-    """Draw a child's chromosome paths as a graphviz graph (nodes + edges)."""
+    """Draw a child's block-level graph using the same logic as merged block graph."""
+    from soi.takr_colored_graph import ColoredGraph
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+
     try:
-        import graphviz
-        import shutil
-        if not shutil.which('dot'):
-            raise ImportError('dot binary not found')
-    except (ImportError, Exception):
-        # fallback to matplotlib + networkx
-        try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            import networkx as nx
-        except ImportError:
-            return
-        _draw_child_paths_mpl(child_graph, child_id, node_id, outpath)
-        return
-
-    chroms = list(child_graph.chromosomes)
-    if not chroms:
-        return
-
-    palette = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
-               '#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
-    tel_set = set()
-    for t in child_graph.telomeres:
-        tel_set.add(t)
-
-    dot = graphviz.Digraph(format='png')
-    dot.attr(rankdir='LR',
-             label=f'{child_id} ({node_id}): {len(chroms)} chromosomes',
-             labelloc='t', fontsize='14', fontname='Helvetica-Bold',
-             fontcolor='#1a1a2e', bgcolor='white', nodesep='0.3', ranksep='0.5')
-    dot.attr('node', fontname='Helvetica', fontsize='9', fontcolor='#1a1a2e',
-             margin='0.12,0.06')
-    dot.attr('edge', fontname='Helvetica', fontsize='7')
-
-    for ci, chrom in enumerate(chroms):
-        color = palette[ci % len(palette)]
-        hogs = list(chrom)
-        if not hogs:
-            continue
-
-        # Add nodes
-        for hog in hogs:
-            hog_str = str(hog) if hasattr(hog, 'hog_id') else str(hog)
-            short = hog_str.split('.')[-1] if '.' in hog_str else hog_str
-            is_tel = hog in tel_set
-            attrs = {'style': 'filled', 'fillcolor': color, 'color': '#333333',
-                     'shape': 'doubleoctagon' if is_tel else 'box'}
-            dot.node(hog_str, label=short, **attrs)
-
-        # Add edges along chromosome order
-        for i in range(len(hogs) - 1):
-            h1 = str(hogs[i]) if hasattr(hogs[i], 'hog_id') else str(hogs[i])
-            h2 = str(hogs[i + 1]) if hasattr(hogs[i + 1], 'hog_id') else str(hogs[i + 1])
-            dot.edge(h1, h2, color=color, penwidth='1.5')
-
-    base = outpath.rsplit('.', 1)[0] if outpath.endswith('.png') else outpath
-    try:
-        dot.render(base, cleanup=True)
-    except Exception:
-        pass
-
-
-def _draw_child_paths_mpl(child_graph, child_id, node_id, outpath):
-    """Matplotlib fallback: draw child chromosome paths as networkx graph."""
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    import networkx as nx
-
-    chroms = list(child_graph.chromosomes)
-    if not chroms:
-        return
-
-    palette = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
-               '#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
-    tel_set = set(child_graph.telomeres)
-
-    # Build networkx graph
-    G = nx.Graph()
-    for ci, chrom in enumerate(chroms):
-        hogs = list(chrom)
-        for hog in hogs:
-            G.add_node(hog, chrom_idx=ci, is_tel=(hog in tel_set))
-        for i in range(len(hogs) - 1):
-            G.add_edge(hogs[i], hogs[i + 1], chrom_idx=ci)
-
-    if G.number_of_nodes() == 0:
-        return
-
-    fig, ax = plt.subplots(1, 1, figsize=(max(14, G.number_of_nodes() * 0.3), 8))
-    try:
-        pos = nx.kamada_kawai_layout(G)
-    except Exception:
-        pos = nx.spring_layout(G, k=2.0, seed=42)
-
-    # Draw edges per chromosome
-    for ci, chrom in enumerate(chroms):
-        color = palette[ci % len(palette)]
-        hogs = list(chrom)
-        edges = [(hogs[i], hogs[i + 1]) for i in range(len(hogs) - 1)]
-        if edges:
-            nx.draw_networkx_edges(G, pos, edgelist=edges, ax=ax,
-                                   edge_color=color, width=2.0, alpha=0.8)
-
-    # Draw nodes
-    tel_nodes = [n for n in G.nodes() if G.nodes[n].get('is_tel')]
-    non_tel_nodes = [n for n in G.nodes() if not G.nodes[n].get('is_tel')]
-
-    node_colors = []
-    for n in non_tel_nodes:
-        ci = G.nodes[n].get('chrom_idx', 0)
-        node_colors.append(palette[ci % len(palette)])
-    if non_tel_nodes:
-        nx.draw_networkx_nodes(G, pos, nodelist=non_tel_nodes, ax=ax,
-                               node_size=120, node_color=node_colors,
-                               edgecolors='#333333', linewidths=1.0)
-    if tel_nodes:
-        nx.draw_networkx_nodes(G, pos, nodelist=tel_nodes, ax=ax,
-                               node_size=180, node_color='#fff3cd',
-                               edgecolors='#e67e22', linewidths=2.0,
-                               node_shape='D')
-
-    # Labels: short HOG ID
-    labels = {}
-    for n in G.nodes():
-        s = str(n) if hasattr(n, 'hog_id') else str(n)
-        labels[n] = s.split('.')[-1] if '.' in s else s
-    nx.draw_networkx_labels(G, pos, labels, ax=ax, font_size=6,
-                            font_color='#1a1a2e')
-
-    ax.set_title(f'{child_id} ({node_id}): {len(chroms)} chromosomes, '
-                 f'{G.number_of_nodes()} HOGs', fontsize=12)
-    ax.axis('off')
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=150, bbox_inches='tight')
-    plt.close()
+        # Build a temporary ColoredGraph with just this one child
+        tmp = ColoredGraph(hog_level=node_id)
+        tmp.add_child(child_id, child_graph)
+        tmp._build_synteny_blocks()
+        tmp._compress_to_block_level()
+        tmp.draw_block_graph(outpath,
+                             title=f'Child {child_id} ({node_id}): block graph')
+    except Exception as e:
+        _logger.debug("  [viz] child %s block graph failed: %s", child_id, e)
 
 
 # =========================================================================

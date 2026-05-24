@@ -151,8 +151,17 @@ class ColoredGraph:
         Returns: [(h1, h2, child_id, spanned_hogs), ...]
         """
         shortcuts = []
+        n_unique = 0
+        n_dir_conflict = 0
+        n_not_in_other = 0
+        n_no_path = 0
+        n_short_path = 0
+        n_too_long = 0
+        n_rearrangement = 0
         for h1, h2 in self.unique_edges():
+            n_unique += 1
             if self.edge_has_direction_conflict(h1, h2):
+                n_dir_conflict += 1
                 continue
             colors = self.get_colors(h1, h2)
             if not colors:
@@ -163,12 +172,18 @@ class ColoredGraph:
                     continue
                 other_hogs = self._child_hogs.get(other_id, set())
                 if h1 not in other_hogs or h2 not in other_hogs:
+                    n_not_in_other += 1
                     continue
                 path = self._shortest_path_through_hogs(h1, h2, other_id)
-                if not path or len(path) <= 2:
+                if not path:
+                    n_no_path += 1
+                    continue
+                if len(path) <= 2:
+                    n_short_path += 1
                     continue
                 spanned = path[1:-1]
                 if len(spanned) > max_span:
+                    n_too_long += 1
                     continue
                 # 关键检查: 中间 HOGs 是否在 child_id 中也存在？
                 # 如果存在 → 重排（不是 indel）
@@ -176,9 +191,15 @@ class ColoredGraph:
                 n_in_child = sum(1 for h in spanned if h in child_hogs)
                 if n_in_child > len(spanned) * 0.5:
                     # 超过一半的中间 HOGs 在 child_id 中也存在 → 重排
+                    n_rearrangement += 1
                     continue
                 shortcuts.append((h1, h2, child_id, spanned))
                 break
+        logger.debug("  [indel] find_indel_shortcuts: %d unique edges, "
+                     "dir_conflict=%d, not_in_other=%d, no_path=%d, "
+                     "short_path=%d, too_long=%d, rearrangement=%d, shortcuts=%d",
+                     n_unique, n_dir_conflict, n_not_in_other, n_no_path,
+                     n_short_path, n_too_long, n_rearrangement, len(shortcuts))
         return shortcuts
 
     def consensus_telomeres(self, min_children: int = 2) -> Set:

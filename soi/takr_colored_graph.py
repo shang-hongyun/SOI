@@ -1072,22 +1072,22 @@ class ColoredGraph:
         """构建共线性块：最大连续共享边路径。
 
         块 = 一段 HOG 序列，其中每对相邻 HOG 之间都有共享边（≥2 孩子共有）。
-        块间边界 = 唯一边、断裂点。
+        块间边界 = 唯一边、断裂点、端粒 HOG。
 
-        端粒 HOG 作为块内拆分点：如果一个块包含端粒 HOG，
-        在端粒位置拆分为两个块（端粒单独成块）。
+        端粒 HOG 在行走时直接跳过，不进入任何块。
+        之后单独成块（1-HOG 块），作为染色体锚点。
         """
-        # 共享边图
         shared_G = nx.Graph()
         for h1, h2, data in self._graph.edges(data=True):
             if len(data['colors']) >= 2:
                 shared_G.add_edge(h1, h2)
 
+        cons_tels = self.consensus_telomeres(min_children=2)
+
         blocks = {}
         hog_to_block = {}
         assigned = set()
 
-        # 对共享边图的每个连通分量找线性路径
         for comp in nx.connected_components(shared_G):
             sub = shared_G.subgraph(comp)
             deg = dict(sub.degree())
@@ -1097,24 +1097,27 @@ class ColoredGraph:
                 breakpoints = {list(comp)[0]}
 
             for bp in list(breakpoints):
-                if bp in assigned:
+                if bp in assigned or bp in cons_tels:
+                    assigned.add(bp)  # 标记端粒为已分配
                     continue
                 for start in (bp,):
-                    if start in assigned:
+                    if start in assigned or start in cons_tels:
+                        assigned.add(start)
                         continue
                     path = [start]
                     assigned.add(start)
                     curr = start
                     prev = None
                     while True:
-                        deg2_neighbors = [
+                        neighbors = [
                             n for n in sub.neighbors(curr)
                             if n != prev and n not in assigned
                             and deg.get(n, 0) == 2
+                            and n not in cons_tels  # 跳过端粒
                         ]
-                        if not deg2_neighbors:
+                        if not neighbors:
                             break
-                        nxt = deg2_neighbors[0]
+                        nxt = neighbors[0]
                         assigned.add(nxt)
                         path.append(nxt)
                         prev, curr = curr, nxt
@@ -1125,57 +1128,19 @@ class ColoredGraph:
                         for h in path:
                             hog_to_block[h] = bid
 
-        # 端粒拆分：如果块包含端粒 HOG，在端粒位置拆分
-        cons_tels = self.consensus_telomeres(min_children=1)
-        new_blocks = {}
-        new_hog_to_block = {}
-        for bid, hogs in blocks.items():
-            tel_positions = [i for i, h in enumerate(hogs) if h in cons_tels]
-            if not tel_positions:
-                new_blocks[bid] = hogs
-                for h in hogs:
-                    new_hog_to_block[h] = bid
-            else:
-                # 在每个端粒位置拆分：端粒单独成块，前后各一块
-                prev = 0
-                for tp in tel_positions:
-                    # 端粒之前的块
-                    if tp > prev:
-                        chunk = hogs[prev:tp]
-                        new_bid = "blk_{}".format(len(new_blocks))
-                        new_blocks[new_bid] = chunk
-                        for h in chunk:
-                            new_hog_to_block[h] = new_bid
-                    # 端粒单独成块
-                    tel_hog = hogs[tp]
-                    new_bid = "blk_{}".format(len(new_blocks))
-                    new_blocks[new_bid] = [tel_hog]
-                    new_hog_to_block[tel_hog] = new_bid
-                    prev = tp + 1
-                # 端粒之后的块
-                if prev < len(hogs):
-                    chunk = hogs[prev:]
-                    new_bid = "blk_{}".format(len(new_blocks))
-                    new_blocks[new_bid] = chunk
-                    for h in chunk:
-                        new_hog_to_block[h] = new_bid
-
-        # 端粒 HOG 单独成块（如果还没被分配）
+        # 端粒 HOG 单独成块
         for h in cons_tels:
-            if h not in new_hog_to_block and h in self.all_hogs():
-                bid = "blk_{}".format(len(new_blocks))
-                new_blocks[bid] = [h]
-                new_hog_to_block[h] = bid
+            if h not in hog_to_block and h in self.all_hogs():
+                bid = "blk_{}".format(len(blocks))
+                blocks[bid] = [h]
+                hog_to_block[h] = bid
 
         # 剩余未分配的 HOG → 单独成块
         for h in self.all_hogs():
-            if h not in new_hog_to_block:
-                bid = "blk_{}".format(len(new_blocks))
-                new_blocks[bid] = [h]
-                new_hog_to_block[h] = bid
-
-        blocks = new_blocks
-        hog_to_block = new_hog_to_block
+            if h not in hog_to_block:
+                bid = "blk_{}".format(len(blocks))
+                blocks[bid] = [h]
+                hog_to_block[h] = bid
 
         self._blocks = blocks
         self._hog_to_block = hog_to_block
@@ -2302,9 +2267,9 @@ class ColoredGraph:
             self._draw_block_graph_mpl(outpath, dpi, title)
             return
 
-        if not hasattr(self, '_block_graph') or not self._block_graph:
-            self._build_synteny_blocks()
-            self._compress_to_block_level()
+        # 总是重建块（确保端粒拆分等修改生效）
+        self._build_synteny_blocks()
+        self._compress_to_block_level()
 
         bg = self._block_graph
         if bg.number_of_nodes() == 0:
@@ -2437,9 +2402,9 @@ class ColoredGraph:
             logger.warning("matplotlib not available, skipping block graph")
             return
 
-        if not hasattr(self, '_block_graph') or not self._block_graph:
-            self._build_synteny_blocks()
-            self._compress_to_block_level()
+        # 总是重建块（确保端粒拆分等修改生效）
+        self._build_synteny_blocks()
+        self._compress_to_block_level()
 
         bg = self._block_graph
         if bg.number_of_nodes() == 0:

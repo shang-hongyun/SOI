@@ -31,7 +31,7 @@ from collections import defaultdict, Counter
 from ete3 import Tree
 import networkx as nx
 
-from .ak_dotplot import draw_ancestor_dotplots, draw_branch_dotplots
+from .ak_dotplot import draw_ancestor_dotplots, draw_branch_dotplots, draw_sister_dotplots
 from .tree import convert_newick
 
 
@@ -955,6 +955,10 @@ class EvolutionSimulator:
         draw_branch_dotplots(
             tree, self.all_node_karyotypes, branch_dir,
             gene_parent=self.tracker.gene_parent)
+        # Sister dotplots (sibling ↔ sibling)
+        sister_dir = os.path.join(outdir, "sister_dotplots")
+        draw_sister_dotplots(
+            tree, self.all_node_karyotypes, sister_dir)
         # Collect dotplot PNGs
         root_name = None
         for node in tree.traverse("preorder"):

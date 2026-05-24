@@ -363,6 +363,46 @@ def draw_branch_dotplots(tree, node_karyotypes, outdir, gene_parent,
                      dpi=dpi)
 
 
+def draw_sister_dotplots(tree, node_karyotypes, outdir, dpi=200):
+    """Draw dotplots between sister nodes (children of the same parent).
+
+    For every internal node with ≥2 children, draws pairwise dotplots
+    between all child pairs.
+
+    Parameters
+    ----------
+    tree : ete3.Tree
+        Species tree.
+    node_karyotypes : dict
+        {node_name: {chrom_id: [gene_id, ...]}}
+    outdir : str
+        Output directory.
+    dpi : int
+        Output resolution.
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    for node in tree.traverse("preorder"):
+        if node.is_leaf():
+            continue
+        children = [c for c in node.children if c.name in node_karyotypes]
+        if len(children) < 2:
+            continue
+        # Pairwise between sisters
+        for i in range(len(children)):
+            for j in range(i + 1, len(children)):
+                c1_name = children[i].name
+                c2_name = children[j].name
+                k1 = node_karyotypes[c1_name]
+                k2 = node_karyotypes[c2_name]
+                outpath = os.path.join(
+                    outdir, "dotplot_{}_vs_{}.png".format(c1_name, c2_name))
+                draw_dotplot(k1, k2, outpath,
+                             ref_name=c1_name,
+                             query_name=c2_name,
+                             dpi=dpi)
+
+
 def aag_to_karyo(aag):
     """Convert AncestralAdjacencyGraph to plain karyotype dict.
 

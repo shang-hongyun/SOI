@@ -1598,6 +1598,9 @@ class ColoredGraph:
 
             # 处理非 inversion 事件（逐环处理）
             for etype, conflict_edges, cycle in other_cycles:
+                # gene_indel 和 unclassified 不是真正的结构重排，不移除边
+                if etype in ('gene_indel', 'unclassified'):
+                    continue
                 conflict_edges = list(set(conflict_edges))
                 # 检查冲突边是否还在块级图中
                 valid_edges = [(b1, b2) for b1, b2 in conflict_edges
@@ -1763,10 +1766,8 @@ class ColoredGraph:
                          b1, b2, c1, c2, b1_has_tel, b2_has_tel,
                          c1 == c2 if c1 is not None and c2 is not None else 'N/A')
             if c1 is not None and c2 is not None and c1 != c2:
-                # 验证：至少一个块包含端粒 HOG
-                if not (b1_has_tel or b2_has_tel):
-                    continue
-                # 块级桥接
+                # 端粒验证
+                has_tel = b1_has_tel or b2_has_tel
                 color = next(iter(colors))
                 child_id = color[0]
 
@@ -1794,6 +1795,9 @@ class ColoredGraph:
                                  b1, b2, any_ancestral, matched_key)
 
                     if any_ancestral:
+                        # fission: 外类群有该邻接 → 需要端粒验证防止误报
+                        if not has_tel:
+                            continue
                         etype = 'fission'
                         suffix = f" (outgroup confirms {child_id} preserved)"
                     else:
@@ -1810,6 +1814,9 @@ class ColoredGraph:
                             etype = 'eej'
                         suffix = f" (outgroup: derived in {child_id})"
                 else:
+                    # 无外类群 (root): 仅在有端粒时记录（保守策略）
+                    if not has_tel:
+                        continue
                     etype = 'bridge_unclassified'
                     suffix = " (no outgroup, root node)"
 
@@ -1843,7 +1850,7 @@ class ColoredGraph:
                 # 移除边：只移除 fusion (eej/ncf) 的边，保留 fission 边
                 # fission: 外类群有该邻接 → 祖先态 → 保留边（另一个孩子丢失了它）
                 # fusion: 外类群无该邻接 → 衍生态 → 移除边（这个孩子获得了它）
-                if etype in ('eej', 'ncf', 'bridge_unclassified'):
+                if etype in ('eej', 'ncf'):
                     for h1 in self._blocks.get(b1, []):
                         for h2 in self._blocks.get(b2, []):
                             if self._graph.has_edge(h1, h2):
@@ -1906,9 +1913,8 @@ class ColoredGraph:
             c1 = hog_to_comp.get(h1)
             c2 = hog_to_comp.get(h2)
             if c1 is not None and c2 is not None and c1 != c2:
-                # 关键验证：两个分量都必须包含端粒 HOG
-                if c1 not in comp_has_telomere or c2 not in comp_has_telomere:
-                    continue
+                # 端粒验证：有外类群时不需要，无外类群时要求至少一个分量有端粒
+                has_tel = c1 in comp_has_telomere or c2 in comp_has_telomere
                 # Bridge: connects two different shared components
                 color = next(iter(data['colors']))
                 child_id = color[0]
@@ -1930,7 +1936,9 @@ class ColoredGraph:
                     key = (h1_pid, h2_pid) if h1_pid < h2_pid else (h2_pid, h1_pid)
 
                     if key in outgroup_adjacency:
-                        # 外类群有该邻接 → 祖先有连接 → 另一孩子丢失了它 → fission
+                        # fission: 外类群有该邻接 → 需要端粒验证防止误报
+                        if not has_tel:
+                            continue
                         etype = 'fission'
                         branch_suffix = f" (outgroup confirms {child_id} preserved)"
                     else:
@@ -1946,7 +1954,9 @@ class ColoredGraph:
                             etype = 'eej'
                         branch_suffix = f" (outgroup: derived in {child_id})"
                 else:
-                    # 无外类群 (root) → 记录为 unclassified_bridge
+                    # 无外类群 (root): 仅在有端粒时记录
+                    if not has_tel:
+                        continue
                     etype = 'bridge_unclassified'
                     branch_suffix = " (no outgroup, root node)"
 

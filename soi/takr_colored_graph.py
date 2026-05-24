@@ -2467,16 +2467,16 @@ class ColoredGraph:
         if bg.number_of_nodes() == 0:
             return
 
-        fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+        fig, ax = plt.subplots(1, 1, figsize=(max(16, bg.number_of_nodes() * 0.5), 10))
         try:
             pos = nx.kamada_kawai_layout(bg)
         except Exception:
-            pos = nx.spring_layout(bg, k=2.0, seed=42)
+            pos = nx.spring_layout(bg, k=3.0, seed=42, iterations=100)
 
         node_sizes = []
         for n in bg.nodes():
             hog_count = len(self._blocks.get(n, []))
-            node_sizes.append(max(200, hog_count * 15))
+            node_sizes.append(max(300, hog_count * 20))
 
         cycles = []
         try:

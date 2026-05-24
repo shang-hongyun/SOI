@@ -362,6 +362,16 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             logger.info("  [Phase 1] %s: %d chroms, %d HOGs after dedup", cid, n_chrom, n_hogs)
             G.add_child(cid, mc)
 
+        # Visualization: per-child chromosome paths (before merging)
+        try:
+            viz_dir = os.path.dirname(akr.outpre) if hasattr(akr, 'outpre') else '.'
+            viz_base = os.path.basename(akr.outpre) if hasattr(akr, 'outpre') else 'AKR'
+            for mc, cid in zip(deduped_children, child_source_ids):
+                outpath = os.path.join(viz_dir, f'{viz_base}.{node_id}.child_{cid}.png')
+                _draw_child_paths(mc, cid, node_id, outpath)
+                logger.info("  [viz] child %s paths saved to %s", cid, os.path.basename(outpath))
+        except Exception as e:
+            logger.debug("  [viz] child paths skipped: %s", e)
 
         # Visualization: raw merged graph (before event resolution)
         # 跳过块数太多的情况（graphviz 渲染太慢）

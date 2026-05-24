@@ -1083,23 +1083,20 @@ class ColoredGraph:
 
     # ==================== 共线性块压缩 ====================
 
+    # ==================== 共线性块压缩 ====================
+
     @staticmethod
     def _extract_linear_paths(subgraph, min_size=2):
-        """从非线性组件中提取所有最大线性子路径。
-
-        遍历每个度≠2的节点作为起点，沿度=2邻居行走。
-        """
+        """从非线性组件中提取所有最大线性子路径。"""
         paths = []
         visited = set()
         degs = dict(subgraph.degree())
-        # 从度=1或度≥3的节点出发
         starts = [n for n in subgraph.nodes() if degs[n] != 2]
         if not starts:
             starts = [list(subgraph.nodes())[0]]
         for start in starts:
             if start in visited:
                 continue
-            # 向每个邻居方向走
             for first_neighbor in subgraph.neighbors(start):
                 if first_neighbor in visited:
                     continue
@@ -1123,32 +1120,32 @@ class ColoredGraph:
     def _build_synteny_blocks(self, min_block_size: int = 2):
         """构建共线性块。
 
-        - 多孩子 (≥2): 共享图组件 = 一个块
-        - 单孩子 (1): 每条染色体路径 = 一个块
-        不在块中的 HOG 单独成块。
+        规则：
+        - 端粒 HOG 永远不进入任何块（始终是 1-HOG 块）
+        - 非端粒 HOG：共享边连接的连续路径 = 一个块
+        - 断开点：唯一边、端粒 HOG
+        - 单孩子：每条染色体路径 = 一个块（端粒除外）
         """
+        cons_tels = self.consensus_telomeres(min_children=2) if len(self.children()) >= 2 else set()
         blocks = {}
         hog_to_block = {}
 
         if len(self.children()) >= 2:
-            # 多孩子: 共享图组件，只压缩线性路径 (每个节点度≤2)
+            # 多孩子：共享边图，排除端粒后找线性路径
             shared_G = nx.Graph()
             for h1, h2, data in self._graph.edges(data=True):
-                if len(data['colors']) >= 2:
+                if len(data['colors']) >= 2 and h1 not in cons_tels and h2 not in cons_tels:
                     shared_G.add_edge(h1, h2)
             for comp in nx.connected_components(shared_G):
                 sub = shared_G.subgraph(comp)
-                # 检查是否线性: 所有节点度≤2
                 degs = dict(sub.degree())
                 if any(d > 2 for d in degs.values()):
-                    # 非线性组件: 只取线性子路径
-                    for path in _extract_linear_paths(sub, min_block_size):
+                    for path in self._extract_linear_paths(sub, min_block_size):
                         bid = "blk_{}".format(len(blocks))
                         blocks[bid] = path
                         for h in path:
                             hog_to_block[h] = bid
                     continue
-                # 线性组件: 整个组件 = 一个块
                 endpoints = [n for n in sub.nodes() if degs[n] == 1]
                 if not endpoints:
                     endpoints = [list(comp)[0]]
@@ -1171,18 +1168,25 @@ class ColoredGraph:
                     for h in path:
                         hog_to_block[h] = bid
         else:
-            # 单孩子: 每条染色体路径 = 一个块
+            # 单孩子：每条染色体路径 = 一个块（端粒除外）
             for cid in self.children():
-                chroms = self._child_chromosomes.get(cid, [])
-                for chrom_path in chroms:
-                    hogs = [h for h in chrom_path if h in self.all_hogs()]
+                for chrom_path in self._child_chromosomes.get(cid, []):
+                    hogs = [h for h in chrom_path
+                            if h in self.all_hogs() and h not in cons_tels]
                     if len(hogs) >= min_block_size:
                         bid = "blk_{}".format(len(blocks))
                         blocks[bid] = hogs
                         for h in hogs:
                             hog_to_block[h] = bid
 
-        # 不在块中的 HOG → 单独成块
+        # 端粒 HOG → 1-HOG 块
+        for h in cons_tels:
+            if h not in hog_to_block and h in self.all_hogs():
+                bid = "blk_{}".format(len(blocks))
+                blocks[bid] = [h]
+                hog_to_block[h] = bid
+
+        # 剩余未分配 HOG → 1-HOG 块
         for h in self.all_hogs():
             if h not in hog_to_block:
                 bid = "blk_{}".format(len(blocks))

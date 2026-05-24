@@ -127,7 +127,7 @@ akr = AKR(
 )
 akr.run()
 print(f'Done: {len(akr.events)} events detected')
-" 2>&1 | tail -10
+" 2>&1 > $RECON_DIR/AKR.log
 echo ""
 
 if [ ! -f "$RECON_DIR/AKR.events.tsv" ]; then

@@ -1762,6 +1762,9 @@ class ColoredGraph:
                          b1, b2, c1, c2, b1_has_tel, b2_has_tel,
                          c1 == c2 if c1 is not None and c2 is not None else 'N/A')
             if c1 is not None and c2 is not None and c1 != c2:
+                # 验证：至少一个块包含端粒 HOG
+                if not (b1_has_tel or b2_has_tel):
+                    continue
                 # 块级桥接
                 color = next(iter(colors))
                 child_id = color[0]

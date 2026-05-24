@@ -55,28 +55,37 @@ class ColoredGraph:
 
     # ==================== 构建 ====================
 
-    def add_edge(self, h1, h2, child_id: str, chrom_idx: int):
+    def add_edge(self, h1, h2, child_id: str, chrom_idx: int, direction: int = 1):
         """添加一条边，记录颜色 (child_id, chrom_idx) 和方向。
 
-        direction: +1 = h1 在 h2 左边 (h1→h2), -1 = h2 在 h1 左边。
-        如果边已存在，只把颜色和方向加入已有边的集合。
+        边以规范顺序存储 (min(h1,h2), max(h1,h2))。
+        direction: +1 = 孩子中 min→max, -1 = 孩子中 max→min。
         """
-        if self._graph.has_edge(h1, h2):
-            colors = self._graph[h1][h2]['colors']
-            colors.add((child_id, chrom_idx))
-            # 更新方向
-            directions = self._graph[h1][h2].get('directions', set())
-            directions.add((child_id, chrom_idx, 1))
-            self._graph[h1][h2]['directions'] = directions
+        # 规范顺序
+        if str(h1) <= str(h2):
+            key = (h1, h2)
         else:
-            self._graph.add_edge(h1, h2,
+            key = (h2, h1)
+            direction = -direction  # 翻转方向
+
+        if self._graph.has_edge(key[0], key[1]):
+            colors = self._graph[key[0]][key[1]]['colors']
+            colors.add((child_id, chrom_idx))
+            directions = self._graph[key[0]][key[1]].get('directions', set())
+            directions.add((child_id, chrom_idx, direction))
+            self._graph[key[0]][key[1]]['directions'] = directions
+        else:
+            self._graph.add_edge(key[0], key[1],
                                  colors={(child_id, chrom_idx)},
-                                 directions={(child_id, chrom_idx, 1)})
+                                 directions={(child_id, chrom_idx, direction)})
 
     def add_child(self, source_id: str, child_graph) -> int:
         """把一个孩子的所有染色体邻接以该孩子的颜色加入。
-        child_graph: AncestralAdjacencyGraph (含 telomeres 和 chromosomes)
-        返回该孩子的染色体数。
+
+        方向: 孩子中 HOG 的顺序决定方向。
+        无向边 {A, B} 的方向是相对于规范顺序 (A, B where A < B):
+          - 孩子有 A→B: direction = +1
+          - 孩子有 B→A: direction = -1
         """
         chrom_count = 0
         child_hogs = set()
@@ -84,16 +93,19 @@ class ColoredGraph:
 
         for chrom_idx, chrom_nodes in enumerate(child_graph.chromosomes):
             chrom_count += 1
-            # 过滤 telomere 节点，只取 HOG 节点
             hogs = [n for n in chrom_nodes if n not in child_graph.telomeres]
             child_hogs.update(hogs)
             for i in range(len(hogs) - 1):
-                self.add_edge(hogs[i], hogs[i + 1], source_id, chrom_idx)
+                h_a, h_b = hogs[i], hogs[i + 1]
+                # 方向: 基于位置，不是 HOG ID
+                # 在染色体中 a 在 b 之前 → +1, 之后 → -1
+                # 用 HOG ID 作为稳定排序键
+                direction = 1  # 总是从左到右遍历
+                self.add_edge(h_a, h_b, source_id, chrom_idx, direction=direction)
 
         # 收集端粒信息
         for tel in child_graph.telomeres:
             child_tels.add(tel)
-        # child graph 中的端粒连接的 HOG
         for h1, h2 in child_graph.get_adjacencies(include_telomere=True):
             if h1 in child_graph.telomeres and h2 in child_graph.gene_nodes:
                 child_tels.add(h2)
@@ -796,6 +808,7 @@ class ColoredGraph:
                     visited.update(comp)
 
         # 孤儿回收：未覆盖的 HOGs 插入到最近的已覆盖路径
+        # 如果无法插入，作为独立路径
         all_nodes = self.all_hogs()
         unvisited = all_nodes - visited
         if unvisited:
@@ -803,14 +816,12 @@ class ColoredGraph:
                          len(unvisited))
             recovered = 0
             for hog in list(unvisited):
-                # 找 hog 在图中的邻居
                 if not self._graph.has_node(hog):
                     continue
                 neighbors = [n for n in self._graph.neighbors(hog)
                              if n in visited and n in all_nodes]
                 if not neighbors:
                     continue
-                # 找邻居所在的路径
                 target_path = None
                 target_idx = None
                 for nb in neighbors:
@@ -823,12 +834,28 @@ class ColoredGraph:
                     if target_path is not None:
                         break
                 if target_path is not None:
-                    # 插入到路径中邻居的旁边
                     paths[target_path].insert(target_idx + 1, hog)
                     visited.add(hog)
                     recovered += 1
             if recovered:
                 logger.debug("  [path_cover] recovered %d orphan HOGs", recovered)
+
+            # 仍有未覆盖的 HOGs → 断开组件作为独立路径
+            still_unvisited = all_nodes - visited
+            if still_unvisited:
+                G_rem = self._graph.subgraph(still_unvisited)
+                for comp_nodes in nx.connected_components(G_rem):
+                    comp = list(comp_nodes)
+                    if len(comp) >= 2:
+                        start = comp[0]
+                        path = self._walk_simple(start, visited)
+                        if path:
+                            paths.append(path)
+                            visited.update(path)
+                    elif len(comp) == 1:
+                        # 孤立节点也作为路径（保留信息）
+                        paths.append(list(comp))
+                        visited.update(comp)
 
         return paths
 

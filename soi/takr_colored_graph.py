@@ -138,10 +138,12 @@ class ColoredGraph:
         has_reverse = any(d == -1 for _, _, d in directions)
         return has_forward and has_reverse
 
-    def find_indel_shortcuts(self, max_span: int = 10) -> List[Tuple]:
+    def find_indel_shortcuts(self, max_span: int = 20) -> List[Tuple]:
         """找 indel shortcuts: 跨越边 (spanning edge) 且无方向冲突。
 
-        只检测小跨度 (≤max_span HOGs) 的 indel。大跨度留给 structural 检测。
+        关键区分 indel vs 重排:
+        - indel: 中间 HOGs 在另一个孩子中不存在（真正的插入/删除）
+        - 重排: 中间 HOGs 在另一个孩子中存在但顺序不同（inversion/RT）
 
         Returns: [(h1, h2, child_id, spanned_hogs), ...]
         """
@@ -160,9 +162,20 @@ class ColoredGraph:
                 if h1 not in other_hogs or h2 not in other_hogs:
                     continue
                 path = self._shortest_path_through_hogs(h1, h2, other_id)
-                if path and 2 < len(path) <= max_span + 2:
-                    shortcuts.append((h1, h2, child_id, path[1:-1]))
-                    break
+                if not path or len(path) <= 2:
+                    continue
+                spanned = path[1:-1]
+                if len(spanned) > max_span:
+                    continue
+                # 关键检查: 中间 HOGs 是否在 child_id 中也存在？
+                # 如果存在 → 重排（不是 indel）
+                child_hogs = self._child_hogs.get(child_id, set())
+                n_in_child = sum(1 for h in spanned if h in child_hogs)
+                if n_in_child > len(spanned) * 0.5:
+                    # 超过一半的中间 HOGs 在 child_id 中也存在 → 重排
+                    continue
+                shortcuts.append((h1, h2, child_id, spanned))
+                break
         return shortcuts
 
     def consensus_telomeres(self, min_children: int = 2) -> Set:

@@ -1072,17 +1072,21 @@ class ColoredGraph:
         """构建共线性块：最大连续共享边路径。
 
         块 = 一段 HOG 序列，其中每对相邻 HOG 之间都有共享边（≥2 孩子共有）。
-        块间边界 = 唯一边或断裂点。
+        块间边界 = 唯一边、断裂点、或端粒 HOG。
+
+        端粒 HOG 单独成块（不合并到大块），因为它们是染色体锚点。
 
         self._blocks: {block_id: [hog1, hog2, ...]} — 块内 HOG 顺序
         self._hog_to_block: {hog: block_id} — HOG 到块的映射
-        self._block_adj: {bid: set(bid_j)} — 块间邻接关系（用于构建块级图）
         """
         # 共享边图
         shared_G = nx.Graph()
         for h1, h2, data in self._graph.edges(data=True):
             if len(data['colors']) >= 2:
                 shared_G.add_edge(h1, h2)
+
+        # 端粒 HOG 集合（块边界）
+        cons_tels = self.consensus_telomeres(min_children=1)
 
         blocks = {}
         hog_to_block = {}
@@ -1096,20 +1100,17 @@ class ColoredGraph:
             # 找断面（度 ≠ 2 的节点）作为路径起点
             breakpoints = {n for n, d in deg.items() if d != 2}
             if not breakpoints:
-                # 环状分量：任选一个节点打断
                 breakpoints = {list(comp)[0]}
 
             # 从每个断面出发，沿度=2的节点行走
             for bp in list(breakpoints):
                 if bp in assigned:
                     continue
-                # 向两个方向行走
                 for start in (bp,):
                     if start in assigned:
                         continue
                     path = [start]
                     assigned.add(start)
-                    # 向前走到下一个断面或末端
                     curr = start
                     prev = None
                     while True:
@@ -1121,6 +1122,9 @@ class ColoredGraph:
                         if not deg2_neighbors:
                             break
                         nxt = deg2_neighbors[0]
+                        # 端粒 HOG 作为块边界：停止当前块
+                        if nxt in cons_tels:
+                            break
                         assigned.add(nxt)
                         path.append(nxt)
                         prev, curr = curr, nxt
@@ -1130,15 +1134,15 @@ class ColoredGraph:
                         blocks[bid] = path
                         for h in path:
                             hog_to_block[h] = bid
-                    else:
-                        # 路径太短 (<min_block_size): 不建块，标记为未分配
-                        # 留给后续合并阶段处理
-                        pass
 
-        # 不在共享图中的 HOG → 可能是 insertion 产物
-        # 留给 Phase 2 indel 检测处理，不在此合并
+        # 端粒 HOG 单独成块
+        for h in cons_tels:
+            if h not in hog_to_block and h in self.all_hogs():
+                bid = "blk_{}".format(len(blocks))
+                blocks[bid] = [h]
+                hog_to_block[h] = bid
 
-        # 剩余仍未分配的 HOG (无邻居或邻居也未分配) → 单独成块
+        # 剩余未分配的 HOG → 单独成块
         for h in self.all_hogs():
             if h not in hog_to_block:
                 bid = "blk_{}".format(len(blocks))

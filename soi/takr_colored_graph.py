@@ -2167,7 +2167,6 @@ class ColoredGraph:
                 kept.append(e)
         self.events = kept
 
-        from collections import Counter
         type_counts = Counter(e.event_type for e in self.events)
         type_str = ', '.join(f"{t}={c}" for t, c in sorted(type_counts.items()))
         logger.info("  [colored] done: %d events %s (after min_hogs=%d), %d chroms",
@@ -2179,7 +2178,6 @@ class ColoredGraph:
         # 所有孩子推算结果应一致
         new_events = self.events[n_events_before:]
         # 按分支分组事件
-        from collections import defaultdict
         branch_events = defaultdict(lambda: {'fission': 0, 'fusion': 0})
         for e in new_events:
             # branch 格式: "N1-Sp_1"

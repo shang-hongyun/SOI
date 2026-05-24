@@ -126,11 +126,10 @@ class ColoredGraph:
         has_reverse = any(d == -1 for _, _, d in directions)
         return has_forward and has_reverse
 
-    def find_indel_shortcuts(self, max_span: int = 20) -> List[Tuple]:
+    def find_indel_shortcuts(self, max_span: int = 10) -> List[Tuple]:
         """找 indel shortcuts: 跨越边 (spanning edge) 且无方向冲突。
 
-        只检测小跨度 (≤max_span HOGs) 的 indel。大跨度可能是 RT/inversion 断点，
-        留给 structural 检测处理。
+        只检测小跨度 (≤max_span HOGs) 的 indel。大跨度留给 structural 检测。
 
         Returns: [(h1, h2, child_id, spanned_hogs), ...]
         """
@@ -149,7 +148,7 @@ class ColoredGraph:
                 if h1 not in other_hogs or h2 not in other_hogs:
                     continue
                 path = self._shortest_path_through_hogs(h1, h2, other_id)
-                if path and 2 < len(path) <= max_span + 2:  # +2 for endpoints
+                if path and 2 < len(path) <= max_span + 2:
                     shortcuts.append((h1, h2, child_id, path[1:-1]))
                     break
         return shortcuts

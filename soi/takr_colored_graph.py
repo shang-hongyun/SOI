@@ -413,10 +413,11 @@ class ColoredGraph:
         → 删除插入节点及其边，恢复祖先邻接。
         """
         removed = set()
+        hog_set = self.all_hogs()  # compute once, not per iteration
         for h in list(self._graph.nodes()):
             if h in removed:
                 continue
-            if h not in self.all_hogs():
+            if h not in hog_set:
                 continue
             deg = self._graph.degree(h)
             if deg != 2:
@@ -776,6 +777,7 @@ class ColoredGraph:
         """
         paths = []
         visited = set()
+        hog_set = self.all_hogs()  # cache — avoid repeated O(n) calls
 
         # 共识端粒：在任一孩子中与端粒相邻的 HOG
         # (min_children=1 更宽松，覆盖 rearrangement 后的端粒)
@@ -784,7 +786,7 @@ class ColoredGraph:
         all_tels = self.child_telomere_set()
         # 度=1 的节点（图结构上的端点）
         degree_ends = {n for n, deg in self._graph.degree()
-                       if deg == 1 and n in self.all_hogs()}
+                       if deg == 1 and n in hog_set}
 
         # 选择端粒锚点集：共识端粒 > 所有端粒 > 度=1
         # 注意：度=1 包含 bridge 移除后的假端点，优先级最低

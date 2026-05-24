@@ -2360,8 +2360,9 @@ class ColoredGraph:
         dot = graphviz.Digraph(format='png')
         dot.attr(rankdir='LR', label=title or f'Block Graph: {self.hog_level}',
                  labelloc='t', fontsize='18', fontname='Helvetica-Bold',
-                 fontcolor='#1a1a2e', bgcolor='white', pad='0.5',
-                 nodesep='0.4', ranksep='0.6')
+                 fontcolor='#1a1a2e', bgcolor='white', pad='0.8',
+                 nodesep='0.8', ranksep='1.2', ratio='compress', size='16,12',
+                 splines='polyline')
         dot.attr('node', fontname='Helvetica-Bold', fontsize='11',
                  fontcolor='#1a1a2e', margin='0.15,0.08')
         dot.attr('edge', fontname='Helvetica', fontsize='8')

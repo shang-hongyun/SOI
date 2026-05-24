@@ -1750,6 +1750,7 @@ class ColoredGraph:
                     hogs1 = self._blocks.get(b1, [])
                     hogs2 = self._blocks.get(b2, [])
                     any_ancestral = False
+                    matched_key = None
                     for h1 in hogs1:
                         for h2 in hogs2:
                             if self._graph.has_edge(h1, h2):
@@ -1760,7 +1761,12 @@ class ColoredGraph:
                                 key = (u_p, v_p) if u_p < v_p else (v_p, u_p)
                                 if key in outgroup_adjacency:
                                     any_ancestral = True
+                                    matched_key = key
                                     break
+                        if any_ancestral:
+                            break
+                    logger.debug("  [bridge] %s↔%s: outgroup_check any_ancestral=%s, key=%s",
+                                 b1, b2, any_ancestral, matched_key)
 
                     if any_ancestral:
                         etype = 'fission'

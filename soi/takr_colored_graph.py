@@ -1083,6 +1083,43 @@ class ColoredGraph:
 
     # ==================== 共线性块压缩 ====================
 
+    @staticmethod
+    def _extract_linear_paths(subgraph, min_size=2):
+        """从非线性组件中提取所有最大线性子路径。
+
+        遍历每个度≠2的节点作为起点，沿度=2邻居行走。
+        """
+        paths = []
+        visited = set()
+        degs = dict(subgraph.degree())
+        # 从度=1或度≥3的节点出发
+        starts = [n for n in subgraph.nodes() if degs[n] != 2]
+        if not starts:
+            starts = [list(subgraph.nodes())[0]]
+        for start in starts:
+            if start in visited:
+                continue
+            # 向每个邻居方向走
+            for first_neighbor in subgraph.neighbors(start):
+                if first_neighbor in visited:
+                    continue
+                path = [start, first_neighbor]
+                visited_local = {start, first_neighbor}
+                curr, prev = first_neighbor, start
+                while degs.get(curr, 0) == 2:
+                    nxts = [n for n in subgraph.neighbors(curr)
+                            if n != prev and n not in visited_local]
+                    if len(nxts) != 1:
+                        break
+                    nxt = nxts[0]
+                    visited_local.add(nxt)
+                    path.append(nxt)
+                    prev, curr = curr, nxt
+                if len(path) >= min_size:
+                    paths.append(path)
+                    visited.update(path)
+        return paths
+
     def _build_synteny_blocks(self, min_block_size: int = 2):
         """构建共线性块。
 
@@ -1094,14 +1131,25 @@ class ColoredGraph:
         hog_to_block = {}
 
         if len(self.children()) >= 2:
-            # 多孩子: 共享图组件
+            # 多孩子: 共享图组件，只压缩线性路径 (每个节点度≤2)
             shared_G = nx.Graph()
             for h1, h2, data in self._graph.edges(data=True):
                 if len(data['colors']) >= 2:
                     shared_G.add_edge(h1, h2)
             for comp in nx.connected_components(shared_G):
                 sub = shared_G.subgraph(comp)
-                endpoints = [n for n in sub.nodes() if sub.degree(n) == 1]
+                # 检查是否线性: 所有节点度≤2
+                degs = dict(sub.degree())
+                if any(d > 2 for d in degs.values()):
+                    # 非线性组件: 只取线性子路径
+                    for path in _extract_linear_paths(sub, min_block_size):
+                        bid = "blk_{}".format(len(blocks))
+                        blocks[bid] = path
+                        for h in path:
+                            hog_to_block[h] = bid
+                    continue
+                # 线性组件: 整个组件 = 一个块
+                endpoints = [n for n in sub.nodes() if degs[n] == 1]
                 if not endpoints:
                     endpoints = [list(comp)[0]]
                 start = endpoints[0]

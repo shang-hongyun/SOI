@@ -30,6 +30,61 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================================
+#  Visualization helpers
+# =========================================================================
+
+def _draw_child_paths(child_graph, child_id, node_id, outpath):
+    """Draw a child's chromosome paths as a simple linear visualization."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+    except ImportError:
+        return
+
+    chroms = list(child_graph.chromosomes)
+    n_chrom = len(chroms)
+    if n_chrom == 0:
+        return
+
+    fig, ax = plt.subplots(figsize=(max(12, n_chrom * 3), max(4, n_chrom * 0.8)))
+    colors_list = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
+                   '#00BCD4', '#795548', '#607D8B', '#E91E63', '#3F51B5']
+
+    for ci, chrom in enumerate(chroms):
+        hogs = [n for n in chrom if n not in child_graph.telomeres]
+        if not hogs:
+            continue
+        color = colors_list[ci % len(colors_list)]
+        y = n_chrom - ci  # top to bottom
+
+        # Draw chromosome as a horizontal line of blocks
+        for i, hog in enumerate(hogs):
+            x = i
+            ax.add_patch(plt.Rectangle((x, y - 0.3), 0.9, 0.6,
+                                       facecolor=color, edgecolor='black',
+                                       linewidth=0.5, alpha=0.7))
+
+        ax.text(-1, y, f'chr{ci}', ha='right', va='center', fontsize=8, fontweight='bold')
+        ax.text(len(hogs) + 0.5, y, f'{len(hogs)} HOGs', ha='left', va='center', fontsize=7)
+
+    ax.set_xlim(-3, max(len([n for n in c if n not in child_graph.telomeres])
+                        for c in chroms) + 5)
+    ax.set_ylim(0.3, n_chrom + 0.7)
+    ax.set_title(f'{child_id} ({node_id}): {n_chrom} chromosomes', fontsize=10)
+    ax.set_xlabel('HOG position', fontsize=8)
+    ax.set_yticks([])
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+# =========================================================================
 #  Main entry point
 # =========================================================================
 
@@ -307,13 +362,20 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             logger.info("  [Phase 1] %s: %d chroms, %d HOGs after dedup", cid, n_chrom, n_hogs)
             G.add_child(cid, mc)
 
-        # Visualization: raw graph (before event resolution)
+
+        # Visualization: raw merged graph (before event resolution)
+        # 跳过块数太多的情况（graphviz 渲染太慢）
         try:
             viz_dir = os.path.dirname(akr.outpre) if hasattr(akr, 'outpre') else '.'
             viz_base = os.path.basename(akr.outpre) if hasattr(akr, 'outpre') else 'AKR'
-            G.draw_block_graph(
-                os.path.join(viz_dir, f'{viz_base}.{node_id}.raw_block_graph.png'),
-                title=f'Raw Block Graph: {node_id} (before resolution)')
+            G._build_synteny_blocks()
+            n_blocks = len(G._blocks) if hasattr(G, '_blocks') else 0
+            if n_blocks <= 200:
+                G.draw_block_graph(
+                    os.path.join(viz_dir, f'{viz_base}.{node_id}.raw_block_graph.png'),
+                    title=f'Raw Block Graph: {node_id} (before resolution)')
+            else:
+                logger.info("  [viz] skipping raw graph: %d blocks (too many)", n_blocks)
         except Exception as e:
             logger.debug("  [viz] raw graph skipped: %s", e)
 
@@ -364,12 +426,16 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         try:
             viz_dir = os.path.dirname(akr.outpre) if hasattr(akr, 'outpre') else '.'
             viz_base = os.path.basename(akr.outpre) if hasattr(akr, 'outpre') else 'AKR'
-            G.draw_block_graph(
-                os.path.join(viz_dir, f'{viz_base}.{node_id}.block_graph.png'),
-                title=f'Block Graph: {node_id}')
-            G.draw_adjacency_heatmap(
-                os.path.join(viz_dir, f'{viz_base}.{node_id}.adj_heatmap.png'),
-                title=f'Adjacency Matrix: {node_id}')
+            n_blocks = len(G._blocks) if hasattr(G, '_blocks') else 0
+            if n_blocks <= 200:
+                G.draw_block_graph(
+                    os.path.join(viz_dir, f'{viz_base}.{node_id}.block_graph.png'),
+                    title=f'Block Graph: {node_id}')
+                G.draw_adjacency_heatmap(
+                    os.path.join(viz_dir, f'{viz_base}.{node_id}.adj_heatmap.png'),
+                    title=f'Adjacency Matrix: {node_id}')
+            else:
+                logger.info("  [viz] skipping resolved graph: %d blocks (too many)", n_blocks)
         except Exception as e:
             logger.debug("  [viz] skipped: %s", e)
 

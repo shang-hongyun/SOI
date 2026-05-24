@@ -1082,73 +1082,49 @@ class ColoredGraph:
     # ==================== 共线性块压缩 ====================
 
     def _build_synteny_blocks(self, min_block_size: int = 2):
-        """构建共线性块：最大连续共享边路径。
+        """构建共线性块：共享图的每个连通分量 = 一条路径 = 一个块。
 
-        块 = 一段 HOG 序列，其中每对相邻 HOG 之间都有共享边（≥2 孩子共有）。
-        块间边界 = 唯一边、断裂点、端粒 HOG。
-
-        端粒 HOG 在行走时直接跳过，不进入任何块。
-        之后单独成块（1-HOG 块），作为染色体锚点。
+        块 = 共享图组件（每对相邻 HOG 之间都有共享边，≥2 孩子共有）。
+        不在共享图中的 HOG 单独成块。
         """
         shared_G = nx.Graph()
         for h1, h2, data in self._graph.edges(data=True):
             if len(data['colors']) >= 2:
                 shared_G.add_edge(h1, h2)
 
-        cons_tels = self.consensus_telomeres(min_children=2)
-
         blocks = {}
         hog_to_block = {}
-        assigned = set()
 
+        # 每个共享图组件 = 一个块
         for comp in nx.connected_components(shared_G):
             sub = shared_G.subgraph(comp)
-            deg = dict(sub.degree())
-
-            breakpoints = {n for n, d in deg.items() if d != 2}
-            if not breakpoints:
-                breakpoints = {list(comp)[0]}
-
-            for bp in list(breakpoints):
-                if bp in assigned or bp in cons_tels:
-                    assigned.add(bp)  # 标记端粒为已分配
-                    continue
-                for start in (bp,):
-                    if start in assigned or start in cons_tels:
-                        assigned.add(start)
-                        continue
-                    path = [start]
-                    assigned.add(start)
-                    curr = start
-                    prev = None
-                    while True:
-                        neighbors = [
-                            n for n in sub.neighbors(curr)
-                            if n != prev and n not in assigned
-                            and deg.get(n, 0) == 2
-                            and n not in cons_tels  # 跳过端粒
-                        ]
-                        if not neighbors:
-                            break
-                        nxt = neighbors[0]
-                        assigned.add(nxt)
-                        path.append(nxt)
-                        prev, curr = curr, nxt
-
-                    if len(path) >= min_block_size:
-                        bid = "blk_{}".format(len(blocks))
-                        blocks[bid] = path
-                        for h in path:
-                            hog_to_block[h] = bid
-
-        # 端粒 HOG 单独成块
-        for h in cons_tels:
-            if h not in hog_to_block and h in self.all_hogs():
+            # 找端点（度=1）作为路径起点
+            endpoints = [n for n in sub.nodes() if sub.degree(n) == 1]
+            if not endpoints:
+                # 环状组件：任选起点
+                endpoints = [list(comp)[0]]
+            # 从端点行走，构建路径
+            start = endpoints[0]
+            path = [start]
+            visited = {start}
+            curr = start
+            prev = None
+            while True:
+                neighbors = [n for n in sub.neighbors(curr)
+                             if n != prev and n not in visited]
+                if not neighbors:
+                    break
+                nxt = neighbors[0]
+                visited.add(nxt)
+                path.append(nxt)
+                prev, curr = curr, nxt
+            if len(path) >= min_block_size:
                 bid = "blk_{}".format(len(blocks))
-                blocks[bid] = [h]
-                hog_to_block[h] = bid
+                blocks[bid] = path
+                for h in path:
+                    hog_to_block[h] = bid
 
-        # 剩余未分配的 HOG → 单独成块
+        # 不在共享图中的 HOG → 单独成块
         for h in self.all_hogs():
             if h not in hog_to_block:
                 bid = "blk_{}".format(len(blocks))
@@ -2280,9 +2256,9 @@ class ColoredGraph:
             self._draw_block_graph_mpl(outpath, dpi, title)
             return
 
-        # 总是重建块（确保端粒拆分等修改生效）
-        self._build_synteny_blocks()
-        self._compress_to_block_level()
+        if not hasattr(self, '_block_graph') or not self._block_graph:
+            self._build_synteny_blocks()
+            self._compress_to_block_level()
 
         bg = self._block_graph
         if bg.number_of_nodes() == 0:
@@ -2415,9 +2391,9 @@ class ColoredGraph:
             logger.warning("matplotlib not available, skipping block graph")
             return
 
-        # 总是重建块（确保端粒拆分等修改生效）
-        self._build_synteny_blocks()
-        self._compress_to_block_level()
+        if not hasattr(self, '_block_graph') or not self._block_graph:
+            self._build_synteny_blocks()
+            self._compress_to_block_level()
 
         bg = self._block_graph
         if bg.number_of_nodes() == 0:

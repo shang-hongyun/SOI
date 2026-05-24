@@ -1072,21 +1072,16 @@ class ColoredGraph:
         """构建共线性块：最大连续共享边路径。
 
         块 = 一段 HOG 序列，其中每对相邻 HOG 之间都有共享边（≥2 孩子共有）。
-        块间边界 = 唯一边、断裂点、或端粒 HOG。
+        块间边界 = 唯一边、断裂点。
 
-        端粒 HOG 单独成块（不合并到大块），因为它们是染色体锚点。
-
-        self._blocks: {block_id: [hog1, hog2, ...]} — 块内 HOG 顺序
-        self._hog_to_block: {hog: block_id} — HOG 到块的映射
+        端粒 HOG 作为块内拆分点：如果一个块包含端粒 HOG，
+        在端粒位置拆分为两个块（端粒单独成块）。
         """
         # 共享边图
         shared_G = nx.Graph()
         for h1, h2, data in self._graph.edges(data=True):
             if len(data['colors']) >= 2:
                 shared_G.add_edge(h1, h2)
-
-        # 端粒 HOG 集合（块边界）
-        cons_tels = self.consensus_telomeres(min_children=1)
 
         blocks = {}
         hog_to_block = {}
@@ -1097,12 +1092,10 @@ class ColoredGraph:
             sub = shared_G.subgraph(comp)
             deg = dict(sub.degree())
 
-            # 找断面（度 ≠ 2 的节点）作为路径起点
             breakpoints = {n for n, d in deg.items() if d != 2}
             if not breakpoints:
                 breakpoints = {list(comp)[0]}
 
-            # 从每个断面出发，沿度=2的节点行走
             for bp in list(breakpoints):
                 if bp in assigned:
                     continue
@@ -1122,9 +1115,6 @@ class ColoredGraph:
                         if not deg2_neighbors:
                             break
                         nxt = deg2_neighbors[0]
-                        # 端粒 HOG 作为块边界：停止当前块
-                        if nxt in cons_tels:
-                            break
                         assigned.add(nxt)
                         path.append(nxt)
                         prev, curr = curr, nxt
@@ -1135,19 +1125,57 @@ class ColoredGraph:
                         for h in path:
                             hog_to_block[h] = bid
 
-        # 端粒 HOG 单独成块
+        # 端粒拆分：如果块包含端粒 HOG，在端粒位置拆分
+        cons_tels = self.consensus_telomeres(min_children=1)
+        new_blocks = {}
+        new_hog_to_block = {}
+        for bid, hogs in blocks.items():
+            tel_positions = [i for i, h in enumerate(hogs) if h in cons_tels]
+            if not tel_positions:
+                new_blocks[bid] = hogs
+                for h in hogs:
+                    new_hog_to_block[h] = bid
+            else:
+                # 在每个端粒位置拆分：端粒单独成块，前后各一块
+                prev = 0
+                for tp in tel_positions:
+                    # 端粒之前的块
+                    if tp > prev:
+                        chunk = hogs[prev:tp]
+                        new_bid = "blk_{}".format(len(new_blocks))
+                        new_blocks[new_bid] = chunk
+                        for h in chunk:
+                            new_hog_to_block[h] = new_bid
+                    # 端粒单独成块
+                    tel_hog = hogs[tp]
+                    new_bid = "blk_{}".format(len(new_blocks))
+                    new_blocks[new_bid] = [tel_hog]
+                    new_hog_to_block[tel_hog] = new_bid
+                    prev = tp + 1
+                # 端粒之后的块
+                if prev < len(hogs):
+                    chunk = hogs[prev:]
+                    new_bid = "blk_{}".format(len(new_blocks))
+                    new_blocks[new_bid] = chunk
+                    for h in chunk:
+                        new_hog_to_block[h] = new_bid
+
+        # 端粒 HOG 单独成块（如果还没被分配）
         for h in cons_tels:
-            if h not in hog_to_block and h in self.all_hogs():
-                bid = "blk_{}".format(len(blocks))
-                blocks[bid] = [h]
-                hog_to_block[h] = bid
+            if h not in new_hog_to_block and h in self.all_hogs():
+                bid = "blk_{}".format(len(new_blocks))
+                new_blocks[bid] = [h]
+                new_hog_to_block[h] = bid
 
         # 剩余未分配的 HOG → 单独成块
         for h in self.all_hogs():
-            if h not in hog_to_block:
-                bid = "blk_{}".format(len(blocks))
-                blocks[bid] = [h]
-                hog_to_block[h] = bid
+            if h not in new_hog_to_block:
+                bid = "blk_{}".format(len(new_blocks))
+                new_blocks[bid] = [h]
+                new_hog_to_block[h] = bid
+
+        blocks = new_blocks
+        hog_to_block = new_hog_to_block
 
         self._blocks = blocks
         self._hog_to_block = hog_to_block

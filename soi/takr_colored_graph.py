@@ -888,10 +888,11 @@ class ColoredGraph:
         path = [start]
         curr = start
         visited_local = visited | {start}
+        hog_set = self.all_hogs()  # cache
 
         while True:
             neighbors = [n for n in self._graph.neighbors(curr)
-                         if n not in visited_local and n in self.all_hogs()]
+                         if n not in visited_local and n in hog_set]
             if not neighbors:
                 break
 
@@ -923,10 +924,11 @@ class ColoredGraph:
         path = [start]
         curr = start
         visited_local = visited | {start}
+        hog_set = self.all_hogs()  # cache
 
         while True:
             neighbors = [n for n in self._graph.neighbors(curr)
-                         if n not in visited_local and n in self.all_hogs()]
+                         if n not in visited_local and n in hog_set]
             if not neighbors:
                 break
             nxt = neighbors[0]
@@ -1129,6 +1131,7 @@ class ColoredGraph:
         - 单孩子：每条染色体路径 = 一个块（端粒除外）
         """
         cons_tels = self.consensus_telomeres(min_children=2) if len(self.children()) >= 2 else set()
+        hog_set = self.all_hogs()  # cache
         blocks = {}
         hog_to_block = {}
 
@@ -1174,7 +1177,7 @@ class ColoredGraph:
             for cid in self.children():
                 for chrom_path in self._child_chromosomes.get(cid, []):
                     hogs = [h for h in chrom_path
-                            if h in self.all_hogs() and h not in cons_tels]
+                            if h in hog_set and h not in cons_tels]
                     if len(hogs) >= min_block_size:
                         bid = "blk_{}".format(len(blocks))
                         blocks[bid] = hogs
@@ -1183,13 +1186,13 @@ class ColoredGraph:
 
         # 端粒 HOG → 1-HOG 块
         for h in cons_tels:
-            if h not in hog_to_block and h in self.all_hogs():
+            if h not in hog_to_block and h in hog_set:
                 bid = "blk_{}".format(len(blocks))
                 blocks[bid] = [h]
                 hog_to_block[h] = bid
 
         # 剩余未分配 HOG → 1-HOG 块
-        for h in self.all_hogs():
+        for h in hog_set:
             if h not in hog_to_block:
                 bid = "blk_{}".format(len(blocks))
                 blocks[bid] = [h]

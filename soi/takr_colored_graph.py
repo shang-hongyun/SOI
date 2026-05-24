@@ -721,9 +721,10 @@ class ColoredGraph:
                         self._remove_rare_color_edge(h1, h2, cycle, cycle_edges)
 
                 # 记录事件
+                _dcid = derived_child_id if outgroup_adjacency and child_derived_count else None
                 event = TAKREvent(
                     event_type=etype,
-                    branch=f"{self.hog_level}-{derived_child_id}" if derived_child_id else self.hog_level,
+                    branch=f"{self.hog_level}-{_dcid}" if _dcid else self.hog_level,
                     genes_involved=list(cycle),
                     desc=f"{etype}: {len(cycle)} HOG cycle resolved (iter {iteration})",
                     support=1,
@@ -2243,7 +2244,9 @@ class ColoredGraph:
 
         # 检查所有孩子推算的祖先染色体数是否一致
         values = list(inferred_ancestor_chroms.values())
-        if len(set(values)) > 1:
+        if not values:
+            pass  # no children, skip consistency check
+        elif len(set(values)) > 1:
             logger.error("  [chrom] INCONSISTENT ancestor chroms: %s", inferred_ancestor_chroms)
         else:
             inferred = values[0]

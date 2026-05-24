@@ -361,8 +361,9 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         outgroup_adjacency = None
         if node_id in outgroup_leaves_map and node.up:
             parent_hog_level = node.up.name
-            og_adj_set = set()
+            og_adj_counts = defaultdict(int)  # key -> number of outgroup leaves with it
             og_leaves = outgroup_leaves_map[node_id]
+            n_og_leaves = 0
             logger.debug("  [outgroup] %s: sibling leaves %s -> mapping to %s",
                          node_id, og_leaves, parent_hog_level)
             for leaf_name in og_leaves:
@@ -372,19 +373,26 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                             parent_hog_level,
                             akr.leaf_graphs[leaf_name],
                             source_id=leaf_name)
+                        n_og_leaves += 1
+                        leaf_adj = set()
                         for h1, h2 in mapped.get_adjacencies(include_telomere=False):
                             h1_id = h1.hog_id if hasattr(h1, 'hog_id') else str(h1)
                             h2_id = h2.hog_id if hasattr(h2, 'hog_id') else str(h2)
                             key = (h1_id, h2_id) if h1_id < h2_id else (h2_id, h1_id)
-                            og_adj_set.add(key)
+                            leaf_adj.add(key)
+                        for key in leaf_adj:
+                            og_adj_counts[key] += 1
                         logger.debug("  [outgroup]   %s: %d adjacencies at %s level",
-                                     leaf_name, len(og_adj_set), parent_hog_level)
+                                     leaf_name, len(leaf_adj), parent_hog_level)
                     except Exception as e:
                         logger.debug("  [outgroup]   %s: skip (%s)", leaf_name, e)
-            if og_adj_set:
-                outgroup_adjacency = og_adj_set
-                logger.info("  [outgroup] %s: %d adjacencies from %d leaves at %s level",
-                            node_id, len(og_adj_set), len(og_leaves), parent_hog_level)
+            # 只有所有 outgroup 物种都有的邻接才算祖先态
+            if og_adj_counts and n_og_leaves >= 2:
+                outgroup_adjacency = {k for k, cnt in og_adj_counts.items()
+                                      if cnt >= n_og_leaves}
+                logger.info("  [outgroup] %s: %d/%d adjacencies conserved in all %d leaves at %s level",
+                            node_id, len(outgroup_adjacency), len(og_adj_counts),
+                            n_og_leaves, parent_hog_level)
 
         outgroup_hogs = {}
         if node_id in og_graphs_cache:

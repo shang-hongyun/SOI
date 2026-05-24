@@ -2080,8 +2080,11 @@ class ColoredGraph:
         n0, e0 = self.node_count(), self.edge_count()
         self.resolve_indels(outgroups)
         n1, e1 = self.node_count(), self.edge_count()
-        logger.info("  [colored] Phase 2 (indels): %d events, nodes %d→%d (-%d), edges %d→%d (-%d)",
-                     len(self.events) - n_events_before,
+        n_indel = len(self.events) - n_events_before
+        indel_types = Counter(e.event_type for e in self.events[n_events_before:])
+        indel_str = ", ".join(f"{t}={c}" for t, c in sorted(indel_types.items())) if indel_types else "none"
+        logger.info("  [colored] Phase 2 (indels): %d events [%s], nodes %d→%d (-%d), edges %d→%d (-%d)",
+                     n_indel, indel_str,
                      n0, n1, n0 - n1, e0, e1, e0 - e1)
         try:
             self._postcondition_no_cross_edges("Phase 2")
@@ -2104,7 +2107,9 @@ class ColoredGraph:
         # Phase 4b: unidir_trans
         n_ut = self._resolve_unidir_trans(outgroup_adjacency=outgroup_adjacency)
         if n_ut:
-            logger.info("  [colored] Phase 4b (unidir_trans): %d events", n_ut)
+            ut_events = [e for e in self.events if e.event_type == 'unidir_trans']
+            ut_str = ", ".join(f"{e.branch}" for e in ut_events[-5:])
+            logger.info("  [colored] Phase 4b (unidir_trans): %d events [%s]", n_ut, ut_str)
 
         # ====== Phase 4c-4e: 块级结构重排 (inversion, RT) ======
         n_before_struct = len(self.events)
@@ -2112,8 +2117,11 @@ class ColoredGraph:
         n_struct = self._resolve_block_structural_events(
             outgroup_adjacency=outgroup_adjacency)
         n3, e3 = self.node_count(), self.edge_count()
-        logger.info("  [colored] Phase 4c-4e (structural): %d events, nodes %d→%d (-%d), edges %d→%d (-%d)",
-                     len(self.events) - n_before_struct,
+        n_struct_events = len(self.events) - n_before_struct
+        struct_types = Counter(e.event_type for e in self.events[n_before_struct:])
+        struct_str = ", ".join(f"{t}={c}" for t, c in sorted(struct_types.items())) if struct_types else "none"
+        logger.info("  [colored] Phase 4c-4e (structural): %d events [%s], nodes %d→%d (-%d), edges %d→%d (-%d)",
+                     n_struct_events, struct_str,
                      n2, n3, n2 - n3, e2, e3, e2 - e3)
 
         # ====== Phase 4f: 块级桥接 (EEJ/NCF/fission) ======
@@ -2122,8 +2130,11 @@ class ColoredGraph:
         n_bridge = self._resolve_block_bridge_events(
             outgroup_adjacency=outgroup_adjacency)
         n5, e5 = self.node_count(), self.edge_count()
-        logger.info("  [colored] Phase 4f (bridge): %d events, nodes %d→%d (-%d), edges %d→%d (-%d)",
-                     len(self.events) - n_before_bridge,
+        n_bridge_events = len(self.events) - n_before_bridge
+        bridge_types = Counter(e.event_type for e in self.events[n_before_bridge:])
+        bridge_str = ", ".join(f"{t}={c}" for t, c in sorted(bridge_types.items())) if bridge_types else "none"
+        logger.info("  [colored] Phase 4f (bridge): %d events [%s], nodes %d→%d (-%d), edges %d→%d (-%d)",
+                     n_bridge_events, bridge_str,
                      n4, n5, n4 - n5, e4, e5, e4 - e5)
         try:
             self._postcondition_no_bridge_edges("Phase 4f")

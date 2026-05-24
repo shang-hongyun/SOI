@@ -52,6 +52,8 @@ class ColoredGraph:
         self._child_hogs: Dict[str, set] = {}
         # 记录每个 child 的染色体数，用于验证
         self._child_chrom_counts: Dict[str, int] = {}
+        # 记录每个 child 的染色体路径，用于单孩子块压缩
+        self._child_chromosomes: Dict[str, list] = {}
 
     # ==================== 构建 ====================
 
@@ -90,17 +92,16 @@ class ColoredGraph:
         chrom_count = 0
         child_hogs = set()
         child_tels = set()
+        child_chrom_paths = []
 
         for chrom_idx, chrom_nodes in enumerate(child_graph.chromosomes):
             chrom_count += 1
             hogs = [n for n in chrom_nodes if n not in child_graph.telomeres]
             child_hogs.update(hogs)
+            child_chrom_paths.append(hogs)
             for i in range(len(hogs) - 1):
                 h_a, h_b = hogs[i], hogs[i + 1]
-                # 方向: 基于位置，不是 HOG ID
-                # 在染色体中 a 在 b 之前 → +1, 之后 → -1
-                # 用 HOG ID 作为稳定排序键
-                direction = 1  # 总是从左到右遍历
+                direction = 1
                 self.add_edge(h_a, h_b, source_id, chrom_idx, direction=direction)
 
         # 收集端粒信息
@@ -115,6 +116,7 @@ class ColoredGraph:
         self._child_telomeres[source_id] = child_tels
         self._child_hogs[source_id] = child_hogs
         self._child_chrom_counts[source_id] = chrom_count
+        self._child_chromosomes[source_id] = child_chrom_paths
         return chrom_count
 
     # ==================== 查询 ====================
@@ -1082,49 +1084,57 @@ class ColoredGraph:
     # ==================== 共线性块压缩 ====================
 
     def _build_synteny_blocks(self, min_block_size: int = 2):
-        """构建共线性块：共享图的每个连通分量 = 一条路径 = 一个块。
+        """构建共线性块。
 
-        块 = 共享图组件（每对相邻 HOG 之间都有共享边，≥2 孩子共有）。
-        不在共享图中的 HOG 单独成块。
+        - 多孩子 (≥2): 共享图组件 = 一个块
+        - 单孩子 (1): 每条染色体路径 = 一个块
+        不在块中的 HOG 单独成块。
         """
-        shared_G = nx.Graph()
-        for h1, h2, data in self._graph.edges(data=True):
-            if len(data['colors']) >= 2:
-                shared_G.add_edge(h1, h2)
-
         blocks = {}
         hog_to_block = {}
 
-        # 每个共享图组件 = 一个块
-        for comp in nx.connected_components(shared_G):
-            sub = shared_G.subgraph(comp)
-            # 找端点（度=1）作为路径起点
-            endpoints = [n for n in sub.nodes() if sub.degree(n) == 1]
-            if not endpoints:
-                # 环状组件：任选起点
-                endpoints = [list(comp)[0]]
-            # 从端点行走，构建路径
-            start = endpoints[0]
-            path = [start]
-            visited = {start}
-            curr = start
-            prev = None
-            while True:
-                neighbors = [n for n in sub.neighbors(curr)
-                             if n != prev and n not in visited]
-                if not neighbors:
-                    break
-                nxt = neighbors[0]
-                visited.add(nxt)
-                path.append(nxt)
-                prev, curr = curr, nxt
-            if len(path) >= min_block_size:
-                bid = "blk_{}".format(len(blocks))
-                blocks[bid] = path
-                for h in path:
-                    hog_to_block[h] = bid
+        if len(self.children()) >= 2:
+            # 多孩子: 共享图组件
+            shared_G = nx.Graph()
+            for h1, h2, data in self._graph.edges(data=True):
+                if len(data['colors']) >= 2:
+                    shared_G.add_edge(h1, h2)
+            for comp in nx.connected_components(shared_G):
+                sub = shared_G.subgraph(comp)
+                endpoints = [n for n in sub.nodes() if sub.degree(n) == 1]
+                if not endpoints:
+                    endpoints = [list(comp)[0]]
+                start = endpoints[0]
+                path = [start]
+                visited = {start}
+                curr, prev = start, None
+                while True:
+                    neighbors = [n for n in sub.neighbors(curr)
+                                 if n != prev and n not in visited]
+                    if not neighbors:
+                        break
+                    nxt = neighbors[0]
+                    visited.add(nxt)
+                    path.append(nxt)
+                    prev, curr = curr, nxt
+                if len(path) >= min_block_size:
+                    bid = "blk_{}".format(len(blocks))
+                    blocks[bid] = path
+                    for h in path:
+                        hog_to_block[h] = bid
+        else:
+            # 单孩子: 每条染色体路径 = 一个块
+            for cid in self.children():
+                chroms = self._child_chromosomes.get(cid, [])
+                for chrom_path in chroms:
+                    hogs = [h for h in chrom_path if h in self.all_hogs()]
+                    if len(hogs) >= min_block_size:
+                        bid = "blk_{}".format(len(blocks))
+                        blocks[bid] = hogs
+                        for h in hogs:
+                            hog_to_block[h] = bid
 
-        # 不在共享图中的 HOG → 单独成块
+        # 不在块中的 HOG → 单独成块
         for h in self.all_hogs():
             if h not in hog_to_block:
                 bid = "blk_{}".format(len(blocks))

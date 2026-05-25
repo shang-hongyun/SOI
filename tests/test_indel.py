@@ -40,6 +40,28 @@ def generate_indel_simulation(outdir, seed=42, num_species=4, num_chroms=3,
     return sim
 
 
+def generate_dense_indel_simulation(outdir, seed=42, num_species=4, num_chroms=3,
+                                    gene_gain_rate=50, gene_loss_rate=50,
+                                    min_genes=20, max_genes=50):
+    """高密度 indel：短染色体、高得失率。"""
+    from soi.evolution_simulator_ak import generate_tree, EvolutionSimulator
+    import random
+    rng = random.Random(seed)
+    tree = generate_tree(num_species, rng)
+    sim = EvolutionSimulator(
+        seed=seed, num_chroms=num_chroms, min_genes=min_genes, max_genes=max_genes,
+        inv_rate=0, rt_rate=0, ncf_rate=0, eej_rate=0,
+        fission_rate=0, unidir_trans_rate=0,
+        gene_gain_rate=gene_gain_rate, gene_loss_rate=gene_loss_rate,
+        tandem_dup_rate=0, dispersed_dup_rate=0,
+        seg_dup_rate=0, wgd_rate=0,
+    )
+    orig_nw = tree.write(format=1)
+    sim.run(tree, {})
+    sim.generate_outputs(outdir, tree, {}, orig_nw)
+    return sim
+
+
 def load_akr_and_tree(sim_dir):
     """从模拟目录加载 AKR 和树。"""
     from soi.AK import AKR
@@ -136,6 +158,26 @@ def sim_massive_indel(tmp_path_factory):
     return load_akr_and_tree(sim_dir)
 
 
+@pytest.fixture(scope='module')
+def sim_dense_indel(tmp_path_factory):
+    """高密度 indel：短染色体、高得失率。"""
+    sim_dir = str(tmp_path_factory.mktemp('sim_dense_indel'))
+    generate_dense_indel_simulation(sim_dir, seed=42, num_species=4, num_chroms=3,
+                                    gene_gain_rate=50, gene_loss_rate=50,
+                                    min_genes=20, max_genes=50)
+    return load_akr_and_tree(sim_dir)
+
+
+@pytest.fixture(scope='module')
+def sim_dense_extreme(tmp_path_factory):
+    """极高密度 indel：极短染色体、极高得失率。"""
+    sim_dir = str(tmp_path_factory.mktemp('sim_dense_extreme'))
+    generate_dense_indel_simulation(sim_dir, seed=7777, num_species=6, num_chroms=3,
+                                    gene_gain_rate=100, gene_loss_rate=100,
+                                    min_genes=10, max_genes=30)
+    return load_akr_and_tree(sim_dir)
+
+
 # ── 基础测试 ─────────────────────────────────────────────────
 
 class TestIndelBasic:
@@ -177,6 +219,20 @@ class TestIndelStress:
         """12 物种、极大基因组、极高得失率：检测 + resolve + 无碎片化。"""
         akr, tree = sim_massive_indel
         _run_indel_validation(akr, tree)
+
+
+class TestIndelDense:
+    """高密度 indel：短染色体、连续基因删除/插入。"""
+
+    def test_dense_indel(self, sim_dense_indel):
+        """短染色体（20-50 基因）、高得失率（50）：检测 + resolve。"""
+        akr, tree = sim_dense_indel
+        _run_indel_validation(akr, tree)
+
+    def test_dense_extreme(self, sim_dense_extreme):
+        """极短染色体（10-30 基因）、极高得失率（100）：resolve 不崩溃。"""
+        akr, tree = sim_dense_extreme
+        _run_indel_validation(akr, tree, expect_indels=False)
 
 
 # ── 多种子稳定性 ─────────────────────────────────────────────

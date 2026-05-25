@@ -296,43 +296,23 @@ class TestInversionDetection:
     """
 
     def test_block_level_inversion_3cycle(self):
-        """Block-level 3-cycle with 2 unique edges from different children → inversion."""
+        """Inversion detected via direction conflict (signed adjacency model)."""
         G = ColoredGraph(hog_level='test')
-        # c1: linear A-B-C-D-E-F
-        # c2: C-D-A-B-E-F (A-B block moved after C-D)
-        # This creates block connectivity difference:
-        #   c1: blk_0(A,B) → blk_1(C,D) → blk_2(E,F)
-        #   c2: blk_1(C,D) → blk_0(A,B) → blk_2(E,F)  (same but different order)
-        # Shared edges: A-B, C-D, E-F (within blocks)
-        # Block edges from cross-block adjacencies:
-        #   B→C: c1 only (blk_0→blk_1)
-        #   D→A: c2 only (blk_1→blk_0) → combined blk_0↔blk_1: {c1,c2} shared!
-        #   D→E: c1 only (blk_1→blk_2)
-        #   B→E: c2 only (blk_0→blk_2)
-        # So: blk_0↔blk_1 shared, blk_1↔blk_2 c1, blk_0↔blk_2 c2 → 3-cycle!
+        # c1: A-B-C-D-E-F (normal)
+        # c2: A-B-D-C-E-F (C-D inverted → direction conflict on C-D)
         chroms1 = [[tel('c1_c0', 'L')] + list('ABCDEF') + [tel('c1_c0', 'R')]]
-        chroms2 = [[tel('c2_c0', 'L')] + list('CDABEF') + [tel('c2_c0', 'R')]]
+        chroms2 = [[tel('c2_c0', 'L')] + list('ABDCEF') + [tel('c2_c0', 'R')]]
         G.add_child('c1', MockChildGraph(chroms1))
         G.add_child('c2', MockChildGraph(chroms2))
 
-        # Run block compression
-        G._build_synteny_blocks()
-        G._compress_to_block_level()
+        # Direction conflict on C-D: c1 has C→D (+1), c2 has D→C (-1)
+        assert G.edge_has_direction_conflict('C', 'D')
 
-        # Check block graph structure
-        bg = G._block_graph
-        n_unique = sum(1 for _, _, d in bg.edges(data=True) if len(d.get('colors', set())) == 1)
-        n_shared = sum(1 for _, _, d in bg.edges(data=True) if len(d.get('colors', set())) > 1)
-
-        # Run block structural events
-        n = G._resolve_block_structural_events()
+        # Resolve all events (includes _detect_inversions)
+        G.resolve_all_events()
         inv_events = [e for e in G.events if e.event_type == 'inversion']
         assert len(inv_events) >= 1, (
-            "No inversion detected. Events: {}, block graph: {} nodes, {} edges "
-            "({} unique, {} shared), blocks: {}".format(
-                G.events, bg.number_of_nodes(), bg.number_of_edges(),
-                n_unique, n_shared,
-                {k: len(v) for k, v in G._blocks.items()}))
+            "No inversion detected. Events: {}".format(G.events))
 
     def test_no_inversion_same_direction(self):
         """Same direction on all edges → no inversion."""
@@ -583,10 +563,10 @@ class TestResolveAllEvents:
         assert len(major_events) == 0
 
     def test_inversion_pipeline(self):
-        """Full pipeline with block-level inversion."""
+        """Full pipeline with inversion (direction conflict)."""
         G = ColoredGraph(hog_level='test')
         chroms1 = [[tel('c1_c0', 'L')] + list('ABCDEF') + [tel('c1_c0', 'R')]]
-        chroms2 = [[tel('c2_c0', 'L')] + list('CDABEF') + [tel('c2_c0', 'R')]]
+        chroms2 = [[tel('c2_c0', 'L')] + list('ABDCEF') + [tel('c2_c0', 'R')]]
         G.add_child('c1', MockChildGraph(chroms1))
         G.add_child('c2', MockChildGraph(chroms2))
         G.resolve_all_events()

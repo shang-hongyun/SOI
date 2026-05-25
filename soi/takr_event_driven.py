@@ -318,25 +318,35 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
 
         # Phase 1: 每孩子内部 deduplication (tandem/dispersed/proximal/seg_dup)
         G = ColoredGraph(hog_level=node_id)
-        pre_dedup_chroms = {}
+        pre_dedup_stats = {}  # cid -> (n_chroms, n_hogs)
         for mc, cid in zip(mapped_children, child_source_ids):
             n_before = len(list(mc.chromosomes))
-            n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
-            pre_dedup_chroms[cid] = n_before
-            logger.info("  [Phase 1] %s: %d chroms, %d HOGs before dedup", cid, n_before, n_hogs)
+            ch = getattr(mc, 'chrom_hogs', None)
+            if ch:
+                n_hogs = sum(len(hogs) for hogs in ch.values())
+            else:
+                n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
+            pre_dedup_stats[cid] = (n_before, n_hogs)
         deduped_children = G._deduplicate_children(mapped_children, child_source_ids,
                                                        ref_graphs=mapped_children)
         for mc, cid in zip(deduped_children, child_source_ids):
             n_chrom = len(list(mc.chromosomes))
-            n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
-            logger.info("  [Phase 1] %s: %d chroms, %d HOGs after dedup", cid, n_chrom, n_hogs)
+            ch = getattr(mc, 'chrom_hogs', None)
+            if ch:
+                n_hogs = sum(len(hogs) for hogs in ch.values())
+            else:
+                n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
+            n_ch_before, n_hogs_before = pre_dedup_stats[cid]
+            removed = n_hogs_before - n_hogs
+            logger.info("  [Phase 1] %s: %d chroms, %d→%d HOGs (removed %d)",
+                        cid, n_chrom, n_hogs_before, n_hogs, removed)
 
             # ── dedup 后验证 ──
             ok = True
             # 1. 染色体数不变
-            if n_chrom != pre_dedup_chroms[cid]:
+            if n_chrom != n_ch_before:
                 logger.error("  [Phase 1] %s: chrom count changed %d → %d",
-                             cid, pre_dedup_chroms[cid], n_chrom)
+                             cid, n_ch_before, n_chrom)
                 ok = False
             # 2. 每条染色体线性（无重复 HOG）
             for ci, chrom in enumerate(mc.chromosomes):
@@ -356,7 +366,22 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                                      cid, ci, i, hogs[i])
                         ok = False
             if ok:
-                logger.info("  [Phase 1] %s: dedup OK (%d chroms, %d HOGs)", cid, n_chrom, n_hogs)
+                logger.info("  [Phase 1] %s: dedup OK", cid)
+
+        # 事件汇总
+        dup_events = [e for e in G.events
+                      if e.event_type in ('tandem_dup', 'dispersed_dup')]
+        if dup_events:
+            tandem = [e for e in dup_events if e.event_type == 'tandem_dup']
+            disp = [e for e in dup_events if e.event_type == 'dispersed_dup']
+            tandem_lens = [len(e.genes_involved) for e in tandem]
+            disp_lens = [len(e.genes_involved) for e in disp]
+            parts = []
+            if tandem:
+                parts.append(f"tandem_dup={len(tandem)} (len {min(tandem_lens)}-{max(tandem_lens)})")
+            if disp:
+                parts.append(f"dispersed_dup={len(disp)} (len {min(disp_lens)}-{max(disp_lens)})")
+            logger.info("  [Phase 1] %s events: %s", node_id, ", ".join(parts))
 
             G.add_child(cid, mc)
 

@@ -2118,29 +2118,45 @@ class ColoredGraph:
         return deduped_graphs
 
     def _deduplicate_single_child(self, child_graph, source_id: str):
-        """对单个孩子图去重：合并连续重复节点，去除并行边。"""
+        """对单个孩子图去重：所有重复 HOG 保留第一个，删除后续副本。
+
+        处理所有 dup 类型：
+        - tandem_dup: A-B-B-C → A-B-C（连续重复）
+        - dispersed_dup: A-B-C-B-D → A-B-C-D（分散重复）
+        - proximal_dup: A-B-C-D-B-E → A-B-C-D-E（近端重复）
+        - seg_duplication: A-B-C-A-B-C → A-B-C（段重复）
+
+        不需要 outgroup：在单孩子内，重复基因一定是衍生态。
+        """
         import copy
         new_graph = copy.deepcopy(child_graph)
 
         for chrom_idx, chrom_nodes in enumerate(new_graph.chromosomes):
             hogs = [n for n in chrom_nodes if n not in new_graph.telomeres]
-            # 合并连续重复节点: A-A-B → A-B
+            if not hogs:
+                continue
+
+            # 去重：保留每个 HOG 的第一次出现
+            seen = set()
             deduped = []
             for h in hogs:
-                if deduped and deduped[-1] == h:
-                    logger.debug("  [dedup] %s chrom%d: merge tandem %s",
+                if h not in seen:
+                    seen.add(h)
+                    deduped.append(h)
+                else:
+                    logger.debug("  [dedup] %s chrom%d: remove duplicate %s",
                                  source_id, chrom_idx, h)
-                    continue
-                deduped.append(h)
 
             if len(deduped) != len(hogs):
-                # 更新 chromosome 节点列表
+                # 重建染色体节点列表：保留端粒 + 去重后的 HOG
                 new_chrom = []
+                dedup_idx = 0
                 for n in chrom_nodes:
                     if n in new_graph.telomeres:
                         new_chrom.append(n)
-                    elif deduped:
-                        new_chrom.append(deduped.pop(0))
+                    elif dedup_idx < len(deduped):
+                        new_chrom.append(deduped[dedup_idx])
+                        dedup_idx += 1
                 new_graph.chromosomes[chrom_idx] = new_chrom
 
         return new_graph

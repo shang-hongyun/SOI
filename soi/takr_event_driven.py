@@ -30,6 +30,21 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================================
+#  Helpers
+# =========================================================================
+
+def _graph_stats(graph):
+    """返回 (nodes, edges, connected_components)。自动区分有向/无向图。"""
+    n = graph.number_of_nodes()
+    e = graph.number_of_edges()
+    if graph.is_directed():
+        cc = nx.number_weakly_connected_components(graph)
+    else:
+        cc = nx.number_connected_components(graph)
+    return (n, e, cc)
+
+
+# =========================================================================
 #  Visualization helpers
 # =========================================================================
 
@@ -318,7 +333,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
 
         # Phase 1: 每孩子内部 deduplication (tandem/dispersed/proximal/seg_dup)
         G = ColoredGraph(hog_level=node_id)
-        pre_dedup_stats = {}  # cid -> (n_chroms, n_hogs)
+        pre_dedup_stats = {}  # cid -> (n_chroms, n_hogs, n_nodes, n_edges, n_cc)
         for mc, cid in zip(mapped_children, child_source_ids):
             n_before = len(list(mc.chromosomes))
             ch = getattr(mc, 'chrom_hogs', None)
@@ -326,7 +341,10 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                 n_hogs = sum(len(hogs) for hogs in ch.values())
             else:
                 n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
-            pre_dedup_stats[cid] = (n_before, n_hogs)
+            n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
+            pre_dedup_stats[cid] = (n_before, n_hogs, n_nodes, n_edges, n_cc)
+            logger.info("  [Phase 1] %s before: %d chroms, %d HOGs, %d nodes, %d edges, %d cc",
+                        cid, n_before, n_hogs, n_nodes, n_edges, n_cc)
         deduped_children = G._deduplicate_children(mapped_children, child_source_ids,
                                                        ref_graphs=mapped_children)
         for mc, cid in zip(deduped_children, child_source_ids):
@@ -336,14 +354,17 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                 n_hogs = sum(len(hogs) for hogs in ch.values())
             else:
                 n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
-            n_ch_before, n_hogs_before = pre_dedup_stats[cid]
+            n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
+            n_ch_before, n_hogs_before, n_nodes_before, n_edges_before, n_cc_before = pre_dedup_stats[cid]
             removed = n_hogs_before - n_hogs
             if removed > 0:
-                logger.info("  [Phase 1] %s: %d chroms, %d HOG occurrences (deduped %d, %d unique)",
-                            cid, n_chrom, n_hogs_before, removed, n_hogs)
+                logger.info("  [Phase 1] %s after: %d chroms, %d→%d HOGs, %d→%d nodes, %d→%d edges, %d→%d cc",
+                            cid, n_chrom, n_hogs_before, n_hogs,
+                            n_nodes_before, n_nodes, n_edges_before, n_edges,
+                            n_cc_before, n_cc)
             else:
-                logger.info("  [Phase 1] %s: %d chroms, %d HOGs",
-                            cid, n_chrom, n_hogs_before)
+                logger.info("  [Phase 1] %s after: %d chroms, %d HOGs, %d nodes, %d edges, %d cc",
+                            cid, n_chrom, n_hogs, n_nodes, n_edges, n_cc)
 
             # 该孩子的事件汇总
             child_events = [e for e in G.events
@@ -390,6 +411,10 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
 
             G.add_child(cid, mc)
 
+        # 合图后统计
+        n_merged_nodes, n_merged_edges, n_merged_cc = _graph_stats(G._graph)
+        logger.info("  [Phase 1] merged: %d nodes, %d edges, %d cc",
+                    n_merged_nodes, n_merged_edges, n_merged_cc)
         # Visualization: per-child chromosome paths (before merging)
         try:
             viz_dir = os.path.dirname(akr.outpre) if hasattr(akr, 'outpre') else '.'

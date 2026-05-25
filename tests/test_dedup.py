@@ -518,6 +518,71 @@ class TestDedupEventTruth:
                     f"{node.name}/{cid}: {chroms_before[cid]} → {after}"
 
 
+# ── 验证函数测试 ────────────────────────────────────────────────
+
+class TestDedupValidation:
+    """验证 _validate_dedup 能正确检测问题。"""
+
+    def _make_mock_graph(self, chrom_hogs, telomeres=None):
+        """构造 mock AncestralAdjacencyGraph 用于测试。"""
+        from soi.AK import AncestralAdjacencyGraph
+        import networkx as nx
+        mc = AncestralAdjacencyGraph(node_id='test')
+        mc.chrom_hogs = chrom_hogs
+        mc.telomeres = telomeres or set()
+        # 从 chrom_hogs 构建图
+        for ci, hogs in chrom_hogs.items():
+            gene_hogs = [h for h in hogs if h not in mc.telomeres]
+            for h in gene_hogs:
+                mc.graph.add_node(h)
+            for i in range(len(gene_hogs) - 1):
+                mc.graph.add_edge(gene_hogs[i], gene_hogs[i + 1])
+        return mc
+
+    def test_valid_graph_passes(self):
+        """正常图：验证通过。"""
+        from soi.takr_event_driven import _validate_dedup
+        mc = self._make_mock_graph({0: ['A', 'B', 'C'], 1: ['D', 'E']})
+        ok, errors = _validate_dedup(mc, 'test', 2)
+        assert ok, f"Should pass but got: {errors}"
+
+    def test_chrom_count_change_detected(self):
+        """染色体数变化：验证失败。"""
+        from soi.takr_event_driven import _validate_dedup
+        mc = self._make_mock_graph({0: ['A', 'B'], 1: ['C', 'D']})
+        # 期望 3 条染色体，实际 2 条
+        ok, errors = _validate_dedup(mc, 'test', 3)
+        assert not ok
+        assert any('chrom count' in e for e in errors), f"Missing chrom count error: {errors}"
+
+    def test_duplicate_hog_detected(self):
+        """重复 HOG：验证失败。"""
+        from soi.takr_event_driven import _validate_dedup
+        # 同一染色体上 HOG 'A' 出现两次
+        mc = self._make_mock_graph({0: ['A', 'B', 'A', 'C']})
+        ok, errors = _validate_dedup(mc, 'test', 1)
+        assert not ok
+        assert any('duplicate HOG' in e for e in errors), f"Missing dup error: {errors}"
+
+    def test_self_loop_detected(self):
+        """自环（连续相同 HOG）：验证失败。"""
+        from soi.takr_event_driven import _validate_dedup
+        # 'A' 连续出现两次 → chrom_hogs 里有自环
+        mc = self._make_mock_graph({0: ['A', 'A', 'B']})
+        ok, errors = _validate_dedup(mc, 'test', 1)
+        assert not ok
+        assert any('self-loop' in e for e in errors), f"Missing self-loop error: {errors}"
+
+    def test_multiple_errors_reported(self):
+        """多个问题同时存在：全部报告。"""
+        from soi.takr_event_driven import _validate_dedup
+        mc = self._make_mock_graph({0: ['A', 'A', 'B'], 1: ['C', 'D']})
+        # 期望 3 chroms（实际 2），有自环
+        ok, errors = _validate_dedup(mc, 'test', 3)
+        assert not ok
+        assert len(errors) >= 2, f"Expected ≥2 errors, got {errors}"
+
+
 # ── 极端压力测试 ────────────────────────────────────────────────
 
 class TestDedupExtreme:

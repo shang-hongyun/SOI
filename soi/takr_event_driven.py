@@ -44,6 +44,34 @@ def _graph_stats(graph):
     return (n, e, cc)
 
 
+def _validate_dedup(mc, cid, expected_chrom_count):
+    """验证 dedup 后的图状态。返回 (ok, errors)。"""
+    errors = []
+    ch = getattr(mc, 'chrom_hogs', None)
+    if not ch:
+        errors.append("no chrom_hogs found")
+        return (False, errors)
+    # 1. 染色体数不变
+    n_chrom = len(ch)
+    if n_chrom != expected_chrom_count:
+        errors.append(f"chrom count changed {expected_chrom_count} → {n_chrom}")
+    # 2. 无重复 HOG（每条染色体内）
+    for ci, hogs in ch.items():
+        gene_hogs = [str(h) for h in hogs if h not in mc.telomeres]
+        seen = set()
+        for h in gene_hogs:
+            if h in seen:
+                errors.append(f"chrom{ci}: duplicate HOG {h}")
+            seen.add(h)
+    # 3. 无自环（连续相同 HOG）
+    for ci, hogs in ch.items():
+        gene_hogs = [str(h) for h in hogs if h not in mc.telomeres]
+        for i in range(len(gene_hogs) - 1):
+            if gene_hogs[i] == gene_hogs[i + 1]:
+                errors.append(f"chrom{ci}: self-loop at pos {i} ({gene_hogs[i]})")
+    return (len(errors) == 0, errors)
+
+
 # =========================================================================
 #  Visualization helpers
 # =========================================================================
@@ -368,31 +396,12 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                 logger.info("  [Phase 1] %s events: %s", cid, ", ".join(parts))
 
             # ── dedup 后验证（重建后） ──
-            ok = True
-            # 1. 染色体数不变
-            if n_chrom != pre_dedup_chroms[cid]:
-                logger.error("  [Phase 1] %s: chrom count changed %d → %d",
-                             cid, pre_dedup_chroms[cid], n_chrom)
-                ok = False
-            # 2. 每条染色体线性（无重复 HOG）
-            for ci, chrom in enumerate(mc.chromosomes):
-                hogs = [n for n in chrom if n not in mc.telomeres]
-                hog_strs = [str(h) for h in hogs]
-                dup_hogs = [h for h in set(hog_strs) if hog_strs.count(h) > 1]
-                if dup_hogs:
-                    logger.error("  [Phase 1] %s chrom%d: %d duplicate HOGs remain: %s",
-                                 cid, ci, len(dup_hogs), dup_hogs[:5])
-                    ok = False
-            # 3. 每条染色体无自环（相邻节点不相同）
-            for ci, chrom in enumerate(mc.chromosomes):
-                hogs = [n for n in chrom if n not in mc.telomeres]
-                for i in range(len(hogs) - 1):
-                    if str(hogs[i]) == str(hogs[i + 1]):
-                        logger.error("  [Phase 1] %s chrom%d: self-loop at pos %d (%s)",
-                                     cid, ci, i, hogs[i])
-                        ok = False
+            ok, errors = _validate_dedup(mc, cid, pre_dedup_chroms[cid])
             if ok:
                 logger.info("  [Phase 1] %s: dedup validated (chrom count ok, no dups, no self-loops)", cid)
+            else:
+                for err in errors:
+                    logger.error("  [Phase 1] %s: %s", cid, err)
 
             G.add_child(cid, mc)
 

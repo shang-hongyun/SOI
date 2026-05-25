@@ -2369,6 +2369,13 @@ class ColoredGraph:
 
         # ====== Phase 4: 块级事件 (按复杂度递增) ======
 
+        # Phase 4a: seg_deletion / seg_insertion (大段 indel)
+        n_seg = self._resolve_seg_events(outgroup_adjacency=outgroup_adjacency)
+        if n_seg:
+            seg_events = [e for e in self.events if e.event_type == 'seg_deletion']
+            seg_str = ", ".join(f"{e.branch}" for e in seg_events[-5:])
+            logger.info("  [colored] Phase 4a (seg_events): %d events [%s]", n_seg, seg_str)
+
         # Phase 4b: unidir_trans
         n_ut = self._resolve_unidir_trans(outgroup_adjacency=outgroup_adjacency)
         if n_ut:

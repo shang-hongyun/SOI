@@ -2105,58 +2105,106 @@ class ColoredGraph:
 
     # ==================== Phase 1: per-child deduplication ====================
 
-    def _deduplicate_children(self, child_graphs: list, child_source_ids: list):
+    def _deduplicate_children(self, child_graphs: list, child_source_ids: list,
+                              ref_graphs: list = None):
         """Phase 1: 在合图前对每个孩子单独去重。
 
-        处理: tandem_dup (连续重复节点合并), 并行边合并。
-        要求: 每个孩子图处理后为线性染色体 (deg<=2, 无并行边)。
+        用其他孩子+outgroup 作参照，判断重复 HOG 的祖先位置。
+        ref_graphs: 参照图列表（其他孩子+outgroup叶图），用于判断祖先态。
         """
         deduped_graphs = []
-        for cg, cid in zip(child_graphs, child_source_ids):
-            new_cg = self._deduplicate_single_child(cg, cid)
+        for i, (cg, cid) in enumerate(zip(child_graphs, child_source_ids)):
+            # 参照 = 其他孩子 + outgroup
+            refs = []
+            if ref_graphs:
+                refs = [r for j, r in enumerate(ref_graphs) if j != i]
+            new_cg = self._deduplicate_single_child(cg, cid, refs)
             deduped_graphs.append(new_cg)
         return deduped_graphs
 
-    def _deduplicate_single_child(self, child_graph, source_id: str):
-        """对单个孩子图去重：所有重复 HOG 保留第一个，删除后续副本。
+    def _deduplicate_single_child(self, child_graph, source_id: str,
+                                  ref_graphs: list = None):
+        """对单个孩子图去重：用参照图判断重复 HOG 的祖先位置。
 
-        处理所有 dup 类型：
-        - tandem_dup: A-B-B-C → A-B-C（连续重复）
-        - dispersed_dup: A-B-C-B-D → A-B-C-D（分散重复）
-        - proximal_dup: A-B-C-D-B-E → A-B-C-D-E（近端重复）
-        - seg_duplication: A-B-C-A-B-C → A-B-C（段重复）
+        算法：对每个重复 HOG，比较各拷贝的邻接上下文。
+        - 如果某拷贝的两个邻居在参照图中也是相邻的 → 该拷贝是祖先态
+        - 保留祖先态拷贝，删除其他拷贝
+        - 如果无法判断 → 保留第一个拷贝（保守策略）
 
-        不需要 outgroup：在单孩子内，重复基因一定是衍生态。
+        支持所有 dup 类型：tandem, dispersed, proximal, seg_dup。
         """
         import copy
         new_graph = copy.deepcopy(child_graph)
+
+        # 构建参照邻接集：参照图中所有 (h1, h2) 对
+        ref_adjacencies = set()
+        if ref_graphs:
+            for ref in ref_graphs:
+                for chrom in ref.chromosomes:
+                    hogs = [n for n in chrom if n not in ref.telomeres]
+                    for i in range(len(hogs) - 1):
+                        a, b = hogs[i], hogs[i+1]
+                        ref_adjacencies.add((min(str(a), str(b)), max(str(a), str(b))))
 
         for chrom_idx, chrom_nodes in enumerate(new_graph.chromosomes):
             hogs = [n for n in chrom_nodes if n not in new_graph.telomeres]
             if not hogs:
                 continue
 
-            # 去重：保留每个 HOG 的第一次出现
-            seen = set()
-            deduped = []
-            for h in hogs:
-                if h not in seen:
-                    seen.add(h)
-                    deduped.append(h)
-                else:
-                    logger.debug("  [dedup] %s chrom%d: remove duplicate %s",
-                                 source_id, chrom_idx, h)
+            # 找出重复 HOG
+            hog_positions = defaultdict(list)  # hog_id → [position, ...]
+            for pos, h in enumerate(hogs):
+                hog_positions[h].append(pos)
 
-            if len(deduped) != len(hogs):
-                # 重建染色体节点列表：保留端粒 + 去重后的 HOG
+            duplicated = {h: positions for h, positions in hog_positions.items()
+                          if len(positions) > 1}
+
+            if not duplicated:
+                continue
+
+            # 对每个重复 HOG，用参照邻接判断哪个拷贝是祖先
+            remove_positions = set()
+            for hog, positions in duplicated.items():
+                # 对每个拷贝，检查其邻接上下文是否在参照中保守
+                best_pos = None
+                best_score = -1
+                for pos in positions:
+                    score = 0
+                    # 左邻居
+                    if pos > 0:
+                        left = hogs[pos - 1]
+                        key = (min(str(left), str(hog)), max(str(left), str(hog)))
+                        if key in ref_adjacencies:
+                            score += 1
+                    # 右邻居
+                    if pos < len(hogs) - 1:
+                        right = hogs[pos + 1]
+                        key = (min(str(hog), str(right)), max(str(hog), str(right)))
+                        if key in ref_adjacencies:
+                            score += 1
+                    if score > best_score:
+                        best_score = score
+                        best_pos = pos
+
+                # 保留 best_pos，删除其他
+                for pos in positions:
+                    if pos != best_pos:
+                        remove_positions.add(pos)
+                        logger.debug("  [dedup] %s chrom%d: remove %s at pos %d "
+                                     "(ref_score=%d vs best=%d)",
+                                     source_id, chrom_idx, hog, pos, 0, best_score)
+
+            if remove_positions:
+                # 重建染色体：跳过被删除的位置
                 new_chrom = []
-                dedup_idx = 0
-                for n in chrom_nodes:
-                    if n in new_graph.telomeres:
-                        new_chrom.append(n)
-                    elif dedup_idx < len(deduped):
-                        new_chrom.append(deduped[dedup_idx])
-                        dedup_idx += 1
+                hog_idx = 0
+                for node in chrom_nodes:
+                    if node in new_graph.telomeres:
+                        new_chrom.append(node)
+                    else:
+                        if hog_idx not in remove_positions:
+                            new_chrom.append(node)
+                        hog_idx += 1
                 new_graph.chromosomes[chrom_idx] = new_chrom
 
         return new_graph

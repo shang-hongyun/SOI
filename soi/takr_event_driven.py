@@ -322,7 +322,8 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             n_before = len(list(mc.chromosomes))
             n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
             logger.info("  [Phase 1] %s: %d chroms, %d HOGs before dedup", cid, n_before, n_hogs)
-        deduped_children = G._deduplicate_children(mapped_children, child_source_ids)
+        deduped_children = G._deduplicate_children(mapped_children, child_source_ids,
+                                                       ref_graphs=mapped_children)
         for mc, cid in zip(deduped_children, child_source_ids):
             n_chrom = len(list(mc.chromosomes))
             n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)

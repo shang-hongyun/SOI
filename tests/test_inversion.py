@@ -274,13 +274,12 @@ class TestInversionManual:
             ('c1', [linear_chrom('ABCDE', 'c1')]),
             ('c2', [linear_chrom('ADCBE', 'c2')]),
         ])
-        # 调和前检查方向冲突
         conflicts = sum(1 for h1, h2 in G._graph.edges()
                         if G.edge_has_direction_conflict(h1, h2))
-        assert conflicts > 0, "Expected direction conflicts before harmonization"
+        assert conflicts > 0, "Expected direction conflicts"
 
     def test_whole_chrom_reversal(self):
-        """整条染色体反向：调和后不应有方向冲突。"""
+        """整条染色体反向：A-B-C-D-E vs E-D-C-B-A。调和后无冲突。"""
         G = build_graph([
             ('c1', [linear_chrom('ABCDE', 'c1')]),
             ('c2', [linear_chrom('EDCBA', 'c2')]),
@@ -288,35 +287,21 @@ class TestInversionManual:
         G.harmonize_directions()
         conflicts = sum(1 for h1, h2 in G._graph.edges()
                         if G.edge_has_direction_conflict(h1, h2))
-        assert conflicts == 0, \
-            f"Whole chrom reversal should be harmonized, got {conflicts} conflicts"
+        assert conflicts == 0, f"Whole chrom reversal should be harmonized, got {conflicts}"
 
-    def test_partial_inversion_after_harmonization(self):
-        """部分倒位：调和后仍应有方向冲突。"""
+    def test_partial_inversion(self):
+        """部分倒位：A-B-C-D-E-F-G-H-I-J vs A-B-C-F-E-D-G-H-I-J。"""
         G = build_graph([
             ('c1', [linear_chrom('ABCDEFGHIJ', 'c1')]),
-            ('c2', [linear_chrom('ABCFEDGHIJ', 'c2')]),  # D-E-F 倒位
+            ('c2', [linear_chrom('ABCFEDGHIJ', 'c2')]),
         ])
         G.harmonize_directions()
         conflicts = sum(1 for h1, h2 in G._graph.edges()
                         if G.edge_has_direction_conflict(h1, h2))
-        assert conflicts > 0, \
-            f"Partial inversion should remain after harmonization, got {conflicts}"
+        assert conflicts > 0
 
-    def test_two_independent_inversions(self):
-        """两个独立倒位。"""
-        G = build_graph([
-            ('c1', [linear_chrom('ABCDEFGHIJKLMNOP', 'c1')]),
-            ('c2', [linear_chrom('ABCFEDGHILKJMNOP', 'c2')]),  # D-E-F 和 I-J-K 倒位
-        ])
-        G.harmonize_directions()
-        conflicts = sum(1 for h1, h2 in G._graph.edges()
-                        if G.edge_has_direction_conflict(h1, h2))
-        assert conflicts >= 2, \
-            f"Expected ≥2 conflict regions, got {conflicts}"
-
-    def test_inversion_at_chrom_start(self):
-        """染色体开头倒位：A-B-C-D-E vs C-B-A-D-E。"""
+    def test_telomere_inversion_at_start(self):
+        """端粒倒位（起始端）：A-B-C-D-E → C-B-A-D-E。端粒位置不变。"""
         G = build_graph([
             ('c1', [linear_chrom('ABCDE', 'c1')]),
             ('c2', [linear_chrom('CBADE', 'c2')]),
@@ -324,18 +309,40 @@ class TestInversionManual:
         G.harmonize_directions()
         conflicts = sum(1 for h1, h2 in G._graph.edges()
                         if G.edge_has_direction_conflict(h1, h2))
-        assert conflicts > 0
+        assert conflicts > 0, "Telomere inversion at start should produce conflicts"
 
-    def test_inversion_at_chrom_end(self):
-        """染色体末尾倒位：A-B-C-D-E vs A-B-E-D-C。"""
+    def test_telomere_inversion_at_end(self):
+        """端粒倒位（末端）：A-B-C-D-E → A-B-C-E-D。端粒位置不变。"""
         G = build_graph([
             ('c1', [linear_chrom('ABCDE', 'c1')]),
-            ('c2', [linear_chrom('ABEDC', 'c2')]),
+            ('c2', [linear_chrom('ABCED', 'c2')]),
         ])
         G.harmonize_directions()
         conflicts = sum(1 for h1, h2 in G._graph.edges()
                         if G.edge_has_direction_conflict(h1, h2))
-        assert conflicts > 0
+        assert conflicts > 0, "Telomere inversion at end should produce conflicts"
+
+    def test_whole_arm_inversion(self):
+        """全臂倒位：A-B-C-D-E → D-E-C-B-A。端粒位置不变。"""
+        G = build_graph([
+            ('c1', [linear_chrom('ABCDE', 'c1')]),
+            ('c2', [linear_chrom('DECBA', 'c2')]),
+        ])
+        G.harmonize_directions()
+        conflicts = sum(1 for h1, h2 in G._graph.edges()
+                        if G.edge_has_direction_conflict(h1, h2))
+        assert conflicts > 0, "Whole-arm inversion should produce conflicts"
+
+    def test_two_independent_inversions(self):
+        """两个独立倒位。"""
+        G = build_graph([
+            ('c1', [linear_chrom('ABCDEFGHIJKLMNOP', 'c1')]),
+            ('c2', [linear_chrom('ABCFEDGHILKJMNOP', 'c2')]),
+        ])
+        G.harmonize_directions()
+        conflicts = sum(1 for h1, h2 in G._graph.edges()
+                        if G.edge_has_direction_conflict(h1, h2))
+        assert conflicts >= 2
 
     def test_no_inversion(self):
         """无倒位：调和后无方向冲突。"""
@@ -347,6 +354,16 @@ class TestInversionManual:
         conflicts = sum(1 for h1, h2 in G._graph.edges()
                         if G.edge_has_direction_conflict(h1, h2))
         assert conflicts == 0
+
+    def test_inversion_with_gene_loss(self):
+        """倒位 + 基因丢失：A-B-C-D-E-F vs A-B-F-E-D（C 丢失，D-E 倒位）。"""
+        G = build_graph([
+            ('c1', [linear_chrom('ABCDEF', 'c1')]),
+            ('c2', [linear_chrom('ABFED', 'c2')]),
+        ])
+        G.harmonize_directions()
+        # 不崩溃即可
+        assert True
 
 
 if __name__ == '__main__':

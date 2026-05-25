@@ -263,7 +263,7 @@ class EvolutionSimulator:
                  dispersed_dup_rate=0.3, unidir_trans_rate=1.0,
                  frac_rate=5.0, scale=1.0,
                  seg_del_rate=0.5, seg_dup_rate=0.3, chromothripsis_rate=0.05,
-                 rt_mode="random", eej_mode="random"):
+                 inv_mode="random", rt_mode="random", eej_mode="random"):
         self.seed = seed
         self.rng = random.Random(seed)
         self.num_chroms = num_chroms
@@ -286,6 +286,7 @@ class EvolutionSimulator:
         self.chromothripsis_rate = chromothripsis_rate * scale
         self.rt_mode = rt_mode
         self.eej_mode = eej_mode
+        self.inv_mode = inv_mode
 
         self.tracker = GeneTracker()
         self.leaf_karyotypes = {}
@@ -508,12 +509,28 @@ class EvolutionSimulator:
             return False
         cid = self.rng.choice(cids)
         genes = karyo[cid]
-        p1, p2 = sorted(self.rng.sample(range(len(genes)), 2))
+        n = len(genes)
+        mode = self.inv_mode
+        if mode == "telomere":
+            # 端粒倒位：p1=0 或 p2=n
+            if self.rng.random() < 0.5:
+                p1 = 0
+                p2 = self.rng.randint(2, n)
+            else:
+                p1 = self.rng.randint(0, n - 2)
+                p2 = n
+        elif mode == "internal":
+            # 内部倒位：p1>0 且 p2<n
+            p1 = self.rng.randint(1, n - 2)
+            p2 = self.rng.randint(p1 + 1, n - 1)
+        else:
+            p1, p2 = sorted(self.rng.sample(range(n), 2))
         if p1 == p2:
             return False
         karyo[cid] = genes[:p1] + reverse_segment(genes[p1:p2]) + genes[p2:]
         self.events.append({"node": node_name, "type": "inversion",
-                            "chrom": cid, "pos": "{}-{}".format(p1, p2)})
+                            "chrom": cid, "pos": "{}-{}".format(p1, p2),
+                            "mode": mode})
         return True
 
     def _apply_rt(self, karyo, node_name, centros=None):

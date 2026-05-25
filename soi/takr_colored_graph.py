@@ -313,7 +313,74 @@ class ColoredGraph:
                 children.add(child_id)
         return children
 
-    # ==================== 修改 ====================
+    # ==================== 方向调和 ====================
+
+    def harmonize_directions(self):
+        """方向调和：选一个孩子作参考，翻转方向相反的孩子。
+
+        按共享边内容匹配（不依赖 chrom_idx）：
+        - 找两个孩子共有的边
+        - 统计方向一致/相反的比例
+        - 多数边方向相反 → 翻转该孩子的所有边
+
+        整条染色体反向 → 翻转方向（不是倒位事件）。
+        部分段反向 → 保留方向冲突（倒位事件，后续检测）。
+        """
+        children = list(self.children())
+        if len(children) < 2:
+            return
+
+        ref_cid = children[0]
+
+        # 收集参考孩子的边方向
+        # ref_dir: (h1, h2) -> direction
+        ref_dir = {}
+        for h1, h2, data in self._graph.edges(data=True):
+            for cid, ci, d in data.get('directions', set()):
+                if cid == ref_cid:
+                    ref_dir[(h1, h2)] = d
+                    break
+
+        # 对每个其他孩子，比较共享边方向
+        for cid in children[1:]:
+            child_dir = {}
+            for h1, h2, data in self._graph.edges(data=True):
+                for c, ci, d in data.get('directions', set()):
+                    if c == cid:
+                        child_dir[(h1, h2)] = d
+                        break
+
+            # 找共享边并比较方向
+            shared_edges = set(ref_dir.keys()) & set(child_dir.keys())
+            if not shared_edges:
+                continue
+
+            agree = 0
+            disagree = 0
+            for edge in shared_edges:
+                if ref_dir[edge] == child_dir[edge]:
+                    agree += 1
+                else:
+                    disagree += 1
+
+            if disagree > agree:
+                # 多数边方向相反 → 翻转该孩子的所有边
+                self._flip_all_directions(cid)
+                logger.info("  [harmonize] %s: flipped (%d agree, %d disagree, %d shared)",
+                            cid, agree, disagree, len(shared_edges))
+
+    def _flip_all_directions(self, child_id: str):
+        """翻转指定孩子的所有边方向。"""
+        for h1, h2, data in self._graph.edges(data=True):
+            directions = data.get('directions', set())
+            new_directions = set()
+            for cid, ci, d in directions:
+                if cid == child_id:
+                    new_directions.add((cid, ci, -d))
+                else:
+                    new_directions.add((cid, ci, d))
+            if new_directions != directions:
+                data['directions'] = new_directions
 
     def remove_edge_color(self, h1, h2, color: Tuple[str, int]):
         """移除边上的一个颜色。如果该边没有其他颜色，移除整条边。"""
@@ -1170,8 +1237,7 @@ class ColoredGraph:
             shared_G = nx.Graph()
             for h1, h2, data in self._graph.edges(data=True):
                 if (len(data['colors']) >= 2
-                        and h1 not in cons_tels and h2 not in cons_tels
-                        and not self.edge_has_direction_conflict(h1, h2)):
+                        and h1 not in cons_tels and h2 not in cons_tels):
                     shared_G.add_edge(h1, h2)
             for comp in nx.connected_components(shared_G):
                 sub = shared_G.subgraph(comp)
@@ -2349,31 +2415,11 @@ class ColoredGraph:
         logger.info("  [colored] Phase 1 (dedup): done in orchestrator, %d children",
                      len(self._child_chrom_counts))
 
-        # ====== Phase 2: 单基因 indel/loss/gain ======
         # 保存原始共享组件（用于 bridge 检测验证）
         self._save_original_shared_components()
-        n0, e0 = self.node_count(), self.edge_count()
-        self.resolve_indels(outgroups)
-        n1, e1 = self.node_count(), self.edge_count()
-        n_indel = len(self.events) - n_events_before
-        indel_types = Counter(e.event_type for e in self.events[n_events_before:])
-        indel_str = ", ".join(f"{t}={c}" for t, c in sorted(indel_types.items())) if indel_types else "none"
-        logger.info("  [colored] Phase 2 (indels): %d events [%s], nodes %d→%d (-%d), edges %d→%d (-%d)",
-                     n_indel, indel_str,
-                     n0, n1, n0 - n1, e0, e1, e0 - e1)
-        try:
-            self._postcondition_no_cross_edges("Phase 2")
-        except RuntimeError as e:
-            logger.warning("  [colored] %s", e)
 
-        # ====== Phase 2b: 倒位检测（方向冲突边） ======
-        n_inv_before = len(self.events)
-        n_inv = self._detect_inversions()
-        n_inv_events = len(self.events) - n_inv_before
-        if n_inv_events:
-            inv_types = Counter(e.event_type for e in self.events[n_inv_before:])
-            inv_str = ", ".join(f"{t}={c}" for t, c in sorted(inv_types.items()))
-            logger.info("  [colored] Phase 2b (inversions): %d events [%s]", n_inv_events, inv_str)
+        # ====== Phase 2: 方向调和 ======
+        self.harmonize_directions()
 
         # ====== Phase 3: 共线性块压缩 ======
         self._build_synteny_blocks()
@@ -2388,14 +2434,23 @@ class ColoredGraph:
 
         # ====== Phase 4: 块级事件 (按复杂度递增) ======
 
-        # Phase 4a: seg_deletion / seg_insertion (大段 indel)
+        # Phase 4a: seg_deletion / seg_insertion (所有大小的 indel)
         n_seg = self._resolve_seg_events(outgroup_adjacency=outgroup_adjacency)
         if n_seg:
             seg_events = [e for e in self.events if e.event_type == 'seg_deletion']
             seg_str = ", ".join(f"{e.branch}" for e in seg_events[-5:])
             logger.info("  [colored] Phase 4a (seg_events): %d events [%s]", n_seg, seg_str)
 
-        # Phase 4b: unidir_trans
+        # Phase 4b: inversion (方向冲突 = 真倒位，调和后)
+        n_inv_before = len(self.events)
+        n_inv = self._detect_inversions()
+        n_inv_events = len(self.events) - n_inv_before
+        if n_inv_events:
+            inv_types = Counter(e.event_type for e in self.events[n_inv_before:])
+            inv_str = ", ".join(f"{t}={c}" for t, c in sorted(inv_types.items()))
+            logger.info("  [colored] Phase 4b (inversions): %d events [%s]", n_inv_events, inv_str)
+
+        # Phase 4c: unidir_trans
         n_ut = self._resolve_unidir_trans(outgroup_adjacency=outgroup_adjacency)
         if n_ut:
             ut_events = [e for e in self.events if e.event_type == 'unidir_trans']

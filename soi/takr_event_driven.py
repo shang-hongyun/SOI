@@ -342,6 +342,9 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                                                        ref_graphs=mapped_children)
         for mc, cid in zip(deduped_children, child_source_ids):
             n_chrom = len(list(mc.chromosomes))
+            n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
+            logger.info("  [Phase 1] %s deduped: %d chroms, %d nodes, %d edges, %d cc",
+                        cid, n_chrom, n_nodes, n_edges, n_cc)
 
             # 该孩子的事件汇总
             child_events = [e for e in G.events

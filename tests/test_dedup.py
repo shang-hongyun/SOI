@@ -98,6 +98,40 @@ def sim_stress(tmp_path_factory):
     return akr, tree
 
 
+@pytest.fixture(scope='module')
+def sim_extreme(tmp_path_factory):
+    """极端压力：大量物种、大基因组、极高 dup 率。"""
+    sim_dir = str(tmp_path_factory.mktemp('sim_extreme'))
+    generate_dup_simulation(sim_dir, seed=7777, num_species=10, num_chroms=6,
+                            tandem_rate=200, dispersed_rate=100, seg_rate=60,
+                            min_genes=2000, max_genes=5000)
+    akr, tree = load_akr_and_tree(sim_dir)
+    return akr, tree
+
+
+@pytest.fixture(scope='module')
+def sim_mixed(tmp_path_factory):
+    """dup + 重排混合（更接近真实场景）。"""
+    from soi.evolution_simulator_ak import generate_tree, EvolutionSimulator
+    sim_dir = str(tmp_path_factory.mktemp('sim_mixed'))
+    import random
+    rng = random.Random(5555)
+    tree = generate_tree(8, rng)
+    sim = EvolutionSimulator(
+        seed=5555, num_chroms=5, min_genes=500, max_genes=1500,
+        inv_rate=10, rt_rate=3, ncf_rate=1.5, eej_rate=2,
+        fission_rate=0.02, unidir_trans_rate=1,
+        gene_gain_rate=0.5, gene_loss_rate=0.5,
+        tandem_dup_rate=30, dispersed_dup_rate=15,
+        seg_dup_rate=10, wgd_rate=0, frac_rate=3,
+    )
+    orig_nw = tree.write(format=1)
+    sim.run(tree, {})
+    sim.generate_outputs(sim_dir, tree, {}, orig_nw)
+    akr, tree2 = load_akr_and_tree(sim_dir)
+    return akr, tree2
+
+
 # ── 基础测试 ────────────────────────────────────────────────────
 
 class TestDedupBasic:
@@ -199,51 +233,65 @@ class TestDedupStress:
 
     def test_heavy_dup_chrom_count(self, sim_heavy):
         akr, tree = sim_heavy
-        for node in tree.traverse('postorder'):
-            if node.is_leaf():
-                continue
-            children = [c.name for c in node.children
-                        if c.is_leaf() and c.name in akr.leaf_graphs]
-            if len(children) < 2:
-                continue
-            G = ColoredGraph(hog_level=node.name)
-            child_graphs = []
-            for cname in children:
-                mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
-                                                  source_id=cname)
-                child_graphs.append(mapped)
-            chroms_before = {cid: len(list(cg.chromosomes))
-                             for cg, cid in zip(child_graphs, children)}
-            deduped = G._deduplicate_children(child_graphs, children,
-                                               ref_graphs=child_graphs)
-            for cg, cid in zip(deduped, children):
-                after = len(list(cg.chromosomes))
-                assert after == chroms_before[cid], \
-                    f"{node.name}/{cid}: {chroms_before[cid]} → {after}"
+        _run_dedup_validation(akr, tree)
 
     def test_stress_dup_chrom_count(self, sim_stress):
         akr, tree = sim_stress
-        for node in tree.traverse('postorder'):
-            if node.is_leaf():
-                continue
-            children = [c.name for c in node.children
-                        if c.is_leaf() and c.name in akr.leaf_graphs]
-            if len(children) < 2:
-                continue
-            G = ColoredGraph(hog_level=node.name)
-            child_graphs = []
-            for cname in children:
-                mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
-                                                  source_id=cname)
-                child_graphs.append(mapped)
-            chroms_before = {cid: len(list(cg.chromosomes))
-                             for cg, cid in zip(child_graphs, children)}
-            deduped = G._deduplicate_children(child_graphs, children,
-                                               ref_graphs=child_graphs)
-            for cg, cid in zip(deduped, children):
-                after = len(list(cg.chromosomes))
-                assert after == chroms_before[cid], \
-                    f"{node.name}/{cid}: {chroms_before[cid]} → {after}"
+        _run_dedup_validation(akr, tree)
+
+
+# ── 通用 dedup 验证 ──────────────────────────────────────────────
+
+def _run_dedup_validation(akr, tree, check_events=True):
+    """通用 dedup 验证：遍历所有内部节点，检查染色体数、无重复、无自环、有事件。"""
+    total_events = 0
+    total_deduped = 0
+    for node in tree.traverse('postorder'):
+        if node.is_leaf():
+            continue
+        children = [c.name for c in node.children
+                    if c.is_leaf() and c.name in akr.leaf_graphs]
+        if len(children) < 2:
+            continue
+        G = ColoredGraph(hog_level=node.name)
+        child_graphs = []
+        for cname in children:
+            mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
+                                              source_id=cname)
+            child_graphs.append(mapped)
+        chroms_before = {cid: len(list(cg.chromosomes))
+                         for cg, cid in zip(child_graphs, children)}
+        deduped = G._deduplicate_children(child_graphs, children,
+                                           ref_graphs=child_graphs)
+        for cg, cid in zip(deduped, children):
+            # 染色体数不变
+            after = len(list(cg.chromosomes))
+            assert after == chroms_before[cid], \
+                f"{node.name}/{cid}: chrom {chroms_before[cid]} → {after}"
+            # 无重复 HOG
+            ch = getattr(cg, 'chrom_hogs', None)
+            if ch:
+                from collections import Counter
+                hc = Counter()
+                for ci, hogs in ch.items():
+                    for h in hogs:
+                        if h not in cg.telomeres:
+                            hc[str(h)] += 1
+                dups = {h: c for h, c in hc.items() if c > 1}
+                assert len(dups) == 0, \
+                    f"{node.name}/{cid}: {len(dups)} duplicate HOGs remain"
+                total_deduped += sum(c - 1 for c in hc.values() if c > 1)
+            # 无自环
+            for ci, chrom in enumerate(cg.chromosomes):
+                hogs = [n for n in chrom if n not in cg.telomeres]
+                for i in range(len(hogs) - 1):
+                    assert str(hogs[i]) != str(hogs[i + 1]), \
+                        f"{node.name}/{cid} chrom{ci}: self-loop at pos {i}"
+        # 事件数
+        dup_events = [e for e in G.events
+                      if e.event_type in ('tandem_dup', 'dispersed_dup')]
+        total_events += len(dup_events)
+    return total_events
 
 
 # ── 多次模拟 ────────────────────────────────────────────────────
@@ -468,6 +516,24 @@ class TestDedupEventTruth:
                 after = len(list(cg.chromosomes))
                 assert after == chroms_before[cid], \
                     f"{node.name}/{cid}: {chroms_before[cid]} → {after}"
+
+
+# ── 极端压力测试 ────────────────────────────────────────────────
+
+class TestDedupExtreme:
+    """极端压力：大量物种、大基因组、极高 dup 率。"""
+
+    def test_extreme_chrom_count_and_no_dups(self, sim_extreme):
+        """10 物种、6 染色体、tandem=200、dispersed=100：染色体数不变、无重复。"""
+        akr, tree = sim_extreme
+        events = _run_dedup_validation(akr, tree)
+        assert events > 0, "No dedup events detected in extreme test"
+
+    def test_mixed_dup_and_rearrangement(self, sim_mixed):
+        """dup + 重排混合：dedup 不受重排影响。"""
+        akr, tree = sim_mixed
+        events = _run_dedup_validation(akr, tree)
+        assert events > 0, "No dedup events detected in mixed test"
 
 
 if __name__ == '__main__':

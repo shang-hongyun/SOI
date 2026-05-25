@@ -1216,6 +1216,25 @@ class ColoredGraph:
                         for h in hogs:
                             hog_to_block[h] = bid
 
+        # 剩余未分配 HOG：按孩子路径中的连续段压缩成块
+        assigned = set(hog_to_block.keys())
+        for cid in self.children():
+            chrom_source = getattr(self, '_child_chromosomes', {})
+            chroms = chrom_source.get(cid, [])
+            if not chroms:
+                # 回退到 chrom_hogs
+                ch = getattr(self, '_child_chrom_hogs', {})
+                chroms = list(ch.values()) if ch else []
+            for chrom_path in chroms:
+                hogs = [h for h in chrom_path
+                        if h in hog_set and h not in cons_tels and h not in assigned]
+                if len(hogs) >= min_block_size:
+                    bid = "blk_{}".format(len(blocks))
+                    blocks[bid] = hogs
+                    for h in hogs:
+                        hog_to_block[h] = bid
+                        assigned.add(h)
+
         # 端粒 HOG → 1-HOG 块
         for h in cons_tels:
             if h not in hog_to_block and h in hog_set:
@@ -2544,9 +2563,8 @@ class ColoredGraph:
             if not missing:
                 continue
 
-            # 检查缺失块是否在共享边路径中连续
-            # 简化: 标记缺失块为 seg_deletion (需要外类群确认)
-            if len(missing) >= 3:
+            # 检查缺失块是否形成连续路径
+            if len(missing) >= 1:
                 # 检查缺失块是否形成连续路径
                 bg = self._block_graph
                 missing_sub = bg.subgraph(missing) if missing else None

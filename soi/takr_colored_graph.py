@@ -1162,7 +1162,9 @@ class ColoredGraph:
             # 多孩子：共享边图，排除端粒后找线性路径
             shared_G = nx.Graph()
             for h1, h2, data in self._graph.edges(data=True):
-                if len(data['colors']) >= 2 and h1 not in cons_tels and h2 not in cons_tels:
+                if (len(data['colors']) >= 2
+                        and h1 not in cons_tels and h2 not in cons_tels
+                        and not self.edge_has_direction_conflict(h1, h2)):
                     shared_G.add_edge(h1, h2)
             for comp in nx.connected_components(shared_G):
                 sub = shared_G.subgraph(comp)
@@ -1292,6 +1294,58 @@ class ColoredGraph:
         logger.debug("  [blocks] block graph: %d nodes, %d edges",
                      block_G.number_of_nodes(), block_G.number_of_edges())
         return block_G
+
+    def _detect_inversions(self) -> int:
+        """直接检测倒位：找方向冲突的边对。
+
+        有符号邻接模型：同一对 HOG 在不同孩子中方向相反 → 倒位。
+        不需要环检测，直接检查每条共享边的方向一致性。
+
+        Returns: 检测到的倒位事件数
+        """
+        events_before = len(self.events)
+        hog_set = self.all_hogs()
+
+        for h1, h2 in list(self._graph.edges()):
+            if h1 not in hog_set or h2 not in hog_set:
+                continue
+            if not self.edge_has_direction_conflict(h1, h2):
+                continue
+
+            # 方向冲突 → 倒位信号
+            # 确定哪个孩子是倒位方（符号与多数不同的那个）
+            directions = self.get_directions(h1, h2)
+            child_signs = defaultdict(set)  # child_id → set of signs
+            for cid, chrom, d in directions:
+                child_signs[cid].add(d)
+
+            # 找少数方（符号与其他孩子不同的）
+            all_signs = set()
+            for signs in child_signs.values():
+                all_signs.update(signs)
+
+            # 每个孩子是否与其他孩子方向一致
+            for cid, signs in child_signs.items():
+                other_signs = set()
+                for ocid, osigns in child_signs.items():
+                    if ocid != cid:
+                        other_signs.update(osigns)
+                if signs and other_signs and not signs & other_signs:
+                    # cid 的方向与其他所有孩子都不同 → cid 是倒位方
+                    self.events.append(TAKREvent(
+                        event_type='inversion',
+                        branch=f"{self.hog_level}-{cid}",
+                        genes_involved=[h1, h2],
+                        desc=f"inversion: {h1}↔{h2} direction conflict in {cid}",
+                        support=1,
+                    ))
+                    logger.debug("  [inversion] %s↔%s: child %s has opposite direction",
+                                 h1, h2, cid)
+
+        n_found = len(self.events) - events_before
+        if n_found:
+            logger.info("  [inversion] detected %d inversions from direction conflicts", n_found)
+        return n_found
 
     def _find_block_cycles(self) -> List[List]:
         """在块级图上找环。"""
@@ -2145,6 +2199,15 @@ class ColoredGraph:
             self._postcondition_no_cross_edges("Phase 2")
         except RuntimeError as e:
             logger.warning("  [colored] %s", e)
+
+        # ====== Phase 2b: 倒位检测（方向冲突边） ======
+        n_inv_before = len(self.events)
+        n_inv = self._detect_inversions()
+        n_inv_events = len(self.events) - n_inv_before
+        if n_inv_events:
+            inv_types = Counter(e.event_type for e in self.events[n_inv_before:])
+            inv_str = ", ".join(f"{t}={c}" for t, c in sorted(inv_types.items()))
+            logger.info("  [colored] Phase 2b (inversions): %d events [%s]", n_inv_events, inv_str)
 
         # ====== Phase 3: 共线性块压缩 ======
         self._build_synteny_blocks()

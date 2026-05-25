@@ -343,7 +343,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                             cid, n_chrom, n_hogs_before, n_hogs, removed)
             else:
                 logger.info("  [Phase 1] %s: %d chroms, %d HOGs",
-                            cid, n_chrom, n_hogs)
+                            cid, n_chrom, n_hogs_before)
 
             # 该孩子的事件汇总
             child_events = [e for e in G.events

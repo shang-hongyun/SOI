@@ -316,11 +316,13 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             mc = akr._map_to_parent_hogs(hog_level, cg, source_id=cid)
             mapped_children.append(mc)
 
-        # Phase 1: 每孩子内部 deduplication (tandem dup 合并)
+        # Phase 1: 每孩子内部 deduplication (tandem/dispersed/proximal/seg_dup)
         G = ColoredGraph(hog_level=node_id)
+        pre_dedup_chroms = {}
         for mc, cid in zip(mapped_children, child_source_ids):
             n_before = len(list(mc.chromosomes))
             n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
+            pre_dedup_chroms[cid] = n_before
             logger.info("  [Phase 1] %s: %d chroms, %d HOGs before dedup", cid, n_before, n_hogs)
         deduped_children = G._deduplicate_children(mapped_children, child_source_ids,
                                                        ref_graphs=mapped_children)
@@ -328,6 +330,34 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             n_chrom = len(list(mc.chromosomes))
             n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
             logger.info("  [Phase 1] %s: %d chroms, %d HOGs after dedup", cid, n_chrom, n_hogs)
+
+            # ── dedup 后验证 ──
+            ok = True
+            # 1. 染色体数不变
+            if n_chrom != pre_dedup_chroms[cid]:
+                logger.error("  [Phase 1] %s: chrom count changed %d → %d",
+                             cid, pre_dedup_chroms[cid], n_chrom)
+                ok = False
+            # 2. 每条染色体线性（无重复 HOG）
+            for ci, chrom in enumerate(mc.chromosomes):
+                hogs = [n for n in chrom if n not in mc.telomeres]
+                hog_strs = [str(h) for h in hogs]
+                dup_hogs = [h for h in set(hog_strs) if hog_strs.count(h) > 1]
+                if dup_hogs:
+                    logger.error("  [Phase 1] %s chrom%d: %d duplicate HOGs remain: %s",
+                                 cid, ci, len(dup_hogs), dup_hogs[:5])
+                    ok = False
+            # 3. 每条染色体无自环（相邻节点不相同）
+            for ci, chrom in enumerate(mc.chromosomes):
+                hogs = [n for n in chrom if n not in mc.telomeres]
+                for i in range(len(hogs) - 1):
+                    if str(hogs[i]) == str(hogs[i + 1]):
+                        logger.error("  [Phase 1] %s chrom%d: self-loop at pos %d (%s)",
+                                     cid, ci, i, hogs[i])
+                        ok = False
+            if ok:
+                logger.info("  [Phase 1] %s: dedup OK (%d chroms, %d HOGs)", cid, n_chrom, n_hogs)
+
             G.add_child(cid, mc)
 
         # Visualization: per-child chromosome paths (before merging)

@@ -2285,7 +2285,7 @@ class ColoredGraph:
                              f"pos{block[0]['pos']}-{block[-1]['pos']}",
                         support=len(genes),
                     ))
-                    logger.info("  [dedup] %s: %s block of %d genes at chrom%d pos%d-%d",
+                    logger.debug("  [dedup] %s: %s block of %d genes at chrom%d pos%d-%d",
                                 sid, event_type, len(genes), ci,
                                 block[0]['pos'], block[-1]['pos'])
             self._dedup_pending = []

@@ -338,8 +338,28 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                 n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
             n_ch_before, n_hogs_before = pre_dedup_stats[cid]
             removed = n_hogs_before - n_hogs
-            logger.info("  [Phase 1] %s: %d chroms, %d→%d HOGs (removed %d)",
-                        cid, n_chrom, n_hogs_before, n_hogs, removed)
+            if removed > 0:
+                logger.info("  [Phase 1] %s: %d chroms, %d→%d HOGs (removed %d)",
+                            cid, n_chrom, n_hogs_before, n_hogs, removed)
+            else:
+                logger.info("  [Phase 1] %s: %d chroms, %d HOGs",
+                            cid, n_chrom, n_hogs)
+
+            # 该孩子的事件汇总
+            child_events = [e for e in G.events
+                            if e.event_type in ('tandem_dup', 'dispersed_dup')
+                            and cid in e.branch]
+            if child_events:
+                tandem = [e for e in child_events if e.event_type == 'tandem_dup']
+                disp = [e for e in child_events if e.event_type == 'dispersed_dup']
+                parts = []
+                if tandem:
+                    lens = [len(e.genes_involved) for e in tandem]
+                    parts.append(f"tandem_dup={len(tandem)} (len {min(lens)}-{max(lens)})")
+                if disp:
+                    lens = [len(e.genes_involved) for e in disp]
+                    parts.append(f"dispersed_dup={len(disp)} (len {min(lens)}-{max(lens)})")
+                logger.info("  [Phase 1] %s events: %s", cid, ", ".join(parts))
 
             # ── dedup 后验证 ──
             ok = True
@@ -367,21 +387,6 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                         ok = False
             if ok:
                 logger.info("  [Phase 1] %s: dedup OK", cid)
-
-        # 事件汇总
-        dup_events = [e for e in G.events
-                      if e.event_type in ('tandem_dup', 'dispersed_dup')]
-        if dup_events:
-            tandem = [e for e in dup_events if e.event_type == 'tandem_dup']
-            disp = [e for e in dup_events if e.event_type == 'dispersed_dup']
-            tandem_lens = [len(e.genes_involved) for e in tandem]
-            disp_lens = [len(e.genes_involved) for e in disp]
-            parts = []
-            if tandem:
-                parts.append(f"tandem_dup={len(tandem)} (len {min(tandem_lens)}-{max(tandem_lens)})")
-            if disp:
-                parts.append(f"dispersed_dup={len(disp)} (len {min(disp_lens)}-{max(disp_lens)})")
-            logger.info("  [Phase 1] %s events: %s", node_id, ", ".join(parts))
 
             G.add_child(cid, mc)
 

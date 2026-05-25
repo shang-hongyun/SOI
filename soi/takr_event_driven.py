@@ -333,38 +333,15 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
 
         # Phase 1: 每孩子内部 deduplication (tandem/dispersed/proximal/seg_dup)
         G = ColoredGraph(hog_level=node_id)
-        pre_dedup_stats = {}  # cid -> (n_chroms, n_hogs, n_nodes, n_edges, n_cc)
         for mc, cid in zip(mapped_children, child_source_ids):
-            n_before = len(list(mc.chromosomes))
-            ch = getattr(mc, 'chrom_hogs', None)
-            if ch:
-                n_hogs = sum(len(hogs) for hogs in ch.values())
-            else:
-                n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
+            n_chrom = len(list(mc.chromosomes))
             n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
-            pre_dedup_stats[cid] = (n_before, n_hogs, n_nodes, n_edges, n_cc)
-            logger.info("  [Phase 1] %s before: %d chroms, %d HOGs, %d nodes, %d edges, %d cc",
-                        cid, n_before, n_hogs, n_nodes, n_edges, n_cc)
+            logger.info("  [Phase 1] %s: %d chroms, %d nodes, %d edges, %d cc",
+                        cid, n_chrom, n_nodes, n_edges, n_cc)
         deduped_children = G._deduplicate_children(mapped_children, child_source_ids,
                                                        ref_graphs=mapped_children)
         for mc, cid in zip(deduped_children, child_source_ids):
             n_chrom = len(list(mc.chromosomes))
-            ch = getattr(mc, 'chrom_hogs', None)
-            if ch:
-                n_hogs = sum(len(hogs) for hogs in ch.values())
-            else:
-                n_hogs = sum(1 for c in mc.chromosomes for n in c if n not in mc.telomeres)
-            n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
-            n_ch_before, n_hogs_before, n_nodes_before, n_edges_before, n_cc_before = pre_dedup_stats[cid]
-            removed = n_hogs_before - n_hogs
-            if removed > 0:
-                logger.info("  [Phase 1] %s after: %d chroms, %d→%d HOGs, %d→%d nodes, %d→%d edges, %d→%d cc",
-                            cid, n_chrom, n_hogs_before, n_hogs,
-                            n_nodes_before, n_nodes, n_edges_before, n_edges,
-                            n_cc_before, n_cc)
-            else:
-                logger.info("  [Phase 1] %s after: %d chroms, %d HOGs, %d nodes, %d edges, %d cc",
-                            cid, n_chrom, n_hogs, n_nodes, n_edges, n_cc)
 
             # 该孩子的事件汇总
             child_events = [e for e in G.events

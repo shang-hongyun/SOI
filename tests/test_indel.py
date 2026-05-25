@@ -356,6 +356,32 @@ class TestIndelManual:
         shortcuts = G.find_indel_shortcuts()
         assert len(shortcuts) == 0
 
+    def test_10gene_deletion(self):
+        """10 基因连续删除。"""
+        genes_ref = 'ABCDEFGHIJKLMNOP'
+        genes_del = 'ABCP'  # D-O 被删
+        G = build_graph([
+            ('c1', [linear_chrom(genes_ref, 'c1')]),
+            ('c2', [linear_chrom(genes_del, 'c2')]),
+        ])
+        shortcuts = G.find_indel_shortcuts()
+        assert len(shortcuts) >= 1
+        spanned = shortcuts[0][3]
+        assert len(spanned) >= 10, f"Expected ≥10 spanned, got {len(spanned)}"
+
+    def test_15gene_insertion(self):
+        """15 基因连续插入。"""
+        genes_ref = 'ABCS'  # D-R 被插入
+        genes_ins = 'ABCDEFGHIJKLMNOPQRS'
+        G = build_graph([
+            ('c1', [linear_chrom(genes_ref, 'c1')]),
+            ('c2', [linear_chrom(genes_ins, 'c2')]),
+        ])
+        shortcuts = G.find_indel_shortcuts()
+        assert len(shortcuts) >= 1
+        spanned = shortcuts[0][3]
+        assert len(spanned) >= 15, f"Expected ≥15 spanned, got {len(spanned)}"
+
     def test_resolve_removes_edges(self):
         """resolve 应移除跨越边。"""
         G = build_graph([

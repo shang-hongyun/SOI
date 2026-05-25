@@ -386,7 +386,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                                      cid, ci, i, hogs[i])
                         ok = False
             if ok:
-                logger.info("  [Phase 1] %s: dedup OK", cid)
+                logger.info("  [Phase 1] %s: dedup validated (chrom count ok, no dups, no self-loops)", cid)
 
             G.add_child(cid, mc)
 

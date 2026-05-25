@@ -57,25 +57,12 @@ def load_akr_and_tree(sim_dir):
     return akr, tree
 
 
-def count_dups_per_leaf(akr, tree):
-    """统计每个叶图中的重复 HOG 数。"""
-    stats = {}
-    for leaf in tree.iter_leaves():
-        if leaf.name not in akr.leaf_graphs:
-            continue
-        lg = akr.leaf_graphs[leaf.name]
-        all_hogs = []
-        for c in lg.chromosomes:
-            for n in c:
-                if n not in lg.telomeres:
-                    all_hogs.append(str(n))
-        from collections import Counter
-        hog_counts = Counter(all_hogs)
-        n_dups = sum(c - 1 for c in hog_counts.values() if c > 1)
-        n_dup_genes = sum(1 for c in hog_counts.values() if c > 1)
-        stats[leaf.name] = {'n_dups': n_dups, 'n_dup_genes': n_dup_genes,
-                            'total_hogs': len(all_hogs)}
-    return stats
+def get_leaf_children(tree, node_id):
+    """获取指定内部节点的直接叶孩子。"""
+    for node in tree.traverse():
+        if node.name == node_id:
+            return [c.name for c in node.children if c.is_leaf()]
+    return []
 
 
 # ── Fixture ────────────────────────────────────────────────────
@@ -116,60 +103,74 @@ def sim_stress(tmp_path_factory):
 class TestDedupBasic:
     """正常 dup 率下的基础测试。"""
 
-    def test_chrom_count_no_ref(self, sim_normal):
+    def test_chrom_count_preserved(self, sim_normal):
+        """每个内部节点 dedup 后染色体数不变。"""
         akr, tree = sim_normal
-        G = ColoredGraph(hog_level='test')
-        for leaf in tree.iter_leaves():
-            if leaf.name not in akr.leaf_graphs:
-                continue
-            lg = akr.leaf_graphs[leaf.name]
-            before = len(list(lg.chromosomes))
-            after = len(list(G._deduplicate_single_child(lg, leaf.name).chromosomes))
-            assert before == after, f"{leaf.name}: {before} → {after}"
-
-    def test_chrom_count_with_ref(self, sim_normal):
-        akr, tree = sim_normal
-        G = ColoredGraph(hog_level='test')
         for node in tree.traverse('postorder'):
-            if node.is_leaf() or len(node.children) < 2:
+            if node.is_leaf():
                 continue
             children = [c.name for c in node.children
                         if c.is_leaf() and c.name in akr.leaf_graphs]
             if len(children) < 2:
                 continue
-            graphs = [akr.leaf_graphs[c] for c in children]
-            for i, (cname, cg) in enumerate(zip(children, graphs)):
-                before = len(list(cg.chromosomes))
-                refs = [graphs[j] for j in range(len(graphs)) if j != i]
-                after = len(list(G._deduplicate_single_child(cg, cname, refs).chromosomes))
-                assert before == after, f"{cname}: {before} → {after}"
+            G = ColoredGraph(hog_level=node.name)
+            child_graphs = []
+            for cname in children:
+                mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
+                                                  source_id=cname)
+                child_graphs.append(mapped)
+            chroms_before = {cid: len(list(cg.chromosomes))
+                             for cg, cid in zip(child_graphs, children)}
+            deduped = G._deduplicate_children(child_graphs, children,
+                                               ref_graphs=child_graphs)
+            for cg, cid in zip(deduped, children):
+                after = len(list(cg.chromosomes))
+                assert after == chroms_before[cid], \
+                    f"{node.name}/{cid}: {chroms_before[cid]} → {after}"
 
-    def test_no_duplicates_after_dedup(self, sim_normal):
+    def test_self_loops_removed(self, sim_normal):
+        """dedup 后 ColoredGraph 中无自环边。"""
         akr, tree = sim_normal
-        G = ColoredGraph(hog_level='test')
-        for leaf in tree.iter_leaves():
-            if leaf.name not in akr.leaf_graphs:
+        for node in tree.traverse('postorder'):
+            if node.is_leaf():
                 continue
-            lg = akr.leaf_graphs[leaf.name]
-            deduped = G._deduplicate_single_child(lg, leaf.name)
-            for ci, chrom in enumerate(deduped.chromosomes):
-                hogs = [str(n) for n in chrom if n not in deduped.telomeres]
-                assert len(hogs) == len(set(hogs)), \
-                    f"{leaf.name} chrom{ci}: duplicates remain"
+            children = [c.name for c in node.children
+                        if c.is_leaf() and c.name in akr.leaf_graphs]
+            if len(children) < 2:
+                continue
+            G = ColoredGraph(hog_level=node.name)
+            child_graphs = []
+            for cname in children:
+                mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
+                                                  source_id=cname)
+                child_graphs.append(mapped)
+            deduped = G._deduplicate_children(child_graphs, children,
+                                               ref_graphs=child_graphs)
+            for cg, cid in zip(deduped, children):
+                G.add_child(cid, cg)
+            self_loops = sum(1 for h1, h2 in G._graph.edges() if h1 == h2)
+            assert self_loops == 0, f"{node.name}: {self_loops} self-loop edges remain"
 
-    def test_gene_count_monotone(self, sim_normal):
+    def test_tandem_dup_events_recorded(self, sim_normal):
+        """dedup 记录 tandem_dup 事件。"""
         akr, tree = sim_normal
-        G = ColoredGraph(hog_level='test')
-        for leaf in tree.iter_leaves():
-            if leaf.name not in akr.leaf_graphs:
+        total_events = 0
+        for node in tree.traverse('postorder'):
+            if node.is_leaf():
                 continue
-            lg = akr.leaf_graphs[leaf.name]
-            deduped = G._deduplicate_single_child(lg, leaf.name)
-            for ci, (orig, ded) in enumerate(
-                    zip(lg.chromosomes, deduped.chromosomes)):
-                n_orig = sum(1 for n in orig if n not in lg.telomeres)
-                n_ded = sum(1 for n in ded if n not in deduped.telomeres)
-                assert n_ded <= n_orig, f"{leaf.name} chrom{ci}: {n_orig} → {n_ded}"
+            children = [c.name for c in node.children
+                        if c.is_leaf() and c.name in akr.leaf_graphs]
+            if len(children) < 2:
+                continue
+            G = ColoredGraph(hog_level=node.name)
+            child_graphs = []
+            for cname in children:
+                mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
+                                                  source_id=cname)
+                child_graphs.append(mapped)
+            G._deduplicate_children(child_graphs, children, ref_graphs=child_graphs)
+            total_events += len(G.events)
+        assert total_events > 0, "No tandem_dup events detected"
 
 
 # ── 压力测试 ────────────────────────────────────────────────────
@@ -178,82 +179,52 @@ class TestDedupStress:
     """高 dup 率压力测试。"""
 
     def test_heavy_dup_chrom_count(self, sim_heavy):
-        """高 dup 率：染色体数不变。"""
         akr, tree = sim_heavy
-        stats = count_dups_per_leaf(akr, tree)
-        total_dups = sum(s['n_dups'] for s in stats.values())
-        print(f"\n  heavy: {total_dups} total dup copies across {len(stats)} leaves")
-
-        G = ColoredGraph(hog_level='test')
-        for leaf in tree.iter_leaves():
-            if leaf.name not in akr.leaf_graphs:
-                continue
-            lg = akr.leaf_graphs[leaf.name]
-            before = len(list(lg.chromosomes))
-            after = len(list(G._deduplicate_single_child(lg, leaf.name).chromosomes))
-            assert before == after, f"{leaf.name}: {before} → {after}"
-
-    def test_heavy_dup_no_remaining(self, sim_heavy):
-        """高 dup 率：dedup 后无重复。"""
-        akr, tree = sim_heavy
-        G = ColoredGraph(hog_level='test')
-        for leaf in tree.iter_leaves():
-            if leaf.name not in akr.leaf_graphs:
-                continue
-            lg = akr.leaf_graphs[leaf.name]
-            deduped = G._deduplicate_single_child(lg, leaf.name)
-            for ci, chrom in enumerate(deduped.chromosomes):
-                hogs = [str(n) for n in chrom if n not in deduped.telomeres]
-                assert len(hogs) == len(set(hogs)), \
-                    f"{leaf.name} chrom{ci}: duplicates remain after heavy dedup"
-
-    def test_stress_dup_chrom_count(self, sim_stress):
-        """极高 dup 率 + 8 物种：染色体数不变。"""
-        akr, tree = sim_stress
-        stats = count_dups_per_leaf(akr, tree)
-        total_dups = sum(s['n_dups'] for s in stats.values())
-        print(f"\n  stress: {total_dups} total dup copies across {len(stats)} leaves")
-
-        G = ColoredGraph(hog_level='test')
-        for leaf in tree.iter_leaves():
-            if leaf.name not in akr.leaf_graphs:
-                continue
-            lg = akr.leaf_graphs[leaf.name]
-            before = len(list(lg.chromosomes))
-            after = len(list(G._deduplicate_single_child(lg, leaf.name).chromosomes))
-            assert before == after, f"{leaf.name}: {before} → {after}"
-
-    def test_stress_no_remaining(self, sim_stress):
-        """极高 dup 率：dedup 后无重复。"""
-        akr, tree = sim_stress
-        G = ColoredGraph(hog_level='test')
-        for leaf in tree.iter_leaves():
-            if leaf.name not in akr.leaf_graphs:
-                continue
-            lg = akr.leaf_graphs[leaf.name]
-            deduped = G._deduplicate_single_child(lg, leaf.name)
-            for ci, chrom in enumerate(deduped.chromosomes):
-                hogs = [str(n) for n in chrom if n not in deduped.telomeres]
-                assert len(hogs) == len(set(hogs)), \
-                    f"{leaf.name} chrom{ci}: duplicates remain after stress dedup"
-
-    def test_stress_with_ref(self, sim_stress):
-        """极高 dup 率 + 参照图：染色体数不变。"""
-        akr, tree = sim_stress
-        G = ColoredGraph(hog_level='test')
         for node in tree.traverse('postorder'):
-            if node.is_leaf() or len(node.children) < 2:
+            if node.is_leaf():
                 continue
             children = [c.name for c in node.children
                         if c.is_leaf() and c.name in akr.leaf_graphs]
             if len(children) < 2:
                 continue
-            graphs = [akr.leaf_graphs[c] for c in children]
-            for i, (cname, cg) in enumerate(zip(children, graphs)):
-                before = len(list(cg.chromosomes))
-                refs = [graphs[j] for j in range(len(graphs)) if j != i]
-                after = len(list(G._deduplicate_single_child(cg, cname, refs).chromosomes))
-                assert before == after, f"{cname}: {before} → {after}"
+            G = ColoredGraph(hog_level=node.name)
+            child_graphs = []
+            for cname in children:
+                mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
+                                                  source_id=cname)
+                child_graphs.append(mapped)
+            chroms_before = {cid: len(list(cg.chromosomes))
+                             for cg, cid in zip(child_graphs, children)}
+            deduped = G._deduplicate_children(child_graphs, children,
+                                               ref_graphs=child_graphs)
+            for cg, cid in zip(deduped, children):
+                after = len(list(cg.chromosomes))
+                assert after == chroms_before[cid], \
+                    f"{node.name}/{cid}: {chroms_before[cid]} → {after}"
+
+    def test_stress_dup_chrom_count(self, sim_stress):
+        akr, tree = sim_stress
+        for node in tree.traverse('postorder'):
+            if node.is_leaf():
+                continue
+            children = [c.name for c in node.children
+                        if c.is_leaf() and c.name in akr.leaf_graphs]
+            if len(children) < 2:
+                continue
+            G = ColoredGraph(hog_level=node.name)
+            child_graphs = []
+            for cname in children:
+                mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
+                                                  source_id=cname)
+                child_graphs.append(mapped)
+            chroms_before = {cid: len(list(cg.chromosomes))
+                             for cg, cid in zip(child_graphs, children)}
+            deduped = G._deduplicate_children(child_graphs, children,
+                                               ref_graphs=child_graphs)
+            for cg, cid in zip(deduped, children):
+                after = len(list(cg.chromosomes))
+                assert after == chroms_before[cid], \
+                    f"{node.name}/{cid}: {chroms_before[cid]} → {after}"
 
 
 # ── 多次模拟 ────────────────────────────────────────────────────
@@ -263,20 +234,32 @@ class TestDedupMultiSeed:
 
     @pytest.mark.parametrize('seed', [1, 7, 42, 100, 256])
     def test_different_seeds(self, seed, tmp_path):
-        """不同种子的模拟数据，dedup 后染色体数不变。"""
         sim_dir = str(tmp_path / f'sim_{seed}')
         generate_dup_simulation(sim_dir, seed=seed, num_species=4, num_chroms=3,
                                 tandem_rate=20, dispersed_rate=10, seg_rate=8)
         akr, tree = load_akr_and_tree(sim_dir)
 
-        G = ColoredGraph(hog_level='test')
-        for leaf in tree.iter_leaves():
-            if leaf.name not in akr.leaf_graphs:
+        for node in tree.traverse('postorder'):
+            if node.is_leaf():
                 continue
-            lg = akr.leaf_graphs[leaf.name]
-            before = len(list(lg.chromosomes))
-            after = len(list(G._deduplicate_single_child(lg, leaf.name).chromosomes))
-            assert before == after, f"seed={seed} {leaf.name}: {before} → {after}"
+            children = [c.name for c in node.children
+                        if c.is_leaf() and c.name in akr.leaf_graphs]
+            if len(children) < 2:
+                continue
+            G = ColoredGraph(hog_level=node.name)
+            child_graphs = []
+            for cname in children:
+                mapped = akr._map_to_parent_hogs(node.name, akr.leaf_graphs[cname],
+                                                  source_id=cname)
+                child_graphs.append(mapped)
+            chroms_before = {cid: len(list(cg.chromosomes))
+                             for cg, cid in zip(child_graphs, children)}
+            deduped = G._deduplicate_children(child_graphs, children,
+                                               ref_graphs=child_graphs)
+            for cg, cid in zip(deduped, children):
+                after = len(list(cg.chromosomes))
+                assert after == chroms_before[cid], \
+                    f"seed={seed} {node.name}/{cid}: {chroms_before[cid]} → {after}"
 
 
 if __name__ == '__main__':

@@ -1280,7 +1280,7 @@ class AKR:
                 h2 = mapping[n2]
                 if h1 == h2:
                     tandem_dup_counts[h1] += 1
-                    continue
+                    # 保留自环边，让 dedup 阶段处理
                 edge_support[(h1, h2)] += 1
 
         mapped.tandem_dup_counts = tandem_dup_counts

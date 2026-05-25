@@ -95,7 +95,14 @@ class ColoredGraph:
         child_tels = set()
         child_chrom_paths = []
 
-        for chrom_idx, chrom_nodes in enumerate(child_graph.chromosomes):
+        # 优先用 chrom_hogs（保留重复节点），回退到 chromosomes
+        chrom_source = getattr(child_graph, 'chrom_hogs', None)
+        if chrom_source:
+            chrom_iter = sorted(chrom_source.items())
+        else:
+            chrom_iter = enumerate(child_graph.chromosomes)
+
+        for chrom_idx, chrom_nodes in chrom_iter:
             chrom_count += 1
             hogs = [n for n in chrom_nodes if n not in child_graph.telomeres]
             child_hogs.update(hogs)
@@ -2114,7 +2121,6 @@ class ColoredGraph:
         """
         deduped_graphs = []
         for i, (cg, cid) in enumerate(zip(child_graphs, child_source_ids)):
-            # 参照 = 其他孩子 + outgroup
             refs = []
             if ref_graphs:
                 refs = [r for j, r in enumerate(ref_graphs) if j != i]
@@ -2124,88 +2130,54 @@ class ColoredGraph:
 
     def _deduplicate_single_child(self, child_graph, source_id: str,
                                   ref_graphs: list = None):
-        """对单个孩子图去重：用参照图判断重复 HOG 的祖先位置。
+        """对单个孩子图去重：检测并移除 tandem dup（连续重复 HOG）。
 
-        算法：对每个重复 HOG，比较各拷贝的邻接上下文。
-        - 如果某拷贝的两个邻居在参照图中也是相邻的 → 该拷贝是祖先态
-        - 保留祖先态拷贝，删除其他拷贝
-        - 如果无法判断 → 保留第一个拷贝（保守策略）
-
-        支持所有 dup 类型：tandem, dispersed, proximal, seg_dup。
+        用 chrom_hogs（保留重复节点的原始列表）遍历，
+        找连续相同 HOG，移除重复，记录 tandem_dup 事件。
         """
         import copy
         new_graph = copy.deepcopy(child_graph)
 
-        # 构建参照邻接集：参照图中所有 (h1, h2) 对
-        ref_adjacencies = set()
-        if ref_graphs:
-            for ref in ref_graphs:
-                for chrom in ref.chromosomes:
-                    hogs = [n for n in chrom if n not in ref.telomeres]
-                    for i in range(len(hogs) - 1):
-                        a, b = hogs[i], hogs[i+1]
-                        ref_adjacencies.add((min(str(a), str(b)), max(str(a), str(b))))
+        # 优先用 chrom_hogs（保留重复），回退到 chromosomes
+        chrom_source = getattr(new_graph, 'chrom_hogs', None)
+        if chrom_source:
+            chrom_iter = sorted(chrom_source.items())
+        else:
+            chrom_iter = list(enumerate(new_graph.chromosomes))
 
-        for chrom_idx, chrom_nodes in enumerate(new_graph.chromosomes):
+        for chrom_idx, chrom_nodes in chrom_iter:
             hogs = [n for n in chrom_nodes if n not in new_graph.telomeres]
             if not hogs:
                 continue
 
-            # 找出重复 HOG
-            hog_positions = defaultdict(list)  # hog_id → [position, ...]
-            for pos, h in enumerate(hogs):
-                hog_positions[h].append(pos)
-
-            duplicated = {h: positions for h, positions in hog_positions.items()
-                          if len(positions) > 1}
-
-            if not duplicated:
-                continue
-
-            # 对每个重复 HOG，用参照邻接判断哪个拷贝是祖先
+            # 找连续重复：hogs[i] == hogs[i+1]
             remove_positions = set()
-            for hog, positions in duplicated.items():
-                # 对每个拷贝，检查其邻接上下文是否在参照中保守
-                best_pos = None
-                best_score = -1
-                for pos in positions:
-                    score = 0
-                    # 左邻居
-                    if pos > 0:
-                        left = hogs[pos - 1]
-                        key = (min(str(left), str(hog)), max(str(left), str(hog)))
-                        if key in ref_adjacencies:
-                            score += 1
-                    # 右邻居
-                    if pos < len(hogs) - 1:
-                        right = hogs[pos + 1]
-                        key = (min(str(hog), str(right)), max(str(hog), str(right)))
-                        if key in ref_adjacencies:
-                            score += 1
-                    if score > best_score:
-                        best_score = score
-                        best_pos = pos
-
-                # 保留 best_pos，删除其他
-                for pos in positions:
-                    if pos != best_pos:
-                        remove_positions.add(pos)
-                        logger.debug("  [dedup] %s chrom%d: remove %s at pos %d "
-                                     "(ref_score=%d vs best=%d)",
-                                     source_id, chrom_idx, hog, pos, 0, best_score)
+            for i in range(len(hogs) - 1):
+                if str(hogs[i]) == str(hogs[i + 1]):
+                    remove_positions.add(i + 1)  # 移除后者
+                    self.events.append(TAKREvent(
+                        event_type='tandem_dup',
+                        branch=f"{self.hog_level}-{source_id}",
+                        genes_involved=[hogs[i]],
+                        desc=f"tandem_dup: {hogs[i]} at chrom{chrom_idx} pos{i}-{i+1}",
+                        support=1,
+                    ))
+                    logger.debug("  [dedup] %s chrom%d: tandem_dup %s at pos %d-%d",
+                                 source_id, chrom_idx, hogs[i], i, i + 1)
 
             if remove_positions:
-                # 重建染色体：跳过被删除的位置
-                new_chrom = []
-                hog_idx = 0
-                for node in chrom_nodes:
-                    if node in new_graph.telomeres:
-                        new_chrom.append(node)
-                    else:
-                        if hog_idx not in remove_positions:
+                new_hogs = [h for i, h in enumerate(hogs) if i not in remove_positions]
+                # 更新 chrom_hogs
+                if chrom_source and chrom_idx in chrom_source:
+                    new_chrom = []
+                    hog_idx = 0
+                    for node in chrom_nodes:
+                        if node in new_graph.telomeres:
                             new_chrom.append(node)
-                        hog_idx += 1
-                new_graph.chromosomes[chrom_idx] = new_chrom
+                        elif hog_idx < len(new_hogs):
+                            new_chrom.append(new_hogs[hog_idx])
+                            hog_idx += 1
+                    chrom_source[chrom_idx] = new_chrom
 
         return new_graph
 

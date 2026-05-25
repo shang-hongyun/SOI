@@ -2232,12 +2232,14 @@ class ColoredGraph:
 
         # 更新 chrom_hogs：移除被删除的位置
         if remove_set and chrom_source:
-            for chrom_idx in set(ci for ci, _ in remove_set):
+            chrom_removals = {}
+            for ci, pos in remove_set:
+                chrom_removals.setdefault(ci, set()).add(pos)
+            for chrom_idx, positions in chrom_removals.items():
                 if chrom_idx not in chrom_source:
                     continue
                 hogs = chrom_hog_lists.get(chrom_idx, [])
-                positions_to_remove = {pos for ci, pos in remove_set if ci == chrom_idx}
-                new_hogs = [h for i, h in enumerate(hogs) if i not in positions_to_remove]
+                new_hogs = [h for i, h in enumerate(hogs) if i not in positions]
                 old_chrom = chrom_source[chrom_idx]
                 new_chrom = []
                 hog_idx = 0

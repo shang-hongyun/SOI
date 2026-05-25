@@ -339,7 +339,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             n_ch_before, n_hogs_before = pre_dedup_stats[cid]
             removed = n_hogs_before - n_hogs
             if removed > 0:
-                logger.info("  [Phase 1] %s: %d chroms, %d→%d HOGs (removed %d)",
+                logger.info("  [Phase 1] %s: %d chroms, %d→%d HOGs (deduped %d)",
                             cid, n_chrom, n_hogs_before, n_hogs, removed)
             else:
                 logger.info("  [Phase 1] %s: %d chroms, %d HOGs",

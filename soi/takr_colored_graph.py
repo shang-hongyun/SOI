@@ -2130,10 +2130,14 @@ class ColoredGraph:
 
     def _deduplicate_single_child(self, child_graph, source_id: str,
                                   ref_graphs: list = None):
-        """对单个孩子图去重：检测并移除 tandem dup（连续重复 HOG）。
+        """对单个孩子图去重：检测并移除所有重复 HOG。
 
-        用 chrom_hogs（保留重复节点的原始列表）遍历，
-        找连续相同 HOG，移除重复，记录 tandem_dup 事件。
+        不同基因映射到同一 HOG = dup 事件。
+        检测类型：
+        - tandem_dup: 连续重复 (pos i 和 i+1 相同 HOG)
+        - dispersed_dup: 分散重复 (pos i 和 j 相同 HOG, j > i+1)
+
+        保留第一次出现，删除后续副本。
         """
         import copy
         new_graph = copy.deepcopy(child_graph)
@@ -2150,20 +2154,26 @@ class ColoredGraph:
             if not hogs:
                 continue
 
-            # 找连续重复：hogs[i] == hogs[i+1]
+            # 找所有重复 HOG（保留第一次出现）
+            seen = {}  # hog_str → first_position
             remove_positions = set()
-            for i in range(len(hogs) - 1):
-                if str(hogs[i]) == str(hogs[i + 1]):
-                    remove_positions.add(i + 1)  # 移除后者
+            for i, hog in enumerate(hogs):
+                hog_str = str(hog)
+                if hog_str in seen:
+                    first_pos = seen[hog_str]
+                    dup_type = 'tandem_dup' if i == first_pos + 1 else 'dispersed_dup'
+                    remove_positions.add(i)
                     self.events.append(TAKREvent(
-                        event_type='tandem_dup',
+                        event_type=dup_type,
                         branch=f"{self.hog_level}-{source_id}",
-                        genes_involved=[hogs[i]],
-                        desc=f"tandem_dup: {hogs[i]} at chrom{chrom_idx} pos{i}-{i+1}",
+                        genes_involved=[hog],
+                        desc=f"{dup_type}: {hog} at chrom{chrom_idx} pos{i} (first={first_pos})",
                         support=1,
                     ))
-                    logger.debug("  [dedup] %s chrom%d: tandem_dup %s at pos %d-%d",
-                                 source_id, chrom_idx, hogs[i], i, i + 1)
+                    logger.debug("  [dedup] %s chrom%d: %s %s at pos %d (first=%d)",
+                                 source_id, chrom_idx, dup_type, hog, i, first_pos)
+                else:
+                    seen[hog_str] = i
 
             if remove_positions:
                 new_hogs = [h for i, h in enumerate(hogs) if i not in remove_positions]

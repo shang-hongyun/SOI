@@ -2133,14 +2133,36 @@ class ColoredGraph:
         """对单个孩子图去重：检测并移除所有重复 HOG。
 
         不同基因映射到同一 HOG = dup 事件。
+        用参照图判断哪个拷贝是祖先态（保留），哪个是衍生态（删除）。
+
         检测类型：
         - tandem_dup: 连续重复 (pos i 和 i+1 相同 HOG)
-        - dispersed_dup: 分散重复 (pos i 和 j 相同 HOG, j > i+1)
+        - dispersed_dup: 分散重复 (同染色体或跨染色体)
 
-        保留第一次出现，删除后续副本。
+        用参照图判断祖先拷贝：
+        - 某拷贝的邻居在参照图中也是相邻的 → 该拷贝是祖先态
+        - 保留祖先态拷贝，删除其他拷贝
         """
         import copy
         new_graph = copy.deepcopy(child_graph)
+
+        # 构建参照邻接集
+        ref_adjacencies = set()
+        if ref_graphs:
+            for ref in ref_graphs:
+                ch_source = getattr(ref, 'chrom_hogs', None)
+                if ch_source:
+                    for ci, hogs in ch_source.items():
+                        gene_hogs = [n for n in hogs if n not in ref.telomeres]
+                        for i in range(len(gene_hogs) - 1):
+                            a, b = gene_hogs[i], gene_hogs[i+1]
+                            ref_adjacencies.add((min(str(a), str(b)), max(str(a), str(b))))
+                else:
+                    for chrom in ref.chromosomes:
+                        gene_hogs = [n for n in chrom if n not in ref.telomeres]
+                        for i in range(len(gene_hogs) - 1):
+                            a, b = gene_hogs[i], gene_hogs[i+1]
+                            ref_adjacencies.add((min(str(a), str(b)), max(str(a), str(b))))
 
         # 优先用 chrom_hogs（保留重复），回退到 chromosomes
         chrom_source = getattr(new_graph, 'chrom_hogs', None)
@@ -2149,45 +2171,122 @@ class ColoredGraph:
         else:
             chrom_iter = list(enumerate(new_graph.chromosomes))
 
+        # 收集所有 HOG 出现位置（跨染色体）
+        hog_occurrences = defaultdict(list)  # hog_str → [(chrom_idx, pos, hog_obj), ...]
+        chrom_hog_lists = {}  # chrom_idx → [hog_obj, ...]
         for chrom_idx, chrom_nodes in chrom_iter:
             hogs = [n for n in chrom_nodes if n not in new_graph.telomeres]
-            if not hogs:
+            chrom_hog_lists[chrom_idx] = hogs
+            for i, hog in enumerate(hogs):
+                hog_occurrences[str(hog)].append((chrom_idx, i, hog))
+
+        # 找所有重复 HOG（出现 >1 次）
+        remove_set = set()  # (chrom_idx, pos)
+        for hog_str, occurrences in hog_occurrences.items():
+            if len(occurrences) <= 1:
                 continue
 
-            # 找所有重复 HOG（保留第一次出现）
-            seen = {}  # hog_str → first_position
-            remove_positions = set()
-            for i, hog in enumerate(hogs):
-                hog_str = str(hog)
-                if hog_str in seen:
-                    first_pos = seen[hog_str]
-                    dup_type = 'tandem_dup' if i == first_pos + 1 else 'dispersed_dup'
-                    remove_positions.add(i)
-                    self.events.append(TAKREvent(
-                        event_type=dup_type,
-                        branch=f"{self.hog_level}-{source_id}",
-                        genes_involved=[hog],
-                        desc=f"{dup_type}: {hog} at chrom{chrom_idx} pos{i} (first={first_pos})",
-                        support=1,
-                    ))
-                    logger.debug("  [dedup] %s chrom%d: %s %s at pos %d (first=%d)",
-                                 source_id, chrom_idx, dup_type, hog, i, first_pos)
-                else:
-                    seen[hog_str] = i
+            # 用参照邻接判断哪个拷贝是祖先态
+            best = None
+            best_score = -1
+            for chrom_idx, pos, hog_obj in occurrences:
+                hogs = chrom_hog_lists[chrom_idx]
+                score = 0
+                # 左邻居
+                if pos > 0:
+                    left = hogs[pos - 1]
+                    key = (min(str(left), hog_str), max(str(left), hog_str))
+                    if key in ref_adjacencies:
+                        score += 1
+                # 右邻居
+                if pos < len(hogs) - 1:
+                    right = hogs[pos + 1]
+                    key = (min(hog_str, str(right)), max(hog_str, str(right)))
+                    if key in ref_adjacencies:
+                        score += 1
+                if score > best_score:
+                    best_score = score
+                    best = (chrom_idx, pos, hog_obj)
 
-            if remove_positions:
-                new_hogs = [h for i, h in enumerate(hogs) if i not in remove_positions]
-                # 更新 chrom_hogs
-                if chrom_source and chrom_idx in chrom_source:
-                    new_chrom = []
-                    hog_idx = 0
-                    for node in chrom_nodes:
-                        if node in new_graph.telomeres:
-                            new_chrom.append(node)
-                        elif hog_idx < len(new_hogs):
-                            new_chrom.append(new_hogs[hog_idx])
-                            hog_idx += 1
-                    chrom_source[chrom_idx] = new_chrom
+            # 收集非祖先拷贝（基因级）
+            for chrom_idx, pos, hog_obj in occurrences:
+                if (chrom_idx, pos) == (best[0], best[1]):
+                    continue
+                remove_set.add((chrom_idx, pos))
+                # 暂存基因信息，后续按块分组生成事件
+                if not hasattr(self, '_dedup_pending'):
+                    self._dedup_pending = []
+                self._dedup_pending.append({
+                    'source_id': source_id,
+                    'chrom_idx': chrom_idx,
+                    'pos': pos,
+                    'hog_obj': hog_obj,
+                    'ancestral_chrom': best[0],
+                    'ancestral_pos': best[1],
+                    'score': best_score,
+                    'hog_str': hog_str,
+                })
+                logger.debug("  [dedup] %s chrom%d pos%d: %s (ancestral chrom%d pos%d, score=%d)",
+                             source_id, chrom_idx, pos, hog_str,
+                             best[0], best[1], best_score)
+
+        # 更新 chrom_hogs：移除被删除的位置
+        if remove_set and chrom_source:
+            for chrom_idx in set(ci for ci, _ in remove_set):
+                if chrom_idx not in chrom_source:
+                    continue
+                hogs = chrom_hog_lists.get(chrom_idx, [])
+                positions_to_remove = {pos for ci, pos in remove_set if ci == chrom_idx}
+                new_hogs = [h for i, h in enumerate(hogs) if i not in positions_to_remove]
+                old_chrom = chrom_source[chrom_idx]
+                new_chrom = []
+                hog_idx = 0
+                for node in old_chrom:
+                    if node in new_graph.telomeres:
+                        new_chrom.append(node)
+                    elif hog_idx < len(new_hogs):
+                        new_chrom.append(new_hogs[hog_idx])
+                        hog_idx += 1
+                chrom_source[chrom_idx] = new_chrom
+
+        # 按块分组生成事件（连续位置合并为一个事件）
+        if hasattr(self, '_dedup_pending') and self._dedup_pending:
+            from itertools import groupby
+            # 按 (source_id, chrom_idx) 分组
+            pending = sorted(self._dedup_pending,
+                             key=lambda x: (x['source_id'], x['chrom_idx'], x['pos']))
+            for (sid, ci), group in groupby(
+                    pending, key=lambda x: (x['source_id'], x['chrom_idx'])):
+                items = sorted(group, key=lambda x: x['pos'])
+                # 连续位置合并为块
+                blocks = []
+                current_block = [items[0]]
+                for item in items[1:]:
+                    if item['pos'] == current_block[-1]['pos'] + 1:
+                        current_block.append(item)
+                    else:
+                        blocks.append(current_block)
+                        current_block = [item]
+                blocks.append(current_block)
+
+                for block in blocks:
+                    genes = [it['hog_obj'] for it in block]
+                    if len(block) == 1:
+                        event_type = 'dispersed_dup'
+                    else:
+                        event_type = 'tandem_dup'
+                    self.events.append(TAKREvent(
+                        event_type=event_type,
+                        branch=f"{self.hog_level}-{sid}",
+                        genes_involved=genes,
+                        desc=f"{event_type}: {len(genes)} genes at chrom{ci} "
+                             f"pos{block[0]['pos']}-{block[-1]['pos']}",
+                        support=len(genes),
+                    ))
+                    logger.info("  [dedup] %s: %s block of %d genes at chrom%d pos%d-%d",
+                                sid, event_type, len(genes), ci,
+                                block[0]['pos'], block[-1]['pos'])
+            self._dedup_pending = []
 
         return new_graph
 

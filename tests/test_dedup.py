@@ -152,9 +152,24 @@ class TestDedupBasic:
             assert self_loops == 0, f"{node.name}: {self_loops} self-loop edges remain"
 
     def test_tandem_dup_events_recorded(self, sim_normal):
-        """dedup 记录 tandem_dup 事件。"""
+        """dedup 记录 tandem_dup 事件，叶节点级别数量正确。"""
+        import csv
         akr, tree = sim_normal
-        total_events = 0
+        sim_dir = os.path.join(os.path.dirname(__file__), 'sim_data_dedup')
+
+        # 真值：叶节点级别的 tandem_dup 事件
+        with open(os.path.join(sim_dir, 'events.tsv')) as f:
+            truth = list(csv.DictReader(f, delimiter='\t'))
+        truth_leaf_tandem = 0
+        for e in truth:
+            if e['event_type'] == 'tandem_dup':
+                branch = e['branch']
+                # 叶节点级别: branch 格式 N1-Sp_1
+                if '-' in branch and 'Sp_' in branch.split('-')[1]:
+                    truth_leaf_tandem += 1
+
+        # 检测
+        detected_tandem = 0
         for node in tree.traverse('postorder'):
             if node.is_leaf():
                 continue
@@ -169,8 +184,12 @@ class TestDedupBasic:
                                                   source_id=cname)
                 child_graphs.append(mapped)
             G._deduplicate_children(child_graphs, children, ref_graphs=child_graphs)
-            total_events += len(G.events)
-        assert total_events > 0, "No tandem_dup events detected"
+            detected_tandem += sum(1 for e in G.events if e.event_type == 'tandem_dup')
+
+        assert detected_tandem > 0, "No tandem_dup events detected"
+        # 叶节点级别 tandem_dup 应全部检测到
+        assert detected_tandem >= truth_leaf_tandem, \
+            f"tandem_dup: detected {detected_tandem}, truth leaf={truth_leaf_tandem}"
 
 
 # ── 压力测试 ────────────────────────────────────────────────────

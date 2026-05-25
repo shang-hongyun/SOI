@@ -333,8 +333,10 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
 
         # Phase 1: 每孩子内部 deduplication (tandem/dispersed/proximal/seg_dup)
         G = ColoredGraph(hog_level=node_id)
+        pre_dedup_chroms = {}
         for mc, cid in zip(mapped_children, child_source_ids):
             n_chrom = len(list(mc.chromosomes))
+            pre_dedup_chroms[cid] = n_chrom
             n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
             logger.info("  [Phase 1] %s: %d chroms, %d nodes, %d edges, %d cc",
                         cid, n_chrom, n_nodes, n_edges, n_cc)
@@ -365,9 +367,9 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             # ── dedup 后验证 ──
             ok = True
             # 1. 染色体数不变
-            if n_chrom != n_ch_before:
+            if n_chrom != pre_dedup_chroms[cid]:
                 logger.error("  [Phase 1] %s: chrom count changed %d → %d",
-                             cid, n_ch_before, n_chrom)
+                             cid, pre_dedup_chroms[cid], n_chrom)
                 ok = False
             # 2. 每条染色体线性（无重复 HOG）
             for ci, chrom in enumerate(mc.chromosomes):

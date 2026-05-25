@@ -144,6 +144,43 @@ class AncestralAdjacencyGraph:
             self.telomeres.add(left_tel)
             self.telomeres.add(right_tel)
 
+    def rebuild_edges_from_chrom_hogs(self):
+        """从 chrom_hogs 重建图边，移除重复边和孤立节点。"""
+        ch = getattr(self, 'chrom_hogs', None)
+        if not ch:
+            return
+        # 收集每条染色体的首尾基因，用于重连端粒
+        chrom_ends = {}  # chrom_idx -> (first_gene, last_gene)
+        self.graph.clear_edges()
+        surviving = set()
+        for ci, hogs in ch.items():
+            gene_hogs = [h for h in hogs if h not in self.telomeres]
+            surviving.update(gene_hogs)
+            for i in range(len(gene_hogs) - 1):
+                self.graph.add_edge(gene_hogs[i], gene_hogs[i + 1])
+            if gene_hogs:
+                chrom_ends[ci] = (gene_hogs[0], gene_hogs[-1])
+        # 重连端粒
+        for tel in self.telomeres:
+            surviving.add(tel)
+            # 端粒名格式: (chrom_name, 'L') 或 (chrom_name, 'R')
+            if not isinstance(tel, tuple) or len(tel) != 2:
+                continue
+            chrom_name, end = tel
+            # 找该端粒对应的染色体（按 chrom_hogs 顺序）
+            for ci, (first, last) in chrom_ends.items():
+                # 用 chrom_idx 匹配：端粒的 chrom_name 包含 chrom_idx
+                if f'chrom_{ci}' in chrom_name:
+                    if end == 'L':
+                        self.graph.add_edge(tel, first)
+                    elif end == 'R':
+                        self.graph.add_edge(last, tel)
+                    break
+        # 移除孤立节点
+        for node in list(self.graph.nodes()):
+            if node not in surviving:
+                self.graph.remove_node(node)
+
     @property
     def starts(self):
         for node, pred in self.graph.pred.items():

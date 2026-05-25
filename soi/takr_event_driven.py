@@ -343,6 +343,9 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         deduped_children = G._deduplicate_children(mapped_children, child_source_ids,
                                                        ref_graphs=mapped_children)
         for mc, cid in zip(deduped_children, child_source_ids):
+            # 从 dedup 后的 chrom_hogs 重建图边（简化图）
+            mc.rebuild_edges_from_chrom_hogs()
+
             n_chrom = len(list(mc.chromosomes))
             n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
             logger.info("  [Phase 1] %s deduped: %d chroms, %d nodes, %d edges, %d cc",
@@ -364,7 +367,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                     parts.append(f"dispersed_dup={len(disp)} (len {min(lens)}-{max(lens)})")
                 logger.info("  [Phase 1] %s events: %s", cid, ", ".join(parts))
 
-            # ── dedup 后验证 ──
+            # ── dedup 后验证（重建后） ──
             ok = True
             # 1. 染色体数不变
             if n_chrom != pre_dedup_chroms[cid]:

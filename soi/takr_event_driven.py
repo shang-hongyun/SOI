@@ -478,14 +478,30 @@ class ReconstructorV2:
                 logger.info("  [gfa:child %s] HOG graph: %d nodes, %d edges, %d cc",
                             cid, tmp.node_count(), tmp.edge_count(), len(hog_components))
 
-                # Debug: 度数分布（分支节点 = deg>2）
+                # Debug: 度数分布 + per-chromosome 分支/端粒
                 degs = dict(tmp._graph.degree())
                 max_deg = max(degs.values()) if degs else 0
-                deg_counts = Counter(degs.values())
-                logger.info("  [gfa:child %s] degree: max=%d, dist=%s",
-                            cid, max_deg,
-                            ', '.join(f'd{d}={c}' for d, c in sorted(deg_counts.items())
-                                      if c > 0)[:15])
+                branch_count = sum(1 for d in degs.values() if d > 2)
+                tel_count = sum(1 for n in tmp._graph.nodes
+                                if tmp._graph.nodes[n].get('telomere'))
+                logger.info("  [gfa:child %s] degree: max=%d, branch(d>2)=%d, telomere_HOGs=%d",
+                            cid, max_deg, branch_count, tel_count)
+
+                # Per-chromosome
+                chr_info = defaultdict(lambda: {'nodes':0, 'branch':0, 'tel':0})
+                for n in tmp._graph.nodes:
+                    srcs = tmp._graph.nodes[n].get('sources', set())
+                    if not srcs: continue
+                    ch = next(iter(srcs))[1]
+                    chr_info[ch]['nodes'] += 1
+                    if degs.get(n, 0) > 2:
+                        chr_info[ch]['branch'] += 1
+                    if tmp._graph.nodes[n].get('telomere'):
+                        chr_info[ch]['tel'] += 1
+                for ch in sorted(chr_info.keys()):
+                    ci = chr_info[ch]
+                    logger.info("  [gfa:child %s]   chr %s: nodes=%d, branch=%d, tel=%d",
+                                cid, ch, ci['nodes'], ci['branch'], ci['tel'])
 
                 # Debug: 每染色体块数
                 tmp._ensure_blocks()

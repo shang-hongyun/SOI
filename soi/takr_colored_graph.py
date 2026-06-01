@@ -1371,48 +1371,44 @@ class ColoredGraph:
     def _extract_unitigs(G, min_size=2):
         """Undirected unitig extraction: maximal linear (deg≤2) paths.
 
-        从每个未访节点出发，向两端走到度≠2 的节点为止。
-        分支节点留在多个 unitig 的交界处（各算各的端点）。
+        从每个未访节点出发，依次沿各邻居方向走，prev 追踪避免回溯。
+        分支节点(deg>2)不标记 visited，可被多条路径共享为端点。
         """
+        def _walk(start, prev_node):
+            """从 start 出发（来自 prev_node），走到分支或端点。返回走过的节点列表。"""
+            seg = []
+            curr, prev = start, prev_node
+            while True:
+                if G.degree(curr) > 2:
+                    seg.append(curr)          # 分支点作端点，不标记 visited
+                    break
+                seg.append(curr)
+                visited.add(curr)
+                nbrs = [n for n in G.neighbors(curr) if n != prev and n not in visited]
+                if len(nbrs) != 1:
+                    break
+                prev, curr = curr, nbrs[0]
+            return seg
+
         unitigs = []
         visited = set()
         for node in G.nodes():
             if node in visited:
                 continue
-            path = [node]
             visited.add(node)
+            nbrs = [n for n in G.neighbors(node) if n not in visited]
 
-            # 向左走
-            curr = node
-            while True:
-                nbrs = [n for n in G.neighbors(curr) if n not in visited]
-                if len(nbrs) != 1 or G.degree(curr) > 2:
-                    break
-                nxt = nbrs[0]
-                if G.degree(nxt) > 2:
-                    # 只带走度≤2 的邻居，分支节点不加入
-                    path.insert(0, nxt)
-                    visited.add(nxt)
-                    break
-                path.insert(0, nxt)
-                visited.add(nxt)
-                curr = nxt
+            if not nbrs:
+                if min_size <= 1:
+                    unitigs.append([node])
+                continue
 
-            # 向右走
-            curr = node
-            while True:
-                nbrs = [n for n in G.neighbors(curr) if n not in visited]
-                if len(nbrs) != 1 or G.degree(curr) > 2:
-                    break
-                nxt = nbrs[0]
-                if G.degree(nxt) > 2:
-                    path.append(nxt)
-                    visited.add(nxt)
-                    break
-                path.append(nxt)
-                visited.add(nxt)
-                curr = nxt
+            # 第一个邻居 → 左半段（插入前面）
+            left = _walk(nbrs[0], node)
+            # 第二个邻居 → 右半段（追加后面）
+            right = _walk(nbrs[1], node) if len(nbrs) > 1 else []
 
+            path = list(reversed(left)) + [node] + right
             if len(path) >= min_size:
                 unitigs.append(path)
         return unitigs

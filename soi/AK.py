@@ -208,19 +208,6 @@ class AncestralAdjacencyGraph:
                 seen.update(real_nodes)
                 yield chrom
 
-    def get_chromosome_ends(self):
-        ends = []
-        for chrom in self.chromosomes:
-            if not chrom:
-                continue
-            left = chrom[0] if chrom[0] in self.telomeres else None
-            right = chrom[-1] if chrom[-1] in self.telomeres else None
-            genes = [n for n in chrom if n not in self.telomeres]
-            first_gene = genes[0] if genes else None
-            last_gene = genes[-1] if genes else None
-            ends.append((left, first_gene, last_gene, right))
-        return ends
-
     def get_adjacencies(self, include_telomere=False):
         adjs = set()
         for n1, n2 in self.graph.edges():
@@ -228,13 +215,6 @@ class AncestralAdjacencyGraph:
                 if n1 in self.telomeres or n2 in self.telomeres:
                     continue
             adjs.add((n1, n2))
-        return adjs
-
-    def get_telomere_adjacencies(self):
-        adjs = []
-        for n1, n2 in self.graph.edges():
-            if n1 in self.telomeres or n2 in self.telomeres:
-                adjs.append((n1, n2))
         return adjs
 
     def remove_nodes(self, nodes):
@@ -255,18 +235,6 @@ class AncestralAdjacencyGraph:
             self.gene_nodes.add(path[i])
         if path:
             self.gene_nodes.add(path[-1])
-
-    def to_gffgraph(self):
-        """转换为 GffGraph，自动去重双向边（只保留单向）"""
-        gg = GffGraph()
-        for n in self.graph.nodes():
-            gg.add_node(n, **dict(self.graph.nodes[n]))
-        seen = set()
-        for n1, n2 in self.graph.edges():
-            if (n2, n1) not in seen:
-                gg.add_edge(n1, n2, **dict(self.graph[n1][n2]))
-                seen.add((n1, n2))
-        return gg
 
     def to_gfa(self, fout):
         """直接输出 GFA 格式，去重双向边，并为端粒/普通节点着色"""

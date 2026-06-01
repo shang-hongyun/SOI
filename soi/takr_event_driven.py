@@ -248,19 +248,13 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         logger.info("  Children: %s=%d", node_id, n_orig)
 
         if ploidy <= 1 or n_orig < ploidy:
-            paths = post_graph.path_cover()
-            n_post = len(paths)
-            anc = post_graph.to_ancestral_graph()
-            anc.node_id = "{}_pre".format(node_id)
-            logger.info("  Done: %d -> %d chroms, 0 events (%.1fs)",
-                         n_orig, n_post, time.time() - t_collapse)
-            if parent_hog_level != node_id:
-                saved_events = list(anc.events)
-                anc = akr._map_to_parent_hogs(parent_hog_level, anc,
+            # 没有 WGD，直接映射到 parent HOG level
+            pre_anc = akr._map_to_parent_hogs(parent_hog_level, post_graph,
                                                source_id="{}_pre".format(node_id))
-                anc.events = saved_events
-            anc.node_id = "{}_pre".format(node_id)
-            return anc, []
+            pre_anc.node_id = "{}_pre".format(node_id)
+            logger.info("  Done: no WGD (ploidy=%d), 0 chroms (%.1fs)",
+                         ploidy, time.time() - t_collapse)
+            return pre_anc, []
 
         # 按原始染色体配对
         import itertools

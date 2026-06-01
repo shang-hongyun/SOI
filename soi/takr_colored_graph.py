@@ -1469,7 +1469,7 @@ class ColoredGraph(nx.DiGraph):
                 if not _linear(curr) or len(pred) != 1:
                     break
                 nxt = pred[0]
-                if nxt in visited:
+                if nxt in visited or not _linear(nxt):
                     break
                 curr = nxt
                 bwd.append(curr)

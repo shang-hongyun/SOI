@@ -719,18 +719,6 @@ class AKR:
 
         return merged
 
-    def _reconstruct_node(self, node):
-        """
-        重建一个物种分化内部节点的祖先核型。
-        委托给统一的 _reconstruct 方法。
-        """
-        node_id = node.name
-        children = node.children
-        if len(children) != 2:
-            logger.warning("Node {} has {} children; expecting binary tree".format(
-                node_id, len(children)))
-
-        # 收集子节点图（叶子图或已重建的祖先图）
         # WGD节点优先使用pre-WGD图参与父节点重建
         child_graphs = []
         for child in children:
@@ -811,18 +799,6 @@ class AKR:
                          gene_mapping=gene_mapping,
                          dpi=150)
             logger.info("  Dotplot: {} vs {} -> {}".format(target_node_id, cid, outpath))
-
-    def _paths_to_aag_v3(self, paths, merged, target_chromosomes):
-        """将CP-SAT路径列表转为AncestralAdjacencyGraph。"""
-        result = AncestralAdjacencyGraph(node_id=merged.node_id)
-        result.species_set = merged.species_set
-        result.hog_endpoints = getattr(merged, 'hog_endpoints', {})
-        result.same_chrom_other = getattr(merged, 'same_chrom_other', {})
-        result.dist_other = getattr(merged, 'dist_other', {})
-        result.events = list(merged.events)
-
-        new_graph = nx.DiGraph()
-        seen_nodes = set()
 
         for path in paths:
             # 添加节点（保留strand等属性）
@@ -1657,53 +1633,6 @@ class AKR:
                 n_conflict, n_outgroup_supported))
         return merged
 
-    def _prune_branches(self, merged, mapped_outgroups):
-        """
-        分支修剪：将度>2的节点修剪到度<=2。
-        优先保留 support=2 的边，其次是外类群支持的 support=1 边，
-        最后按路径长度保留最长的两条分支（保留主干，丢弃短侧枝）。
-        这能显著减少 _linearize_graph 产生的染色体碎片。
-        """
-        # 收集外类群边，按系统发育距离加权
-        outgroup_edge_weights = defaultdict(float)
-        for og, weight in mapped_outgroups:
-            for n1, n2 in og.get_adjacencies(include_telomere=False):
-                key = (n1, n2) if n1.hog_id < n2.hog_id else (n2, n1)
-                outgroup_edge_weights[key] += weight
-        total_weight = sum(w for _, w in mapped_outgroups) if mapped_outgroups else 0
-        weight_threshold = total_weight / 3.0 if total_weight > 0 else 0
-
-        def edge_quality(n1, n2):
-            """边质量：2=双支持, 1=单支持+外类群加权支持, 0=单支持无外类群"""
-            d1 = merged.graph.get_edge_data(n1, n2, default={})
-            d2 = merged.graph.get_edge_data(n2, n1, default={})
-            support = max(d1.get('support', 1), d2.get('support', 1))
-            if support >= 2:
-                return 2
-            key = (n1, n2) if n1.hog_id < n2.hog_id else (n2, n1)
-            return 1 if outgroup_edge_weights.get(key, 0) >= weight_threshold else 0
-
-        def path_length_from(start, avoid):
-            """从 start 出发，不经过 avoid，沿度<=2的链走多远"""
-            visited = {avoid}
-            curr = start
-            length = 1
-            visited.add(curr)
-            while True:
-                nbrs = set()
-                for n in merged.graph.successors(curr):
-                    if n not in merged.telomeres and n not in visited:
-                        nbrs.add(n)
-                for n in merged.graph.predecessors(curr):
-                    if n not in merged.telomeres and n not in visited:
-                        nbrs.add(n)
-                if len(nbrs) != 1:
-                    break
-                curr = nbrs.pop()
-                length += 1
-                visited.add(curr)
-            return length
-
         edges_removed = 0
         while True:
             changed = False
@@ -1747,134 +1676,6 @@ class AKR:
 
         if edges_removed > 0:
             logger.info("  Pruned branches: removed {} edges, all nodes now degree <= 2".format(edges_removed))
-        return merged
-
-    def _resolve_indels_v3(self, paths, merged, mapped_children, mapped_outgroups):
-        """
-        Resolve indels for v3 without destroying CP-SAT path structure.
-
-        "挖洞"策略：从路径中移除 indel HOG，但不断开路径。
-        相邻 HOG 直接相连，保持染色体数与 CP-SAT 输出一致。
-        只有整条路径全为 indel 时才丢弃该路径。
-
-        Returns:
-            (updated_paths, indel_events)
-        """
-        node_id = merged.node_id
-
-        # Same presence/absence logic as v2
-        hog_to_children = defaultdict(set)
-        for mc in mapped_children:
-            for rec in mc.gene_nodes:
-                hog_to_children[rec].add(mc.node_id)
-
-        outgroup_hog_weights = defaultdict(float)
-        for og, weight in mapped_outgroups:
-            for rec in og.gene_nodes:
-                outgroup_hog_weights[rec] += weight
-        total_weight = sum(w for _, w in mapped_outgroups) if mapped_outgroups else 0
-        weight_threshold = total_weight / 3.0 if total_weight > 0 else 0
-        outgroup_hogs = {hog for hog, w in outgroup_hog_weights.items()
-                         if w >= weight_threshold}
-
-        children_with_data = [mc for mc in mapped_children if len(mc.gene_nodes) > 0]
-        n_children_data = len(children_with_data)
-
-        genes_to_remove = set()
-        for hog_rec in list(merged.gene_nodes):
-            child_present = len(hog_to_children.get(hog_rec, set()))
-            outgroup_present = hog_rec in outgroup_hogs
-            if n_children_data > 0 and child_present < n_children_data and not outgroup_present:
-                genes_to_remove.add(hog_rec)
-
-        if not genes_to_remove:
-            return paths, [], 0
-
-        # 挖洞：从路径中移除 indel HOG，但保持路径连续
-        new_paths = []
-        events = []
-        n_removed_total = 0
-        n_paths_removed = 0
-        for path in paths:
-            remaining = [h for h in path if h not in genes_to_remove]
-            removed_in_path = [h for h in path if h in genes_to_remove]
-            n_removed_total += len(removed_in_path)
-
-            if not remaining:
-                # 整条路径都是 indel → 丢弃，记录事件
-                n_paths_removed += 1
-                events.append(RearrangementEvent(
-                    'indel', node_id,
-                    genes_involved=path,
-                    desc="indel: entire path ({} HOGs) removed".format(len(path)),
-                    support=len(path)
-                ))
-            else:
-                # 保留路径，挖洞连接
-                new_paths.append(remaining)
-                if removed_in_path:
-                    events.append(RearrangementEvent(
-                        'indel', node_id,
-                        genes_involved=removed_in_path,
-                        desc="indel: {} HOGs removed from path (punched through)".format(
-                            len(removed_in_path)),
-                        support=len(removed_in_path)
-                    ))
-
-        logger.info("  [v3] After indel resolution: removed {} HOGs, {} paths -> {} paths (punch-through, {} paths dropped), {} indel events".format(
-            n_removed_total, len(paths), len(new_paths), n_paths_removed, len(events)))
-
-        return new_paths, events, n_paths_removed
-        
-    def _resolve_indels(self, merged, mapped_children, mapped_outgroups):
-        """
-        Resolve indels (gene loss/insertion) for v2 path.
-        If a HOG appears in only some children and is absent from outgroups,
-        it is inferred as an insertion in those children and removed from ancestor.
-        Note: children without data (e.g., outgroup leaves without genes) should not be counted.
-        """
-        node_id = merged.node_id
-        # Count which children each HOG appears in
-        hog_to_children = defaultdict(set)
-        for mc in mapped_children:
-            for rec in mc.gene_nodes:
-                hog_to_children[rec].add(mc.node_id)
-
-        # Collect outgroup HOGs (for inferring ancestral presence), weighted by phylogenetic distance
-        # HOG weight >= 1/3 of total weight is considered outgroup-supported
-        outgroup_hog_weights = defaultdict(float)
-        for og, weight in mapped_outgroups:
-            for rec in og.gene_nodes:
-                outgroup_hog_weights[rec] += weight
-        total_weight = sum(w for _, w in mapped_outgroups) if mapped_outgroups else 0
-        weight_threshold = total_weight / 3.0 if total_weight > 0 else 0
-        outgroup_hogs = {hog for hog, w in outgroup_hog_weights.items()
-                         if w >= weight_threshold}
-
-        # Only count children with data
-        children_with_data = [mc for mc in mapped_children if len(mc.gene_nodes) > 0]
-        n_children_data = len(children_with_data)
-
-        genes_to_remove = set()
-        for hog_rec in list(merged.gene_nodes):
-            child_present = len(hog_to_children.get(hog_rec, set()))
-            outgroup_present = hog_rec in outgroup_hogs
-            # If HOG is not present in all children with data and absent from outgroups, mark as indel
-            if n_children_data > 0 and child_present < n_children_data and not outgroup_present:
-                genes_to_remove.add(hog_rec)
-                merged.events.append(RearrangementEvent(
-                    'indel', node_id,
-                    genes_involved=[hog_rec],
-                    desc="HOG {} present in only {}/{} children, absent in outgroup".format(
-                        hog_rec.hog_id, child_present, n_children_data),
-                    support="{}/{} children".format(child_present, n_children_data)
-                ))
-
-        if genes_to_remove:
-            merged.remove_nodes(genes_to_remove)
-            merged = self._linearize_graph(merged)
-            merged._add_telomeres()
-            logger.info("  After indel resolution: removed {} HOGs".format(len(genes_to_remove)))
         return merged
 
     def _resolve_duplications(self, merged, mapped_children):
@@ -2594,48 +2395,6 @@ class AKR:
                         child_source=src
                     ))
 
-    def _compare_ancestor_to_parent(self, anc, par, node_id):
-        """
-        比较祖先图 anc 与其父节点图 par，检测重排事件并写入 anc.events。
-        注意：anc 和 par 使用不同节点层级的 HOGrecord（hog_id 包含节点名），
-        需要通过 hog_parent 映射建立对应关系后再比较。
-        """
-        # 0. 建立 anc HOG -> par HOG 的映射
-        anc_to_par = {}
-        par_hog_by_id = {h.hog_id: h for h in par.gene_nodes}
-        for h in anc.gene_nodes:
-            parent_hog_id = self.hog_parent.get(h.hog_id)
-            if parent_hog_id and parent_hog_id in par_hog_by_id:
-                anc_to_par[h] = par_hog_by_id[parent_hog_id]
-
-        # 1. 邻接集合比较（映射到父节点 HOG 空间）
-        par_adjs = set(par.get_adjacencies(include_telomere=False))
-        anc_adjs_mapped = set()
-        for h1, h2 in anc.get_adjacencies(include_telomere=False):
-            p1 = anc_to_par.get(h1)
-            p2 = anc_to_par.get(h2)
-            if p1 and p2 and p1 != p2:
-                key = (p1, p2) if p1.hog_id < p2.hog_id else (p2, p1)
-                anc_adjs_mapped.add(key)
-        par_adjs_norm = set()
-        for h1, h2 in par_adjs:
-            key = (h1, h2) if h1.hog_id < h2.hog_id else (h2, h1)
-            par_adjs_norm.add(key)
-
-        lost = par_adjs_norm - anc_adjs_mapped   # 父节点有，anc 没有
-        gained = anc_adjs_mapped - par_adjs_norm  # anc 有，父节点没有
-
-        # 1.5 倒位检测与边界邻接移除
-        # 遍历祖先染色体，映射到父节点 HOG 空间，检测倒位块，
-        # 移除倒位产生的边界邻接，避免被误判为 NCF/unidir_trans
-        par_hog_to_pos = {}
-        for ci, chrom in enumerate(par.chromosomes):
-            genes = [n for n in chrom if n not in par.telomeres]
-            for j, h in enumerate(genes):
-                par_hog_to_pos[h] = (ci, j)
-
-        for chrom in anc.chromosomes:
-            anc_genes = [n for n in chrom if n not in anc.telomeres]
             # 映射到父节点 HOG 并记录其在父节点中的位置
             par_mapped = []
             for h in anc_genes:

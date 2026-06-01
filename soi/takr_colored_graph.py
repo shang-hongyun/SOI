@@ -1645,10 +1645,9 @@ class ColoredGraph:
         return block_G
 
     def _compress_to_block_level_linear(self):
-        """块压缩（染色体路径版）：沿线性染色体顺序建块间边。
+        """块压缩（unitig 版）：_extract_unitigs 找线性路径，沿路径建块间边。
 
-        从 _child_chromosomes 获取染色体 HOG 顺序，映射到 block 建边。
-        生成的 block graph 保证非端粒 block 有 in>0 且 out>0。
+        非端粒 block 保证 in>0 且 out>0。
         """
         if not hasattr(self, '_blocks') or not self._blocks:
             self._build_synteny_blocks()
@@ -1657,28 +1656,25 @@ class ColoredGraph:
         for bid in self._blocks:
             block_G.add_node(bid)
 
-        hog_set = self.all_hogs()
+        # 在完整 HOG 图上提 unitigs（含端粒 HOG 作为端点）
+        unitigs = self._extract_unitigs(self._graph, min_size=1)
 
-        for cid in self.children():
-            for chrom_path in self._child_chromosomes.get(cid, []):
-                # 沿染色体路径映射 HOG → block，建块间边
-                prev_bid = None
-                for h in chrom_path:
-                    if h not in hog_set:
-                        continue
-                    bid = self._hog_to_block.get(h)
-                    if bid is None:
-                        prev_bid = None
-                        continue
-                    if prev_bid is not None and prev_bid != bid:
-                        if not block_G.has_edge(prev_bid, bid):
-                            colors = set()
-                            for h1 in self._blocks.get(prev_bid, []):
-                                for h2 in self._blocks.get(bid, []):
-                                    if self._graph.has_edge(h1, h2):
-                                        colors.update(self._graph[h1][h2].get('colors', set()))
-                            block_G.add_edge(prev_bid, bid, colors=colors)
-                    prev_bid = bid
+        for unitig in unitigs:
+            prev_bid = None
+            for h in unitig:
+                bid = self._hog_to_block.get(h)
+                if bid is None:
+                    prev_bid = None
+                    continue
+                if prev_bid is not None and prev_bid != bid:
+                    if not block_G.has_edge(prev_bid, bid):
+                        colors = set()
+                        for h1 in self._blocks.get(prev_bid, []):
+                            for h2 in self._blocks.get(bid, []):
+                                if self._graph.has_edge(h1, h2):
+                                    colors.update(self._graph[h1][h2].get('colors', set()))
+                        block_G.add_edge(prev_bid, bid, colors=colors)
+                prev_bid = bid
 
         self._block_graph = block_G
         logger.debug("  [blocks:linear] block graph: %d nodes, %d edges",

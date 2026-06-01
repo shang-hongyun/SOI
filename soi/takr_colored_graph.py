@@ -1526,23 +1526,13 @@ class ColoredGraph:
                 if len(path) >= min_block_size:
                     _add_block(path)
         else:
-            # 单孩子：沿染色体路径走，图边验证邻接（避免 HOG 重复产生假分支）
-            for cid in self.children():
-                for chrom_path in self._child_chromosomes.get(cid, []):
-                    hogs = [h for h in chrom_path
-                            if h in hog_set and h not in cons_tels]
-                    if not hogs:
-                        continue
-                    segment = [hogs[0]]
-                    for i in range(1, len(hogs)):
-                        if self._graph.has_edge(hogs[i-1], hogs[i]):
-                            segment.append(hogs[i])
-                        else:
-                            if len(segment) >= min_block_size:
-                                _add_block(segment)
-                            segment = [hogs[i]]
-                    if len(segment) >= min_block_size:
-                        _add_block(segment)
+            # 单孩子：全图（去端粒）_extract_unitigs 直接做 block
+            non_tel_G = nx.DiGraph()
+            for h1, h2 in self._graph.edges():
+                if h1 in hog_set and h2 in hog_set and h1 not in cons_tels and h2 not in cons_tels:
+                    non_tel_G.add_edge(h1, h2)
+            for path in self._extract_unitigs(non_tel_G, min_block_size):
+                _add_block(path)
 
         # 剩余未分配 HOG
         assigned = set(hog_to_block.keys())
@@ -1654,6 +1644,7 @@ class ColoredGraph:
         # 在完整 HOG 图上提 unitigs（含端粒 HOG 作为端点）
         unitigs = self._extract_unitigs(self._graph, min_size=1)
 
+        # 1. unitig 内部建块间边
         for unitig in unitigs:
             prev_bid = None
             for h in unitig:
@@ -1670,6 +1661,22 @@ class ColoredGraph:
                                     colors.update(self._graph[h1][h2].get('colors', set()))
                         block_G.add_edge(prev_bid, bid, colors=colors)
                 prev_bid = bid
+
+        # 2. unitig 间建边：相邻 unitig 共享端点，跨 unitig 的 HOG 边也建块间边
+        #    建 hog→unitig 索引（取首次出现的 unitig）
+        hog_unitig = {}
+        for ui, unitig in enumerate(unitigs):
+            for h in unitig:
+                if h not in hog_unitig:
+                    hog_unitig[h] = ui
+        for h1, h2, data in self._graph.edges(data=True):
+            ui1 = hog_unitig.get(h1)
+            ui2 = hog_unitig.get(h2)
+            if ui1 is not None and ui2 is not None and ui1 != ui2:
+                b1 = self._hog_to_block.get(h1)
+                b2 = self._hog_to_block.get(h2)
+                if b1 and b2 and b1 != b2 and not block_G.has_edge(b1, b2):
+                    block_G.add_edge(b1, b2, colors=set(data.get('colors', set())))
 
         self._block_graph = block_G
         logger.debug("  [blocks:linear] block graph: %d nodes, %d edges",

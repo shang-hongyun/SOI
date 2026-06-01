@@ -405,15 +405,8 @@ class AKR:
                 anc_graphs = reconstruct_event_driven_v2(self)
                 self.anc_graphs = anc_graphs
                 break
-            elif self.algorithm == 'v4':
-                from soi.takr_event_driven import reconstruct_event_driven
-                anc_graphs = reconstruct_event_driven(self)
-                self.anc_graphs = anc_graphs
-                break
             elif self.algorithm == 'v3':
                 self._reconstruct_node_v3(node)
-            else:
-                self._reconstruct_node(node)
 
             if node.name in self.ploidy_map and self.ploidy_map[node.name] > 1:
                 if self.algorithm == 'v3':

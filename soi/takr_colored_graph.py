@@ -1230,7 +1230,6 @@ class ColoredGraph(nx.DiGraph):
         if use_blocks:
             self._ensure_blocks()
         block_graph = getattr(self, '_block_graph', None)
-        block_graph = getattr(self, '_block_graph', None)
         use_blocks = (block_graph is not None
                       and block_graph.number_of_nodes() > 0)
         graph = block_graph if use_blocks else self
@@ -1306,6 +1305,12 @@ class ColoredGraph(nx.DiGraph):
             n_len = 50 if is_tel else (block_hog_count.get(node, 1) if use_blocks else 1)
             line.append(f'LN:i:{n_len}')
             fout.write('\t'.join(map(str, line)) + '\n')
+
+        # ── A 行：block → HOG 映射（标准 GFA alignment 格式）──
+        if use_blocks:
+            for bid in sorted(_blocks.keys(), key=lambda x: int(x.split('_')[1]) if '_' in x else 0):
+                for pos, hog in enumerate(_blocks[bid]):
+                    fout.write(f'A\t{bid}\t{pos}\t+\t{hog}\t0\t1\n')
 
         # ── Link 行 ──
         for n1, n2, data in sorted(graph.edges(data=True),

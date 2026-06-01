@@ -475,7 +475,7 @@ class ReconstructorV2:
 
                 # Debug: HOG 图连通分量
                 hog_components = list(nx.weakly_connected_components(tmp))
-                logger.info("  [gfa:child %s] HOG graph: %d nodes, %d edges, %d cc",
+                logger.debug("  [gfa:child %s] HOG graph: %d nodes, %d edges, %d cc",
                             cid, tmp.node_count(), tmp.edge_count(), len(hog_components))
 
                 # Debug: 度数分布 + per-chromosome 分支/端粒
@@ -484,7 +484,7 @@ class ReconstructorV2:
                 branch_count = sum(1 for d in degs.values() if d > 2)
                 tel_count = sum(1 for n in tmp.nodes
                                 if tmp.nodes[n].get('telomere'))
-                logger.info("  [gfa:child %s] degree: max=%d, branch(d>2)=%d, telomere_HOGs=%d",
+                logger.debug("  [gfa:child %s] degree: max=%d, branch(d>2)=%d, telomere_HOGs=%d",
                             cid, max_deg, branch_count, tel_count)
 
                 # Per-chromosome
@@ -500,7 +500,7 @@ class ReconstructorV2:
                         chr_info[ch]['tel'] += 1
                 for ch in sorted(chr_info.keys()):
                     ci = chr_info[ch]
-                    logger.info("  [gfa:child %s]   chr %s: nodes=%d, branch=%d, tel=%d",
+                    logger.debug("  [gfa:child %s]   chr %s: nodes=%d, branch=%d, tel=%d",
                                 cid, ch, ci['nodes'], ci['branch'], ci['tel'])
 
                 # Debug: 每染色体 HOG 边数（压缩前）
@@ -511,7 +511,7 @@ class ReconstructorV2:
                         ch = next(iter(srcs))[1]
                         chr_edges[ch] += 1
                 for ch in sorted(chr_info.keys()):
-                    logger.info("  [gfa:child %s]   chr %s: nodes=%d, hog_edges=%d, branch=%d, tel=%d",
+                    logger.debug("  [gfa:child %s]   chr %s: nodes=%d, hog_edges=%d, branch=%d, tel=%d",
                                 cid, ch, chr_info[ch]['nodes'], chr_edges.get(ch, 0),
                                 chr_info[ch]['branch'], chr_info[ch]['tel'])
 
@@ -549,43 +549,13 @@ class ReconstructorV2:
                 for chrom in sorted(chr_blocks.keys()):
                     blks = chr_blocks[chrom]
                     sizes = [s for _, s in blks]
-                    logger.info("  [gfa:child %s]   chr %s: %d blocks, sizes %d-%d, cc_in_hog=%d",
+                    logger.debug("  [gfa:child %s]   chr %s: %d blocks, sizes %d-%d, cc_in_hog=%d",
                                 cid, chrom, len(blks),
                                 min(sizes), max(sizes),
                                 sum(1 for comp in hog_components
                                     if any(h in comp for h in tmp.nodes
                                            if tmp.nodes[h].get('sources', set())
                                            and next(iter(tmp.nodes[h].get('sources', set())))[1] == chrom)))
-
-                # 诊断：per-chromosome block 连通性
-                if bg:
-                    for chrom in sorted(chr_blocks.keys()):
-                        blks = chr_blocks[chrom]
-                        for bid, _ in blks:
-                            if not bg.has_node(bid):
-                                continue
-                            nbrs = list(bg.neighbors(bid))
-                            # 找邻居的染色体
-                            nbr_chroms = []
-                            for nb in nbrs:
-                                nb_hogs = tmp._blocks.get(nb, [])
-                                nb_chrom = '?'
-                                for h in nb_hogs[:1]:
-                                    srcs = tmp.nodes[h].get('sources', set())
-                                    if srcs:
-                                        nb_chrom = next(iter(srcs))[1]
-                                        break
-                                nbr_chroms.append(nb_chrom)
-                            # 只报告有跨染色体连接或度≠2 的内部 block
-                            is_tel = bool(tmp._blocks.get(bid) and 
-                                         tmp.nodes[tmp._blocks[bid][0]].get('telomere'))
-                            cross = [nc for nc in nbr_chroms if nc != chrom]
-                            if cross or (not is_tel and len(nbrs) != 2) or (is_tel and len(nbrs) > 2):
-                                logger.warning("  [gfa:child %s]   BLOCK %s (chr=%s, size=%d, tel=%s): "
-                                               "deg=%d, cross_chr=%s, nbrs=%s",
-                                               cid, bid, chrom, len(tmp._blocks.get(bid, [])),
-                                               is_tel, len(nbrs), cross,
-                                               [(nb, nc) for nb, nc in zip(nbrs, nbr_chroms)])
 
                 path = f'{self._viz_prefix(node_id)}.child_{cid}.gfa'
                 with open(path, 'w') as fout:
@@ -609,7 +579,7 @@ class ReconstructorV2:
                         logger.warning("  [gfa:child %s]   chr %s: %d broken blocks: %s",
                                        cid, ch, len(items), examples)
                 else:
-                    logger.info("  [gfa:child %s] all non-tel BLOCKS pass in/out check ✓",
+                    logger.debug("  [gfa:child %s] all non-tel BLOCKS pass in/out check ✓",
                                 cid)
             except Exception as e:
                 logger.exception("  [gfa] child %s failed: %s", cid, e)

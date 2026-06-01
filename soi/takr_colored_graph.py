@@ -1644,7 +1644,7 @@ class ColoredGraph(nx.DiGraph):
                         hog_edges_total, same_block_edges, expected,
                         expected, block_edges)
         else:
-            logger.debug("  [blocks] edge count verified: %d = %d - %d ✓",
+            logger.info("  [blocks] edge count verified: %d = %d - %d ✓",
                          block_edges, hog_edges_total, same_block_edges)
 
     def _detect_inversions(self) -> int:

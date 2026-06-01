@@ -474,7 +474,7 @@ class ReconstructorV2:
                 tmp.add_child(cid, mc)
 
                 # Debug: HOG 图连通分量
-                hog_components = list(nx.connected_components(tmp._graph))
+                hog_components = list(nx.weakly_connected_components(tmp._graph))
                 logger.info("  [gfa:child %s] HOG graph: %d nodes, %d edges, %d cc",
                             cid, tmp.node_count(), tmp.edge_count(), len(hog_components))
 

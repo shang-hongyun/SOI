@@ -86,7 +86,7 @@ class ColoredGraph:
     """彩色邻接图 — 一条边可有多色 (child_id, chrom_idx)。"""
 
     def __init__(self, hog_level: str):
-        self._graph = nx.Graph()  # edge attr: 'colors' = set of (child_id, int)
+        self._graph = nx.DiGraph()  # edge attr: 'colors' = set of (child_id, int)
         self.hog_level = hog_level
         self.events: List[TAKREvent] = []
         # 记录每个 child 的端粒集，用于 indel 检测和路径覆盖
@@ -98,31 +98,35 @@ class ColoredGraph:
         # 记录每个 child 的染色体路径，用于单孩子块压缩
         self._child_chromosomes: Dict[str, list] = {}
 
+    def _neighbors(self, node):
+        """有向图邻居 = 前驱 ∪ 后继。"""
+        return set(self._graph.predecessors(node)) | set(self._graph.successors(node))
+
+    def _degree(self, node):
+        """有向图度数 = in_degree + out_degree。"""
+        return self._graph.in_degree(node) + self._graph.out_degree(node)
+
     # ==================== 构建 ====================
 
     def add_edge(self, h1, h2, child_id: str, chrom_idx: int, direction: int = 1):
-        """添加一条边，记录颜色 (child_id, chrom_idx) 和方向。
+        """添加有向边 h1→h2（direction=+1）或 h2→h1（direction=-1）。
 
-        边以规范顺序存储 (min(h1,h2), max(h1,h2))。
-        direction: +1 = 孩子中 min→max, -1 = 孩子中 max→min。
+        有向图: 边方向由 direction 决定。
         """
-        # 规范顺序
-        if str(h1) <= str(h2):
-            key = (h1, h2)
-        else:
-            key = (h2, h1)
-            direction = -direction  # 翻转方向
+        if direction == -1:
+            h1, h2 = h2, h1
+        key = (h1, h2)
 
         if self._graph.has_edge(key[0], key[1]):
             colors = self._graph[key[0]][key[1]]['colors']
             colors.add((child_id, chrom_idx))
             directions = self._graph[key[0]][key[1]].get('directions', set())
-            directions.add((child_id, chrom_idx, direction))
+            directions.add((child_id, chrom_idx, 1))
             self._graph[key[0]][key[1]]['directions'] = directions
         else:
             self._graph.add_edge(key[0], key[1],
                                  colors={(child_id, chrom_idx)},
-                                 directions={(child_id, chrom_idx, direction)})
+                                 directions={(child_id, chrom_idx, 1)})
 
     def add_child(self, source_id: str, child_graph) -> int:
         """把一个孩子的所有染色体邻接以该孩子的颜色加入。
@@ -981,7 +985,7 @@ class ColoredGraph:
         unvisited = all_nodes - visited
         if unvisited:
             G_rem = self._graph.subgraph(unvisited)
-            for comp_nodes in nx.connected_components(G_rem):
+            for comp_nodes in nx.weakly_connected_components(G_rem):
                 comp = list(comp_nodes)
                 if len(comp) >= 2:
                     start = comp[0]
@@ -1030,7 +1034,7 @@ class ColoredGraph:
             still_unvisited = all_nodes - visited
             if still_unvisited:
                 G_rem = self._graph.subgraph(still_unvisited)
-                for comp_nodes in nx.connected_components(G_rem):
+                for comp_nodes in nx.weakly_connected_components(G_rem):
                     comp = list(comp_nodes)
                     if len(comp) >= 2:
                         start = comp[0]
@@ -1218,7 +1222,8 @@ class ColoredGraph:
                 label = ''
             node_label[node] = label
             if label and not is_tel:
-                label_counts[label] += 1
+                n_len = block_hog_count.get(node, 1) if use_blocks else 1
+                label_counts[label] += n_len
 
         # ── 色板 ──
         significant = {l for l, c in label_counts.items() if c >= min_pair_nodes}
@@ -1381,7 +1386,7 @@ class ColoredGraph:
             while True:
                 seg.append(curr)
                 visited.add(curr)
-                nbrs = [n for n in G.neighbors(curr) if n != prev and n not in visited]
+                nbrs = [n for n in set(G.predecessors(curr))|set(G.successors(curr)) if n != prev and n not in visited]
                 if len(nbrs) != 1:
                     break
                 prev, curr = curr, nbrs[0]
@@ -1393,7 +1398,7 @@ class ColoredGraph:
             if node in visited:
                 continue
             visited.add(node)
-            nbrs = [n for n in G.neighbors(node) if n not in visited]
+            nbrs = [n for n in set(G.predecessors(node))|set(G.successors(node)) if n not in visited]
 
             if not nbrs:
                 if min_size <= 1:
@@ -1441,8 +1446,8 @@ class ColoredGraph:
                         and h1 not in cons_tels and h2 not in cons_tels):
                     shared_G.add_edge(h1, h2)
             for comp in nx.connected_components(shared_G):
-                sub = shared_G.subgraph(comp)
-                degs = dict(sub.degree())
+                sub = nx.DiGraph(shared_G.subgraph(comp))
+                degs = {n: sub.in_degree(n)+sub.out_degree(n) for n in sub.nodes()}
                 if any(d > 2 for d in degs.values()):
                     for path in self._extract_unitigs(sub, min_block_size):
                         _add_block(path)
@@ -1467,14 +1472,13 @@ class ColoredGraph:
                 if len(path) >= min_block_size:
                     _add_block(path)
         else:
-            # 单孩子：按染色体路径走，用图边验证连续性
+            # 单孩子：沿染色体路径走，图边验证邻接（避免 HOG 重复产生假分支）
             for cid in self.children():
                 for chrom_path in self._child_chromosomes.get(cid, []):
                     hogs = [h for h in chrom_path
                             if h in hog_set and h not in cons_tels]
                     if not hogs:
                         continue
-                    # 沿路径走：相邻 HOG 间有图边就连成一段
                     segment = [hogs[0]]
                     for i in range(1, len(hogs)):
                         if self._graph.has_edge(hogs[i-1], hogs[i]):
@@ -1491,8 +1495,8 @@ class ColoredGraph:
         unassigned = [n for n in self._graph.nodes
                       if n in hog_set and n not in cons_tels and n not in assigned]
         if unassigned:
-            G_rem = self._graph.subgraph(unassigned)
-            for comp in nx.connected_components(G_rem):
+            G_rem = nx.DiGraph(self._graph.subgraph(unassigned))
+            for comp in nx.weakly_connected_components(G_rem):
                 sub = G_rem.subgraph(comp)
                 for path in self._extract_unitigs(sub, min_block_size):
                     _add_block(path)

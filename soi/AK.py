@@ -343,19 +343,10 @@ class AKR:
         self._parse_ploidy_map()
         self._build_leaf_graphs()
 
-        for node in self.tree.traverse(strategy="postorder"):
-            if node.is_leaf():
-                continue
-            elapsed = time.time() - self._start_time
-            if self.timeout > 0 and elapsed > self.timeout:
-                logger.warning("Global timeout ({}s) reached at {:.1f}s, skipping remaining nodes".format(
-                    self.timeout, elapsed))
-                break
-            # Specialtion node reconstruction (v4_colored)
-            from soi.takr_event_driven import reconstruct_event_driven_v2
-            anc_graphs = reconstruct_event_driven_v2(self)
-            self.anc_graphs = anc_graphs
-            break
+        # v4_colored event-driven reconstruction
+        from soi.takr_event_driven import reconstruct_event_driven_v2
+        anc_graphs = reconstruct_event_driven_v2(self)
+        self.anc_graphs = anc_graphs
 
         self._export_results()
 

@@ -594,14 +594,12 @@ class ReconstructorV2:
         try:
             tmp = ColoredGraph(hog_level=node_id)
             tmp.add_child(cid, mc)
-            tmp._ensure_blocks()
-            tmp._compress_to_block_level()
 
             path = f'{self._viz_prefix(node_id)}.child_{cid}.dedup.gfa'
             with open(path, 'w') as fout:
                 fout.write(f"H\ttype:child_dedup\tparent:{node_id}\tchild:{cid}\t"
                            f"nodes:{tmp.node_count()}\tedges:{tmp.edge_count()}\n")
-                tmp.to_gfa(fout)
+                tmp.to_gfa(fout)  # to_gfa 内部调用 _ensure_blocks → _compress_to_block_level
             logger.info("  [gfa] child dedup %s -> %s", cid, path)
         except Exception as e:
             logger.exception("  [gfa] dedup child %s failed: %s", cid, e)

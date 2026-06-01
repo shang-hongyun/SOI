@@ -1,0 +1,65 @@
+H	type:child	parent:N3	child:Arabis_sagittata	nodes:22281	edges:22324
+S	blk_0	*	CL:Z:#c53939	LB:Z:Arabis_sagittata|Aa1	LN:i:391
+S	blk_1	*	CL:Z:#c53939	LB:Z:Arabis_sagittata|Aa1	LN:i:3
+S	blk_10	*	CL:Z:#5c39c5	LB:Z:Arabis_sagittata|Aa6	LN:i:625
+S	blk_11	*	CL:Z:#5c39c5	LB:Z:Arabis_sagittata|Aa6	LN:i:1668
+S	blk_12	*	CL:Z:#3962c5	LB:Z:Arabis_sagittata|Aa1+Arabis_sagittata|Aa7	LN:i:2280
+S	blk_13	*	CL:Z:#3fc539	LB:Z:Arabis_sagittata|Aa8	LN:i:273
+S	blk_14	*	CL:Z:#3fc539	LB:Z:Arabis_sagittata|Aa8	LN:i:4005
+S	blk_15	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa5+telo	LN:i:50
+S	blk_16	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa2+telo	LN:i:50
+S	blk_17	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa6+telo	LN:i:50
+S	blk_18	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa4+telo	LN:i:50
+S	blk_19	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa3+telo	LN:i:50
+S	blk_2	*	CL:Z:#3962c5	LB:Z:Arabis_sagittata|Aa1+Arabis_sagittata|Aa7	LN:i:2699
+S	blk_20	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa8+telo	LN:i:50
+S	blk_21	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa1+telo	LN:i:50
+S	blk_22	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa1+telo	LN:i:50
+S	blk_23	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa3+telo	LN:i:50
+S	blk_24	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa2+telo	LN:i:50
+S	blk_25	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa5+telo	LN:i:50
+S	blk_26	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa8+telo	LN:i:50
+S	blk_27	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa1+telo	LN:i:50
+S	blk_28	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa7+telo	LN:i:50
+S	blk_29	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa6+telo	LN:i:50
+S	blk_3	*	CL:Z:#8bc539	LB:Z:Arabis_sagittata|Aa2	LN:i:2119
+S	blk_30	*	CL:Z:#FF0000	LB:Z:Arabis_sagittata|Aa4+telo	LN:i:50
+S	blk_4	*	CL:Z:#c539b4	LB:Z:Arabis_sagittata|Aa3	LN:i:2927
+S	blk_5	*	CL:Z:#c539b4	LB:Z:Arabis_sagittata|Aa3	LN:i:72
+S	blk_6	*	CL:Z:#39c5ae	LB:Z:Arabis_sagittata|Aa4	LN:i:911
+S	blk_7	*	CL:Z:#39c5ae	LB:Z:Arabis_sagittata|Aa4	LN:i:1999
+S	blk_8	*	CL:Z:#c58539	LB:Z:Arabis_sagittata|Aa5	LN:i:270
+S	blk_9	*	CL:Z:#c58539	LB:Z:Arabis_sagittata|Aa5	LN:i:2071
+L	blk_0	+	blk_2	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_1	+	blk_27	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_10	+	blk_11	+	0M	CO:Z:Arabis_sagittata:Aa6
+L	blk_10	+	blk_29	+	0M	CO:Z:Arabis_sagittata:Aa6
+L	blk_11	+	blk_10	+	0M	CO:Z:Arabis_sagittata:Aa6
+L	blk_12	+	blk_2	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_13	+	blk_20	+	0M	CO:Z:Arabis_sagittata:Aa8
+L	blk_15	+	blk_8	+	0M	CO:Z:Arabis_sagittata:Aa5
+L	blk_16	+	blk_3	+	0M	CO:Z:Arabis_sagittata:Aa2
+L	blk_17	+	blk_10	+	0M	CO:Z:Arabis_sagittata:Aa6
+L	blk_18	+	blk_7	+	0M	CO:Z:Arabis_sagittata:Aa4
+L	blk_19	+	blk_5	+	0M	CO:Z:Arabis_sagittata:Aa3
+L	blk_2	+	blk_1	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_2	+	blk_12	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_2	+	blk_22	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_2	+	blk_27	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_20	+	blk_14	+	0M	CO:Z:Arabis_sagittata:Aa8
+L	blk_21	+	blk_0	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_23	+	blk_4	+	0M	CO:Z:Arabis_sagittata:Aa3
+L	blk_25	+	blk_9	+	0M	CO:Z:Arabis_sagittata:Aa5
+L	blk_26	+	blk_13	+	0M	CO:Z:Arabis_sagittata:Aa8
+L	blk_27	+	blk_2	+	0M	CO:Z:Arabis_sagittata:Aa1
+L	blk_28	+	blk_12	+	0M	CO:Z:Arabis_sagittata:Aa7
+L	blk_29	+	blk_11	+	0M	CO:Z:Arabis_sagittata:Aa6
+L	blk_3	+	blk_24	+	0M	CO:Z:Arabis_sagittata:Aa2
+L	blk_30	+	blk_6	+	0M	CO:Z:Arabis_sagittata:Aa4
+L	blk_4	+	blk_19	+	0M	CO:Z:Arabis_sagittata:Aa3
+L	blk_4	+	blk_5	+	0M	CO:Z:Arabis_sagittata:Aa3
+L	blk_5	+	blk_4	+	0M	CO:Z:Arabis_sagittata:Aa3
+L	blk_6	+	blk_18	+	0M	CO:Z:Arabis_sagittata:Aa4
+L	blk_8	+	blk_25	+	0M	CO:Z:Arabis_sagittata:Aa5
+L	blk_8	+	blk_9	+	0M	CO:Z:Arabis_sagittata:Aa5
+L	blk_9	+	blk_8	+	0M	CO:Z:Arabis_sagittata:Aa5

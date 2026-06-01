@@ -517,6 +517,8 @@ class ReconstructorV2:
 
                 # Debug: 每染色体块数
                 tmp._ensure_blocks()
+                # 重建块间边：沿有向图线性行走，保证非端粒 block 有 in/out
+                tmp._compress_to_block_level_linear()
                 chr_blocks = defaultdict(list)
                 for bid, hogs in tmp._blocks.items():
                     # 取第一个 HOG 的 sources 中的 chrom
@@ -585,42 +587,22 @@ class ReconstructorV2:
                 logger.info("  [gfa] child %s -> %s", cid, path)
 
                 # 诊断：验证每个非端粒 block 都有 successors 和 predecessors
-                bg = getattr(tmp, '_block_graph', None)
-                if bg and bg.number_of_nodes() > 0:
-                    broken_blocks = []
-                    for bid in bg.nodes():
-                        is_tel = bool(tmp._blocks.get(bid) and 
-                                     len(tmp._blocks[bid]) == 1 and
-                                     tmp._graph.nodes[tmp._blocks[bid][0]].get('telomere'))
-                        if is_tel:
-                            continue
-                        in_d = bg.in_degree(bid)
-                        out_d = bg.out_degree(bid)
-                        if in_d == 0 or out_d == 0:
-                            # 找该 block 的染色体
-                            hogs = tmp._blocks.get(bid, [])
-                            ch = '?'
-                            for h in hogs[:1]:
-                                srcs = tmp._graph.nodes[h].get('sources', set())
-                                if srcs:
-                                    ch = next(iter(srcs))[1]
-                                    break
-                            broken_blocks.append((bid, in_d, out_d, ch, len(hogs)))
-                    if broken_blocks:
-                        by_chr = defaultdict(list)
-                        for bid, in_d, out_d, ch, sz in broken_blocks:
-                            by_chr[ch].append((bid, in_d, out_d, sz))
-                        logger.warning("  [gfa:child %s] %d non-tel BLOCKS missing in/out edges:",
-                                       cid, len(broken_blocks))
-                        for ch in sorted(by_chr.keys()):
-                            items = by_chr[ch]
-                            examples = [(bid, f"in={id_},out={od},sz={sz}") 
-                                       for bid, id_, od, sz in items[:5]]
-                            logger.warning("  [gfa:child %s]   chr %s: %d broken blocks: %s",
-                                           cid, ch, len(items), examples)
-                    else:
-                        logger.info("  [gfa:child %s] all non-tel BLOCKS pass in/out check ✓",
-                                    cid)
+                broken = tmp.check_block_degrees()
+                if broken:
+                    by_chr = defaultdict(list)
+                    for bid, in_d, out_d, ch, sz in broken:
+                        by_chr[ch].append((bid, in_d, out_d, sz))
+                    logger.warning("  [gfa:child %s] %d non-tel BLOCKS missing in/out edges:",
+                                   cid, len(broken))
+                    for ch in sorted(by_chr.keys()):
+                        items = by_chr[ch]
+                        examples = [(bid, f"in={id_},out={od},sz={sz}")
+                                   for bid, id_, od, sz in items[:5]]
+                        logger.warning("  [gfa:child %s]   chr %s: %d broken blocks: %s",
+                                       cid, ch, len(items), examples)
+                else:
+                    logger.info("  [gfa:child %s] all non-tel BLOCKS pass in/out check ✓",
+                                cid)
             except Exception as e:
                 logger.exception("  [gfa] child %s failed: %s", cid, e)
 

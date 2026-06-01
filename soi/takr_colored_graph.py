@@ -981,8 +981,8 @@ class ColoredGraph:
         # 备用：所有孩子的端粒并集
         all_tels = self.child_telomere_set()
         # 度=1 的节点（图结构上的端点）
-        degree_ends = {n for n, deg in dict(self._graph.in_degree())
-                       if deg == 1 and n in hog_set}
+        degree_ends = {n for n in self._graph.nodes()
+                       if self._graph.in_degree(n) == 1 and n in hog_set}
 
         # 选择端粒锚点集：共识端粒 > 所有端粒 > 度=1
         # 注意：度=1 包含 bridge 移除后的假端点，优先级最低
@@ -1175,6 +1175,35 @@ class ColoredGraph:
 
         result.events = self.events
         return result
+
+    def check_block_degrees(self) -> List:
+        """检查 block 级有向图：非端粒 block 必须有 in>0 且 out>0。
+
+        Returns: [(bid, in_deg, out_deg, chr_name, size), ...] 不合格的 block 列表。
+        """
+        bg = getattr(self, '_block_graph', None)
+        if bg is None or bg.number_of_nodes() == 0:
+            return []
+        broken = []
+        for bid in bg.nodes():
+            hogs = self._blocks.get(bid, [])
+            # 端粒判定：单 HOG block 且 HOG 带 telomere 属性
+            is_tel = (len(hogs) == 1 and
+                      self._graph.has_node(hogs[0]) and
+                      bool(self._graph.nodes[hogs[0]].get('telomere')))
+            if is_tel:
+                continue
+            in_d = bg.in_degree(bid)
+            out_d = bg.out_degree(bid)
+            if in_d == 0 or out_d == 0:
+                ch = '?'
+                for h in hogs[:1]:
+                    srcs = self._graph.nodes[h].get('sources', set())
+                    if srcs:
+                        ch = next(iter(srcs))[1]
+                        break
+                broken.append((bid, in_d, out_d, ch, len(hogs)))
+        return broken
 
     def _ensure_blocks(self):
         """确保 blocks 和 block_graph 已构建。幂等。"""
@@ -1612,6 +1641,69 @@ class ColoredGraph:
         self._child_block_order = dict(child_block_order)
 
         logger.debug("  [blocks] block graph: %d nodes, %d edges",
+                     block_G.number_of_nodes(), block_G.number_of_edges())
+        return block_G
+
+    def _compress_to_block_level_linear(self):
+        """块压缩（线性路径版）：沿有向图行走 linear path 建块间边。
+
+        与 _compress_to_block_level 的区别：不从所有 HOG 边建块边，
+        而是从端粒出发沿唯一后继行走，只建沿路径方向的块间边。
+        生成的 block graph 保证非端粒 block 有 in>0 且 out>0。
+        """
+        if not hasattr(self, '_blocks') or not self._blocks:
+            self._build_synteny_blocks()
+
+        block_G = nx.DiGraph()
+        for bid in self._blocks:
+            block_G.add_node(bid)
+
+        hog_set = self.all_hogs()
+        visited = set()
+
+        # 从端粒出发沿有向边行走
+        tel_set = self.child_telomere_set()
+
+        for start in sorted(tel_set, key=str):
+            if start not in hog_set or start in visited:
+                continue
+            if not self._graph.has_node(start):
+                continue
+
+            # 沿唯一后继向前走 linear path
+            path = [start]
+            visited.add(start)
+            curr = start
+            while True:
+                succ = [s for s in self._graph.successors(curr)
+                        if s in hog_set and s not in visited]
+                if len(succ) == 1:
+                    nxt = succ[0]
+                    path.append(nxt)
+                    visited.add(nxt)
+                    curr = nxt
+                else:
+                    break
+
+            # HOG path → block edges
+            prev_bid = None
+            for h in path:
+                bid = self._hog_to_block.get(h)
+                if bid is None:
+                    prev_bid = None
+                    continue
+                if prev_bid is not None and prev_bid != bid:
+                    if not block_G.has_edge(prev_bid, bid):
+                        colors = set()
+                        for h1 in self._blocks.get(prev_bid, []):
+                            for h2 in self._blocks.get(bid, []):
+                                if self._graph.has_edge(h1, h2):
+                                    colors.update(self._graph[h1][h2].get('colors', set()))
+                        block_G.add_edge(prev_bid, bid, colors=colors)
+                prev_bid = bid
+
+        self._block_graph = block_G
+        logger.debug("  [blocks:linear] block graph: %d nodes, %d edges",
                      block_G.number_of_nodes(), block_G.number_of_edges())
         return block_G
 

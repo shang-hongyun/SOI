@@ -207,6 +207,9 @@ def args_rak(parser):
 	parser.add_argument('-mingenes', type=int, default=0,
 						dest='min_genes', metavar='INT',
 						help='Minimum gene number per chromosome to retain [default=%(default)s]')
+	parser.add_argument('--gfa-debug', action='store_true', default=False,
+						dest='gfa_debug',
+						help='Output GFA files at each pipeline phase for debugging')
 
 def func_rak(**kargs):
 	from .AK import AKR

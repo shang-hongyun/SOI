@@ -16,6 +16,7 @@ SEED=42
 SPECIES=4
 CHROMS=5
 WGD=false
+GFADEBUG=False
 OUTDIR="tests/benchmark_run"
 
 while [[ $# -gt 0 ]]; do
@@ -25,9 +26,10 @@ while [[ $# -gt 0 ]]; do
         --species)  SPECIES=$2; shift 2 ;;
         --chroms)   CHROMS=$2; shift 2 ;;
         --outdir)   OUTDIR=$2; shift 2 ;;
+        --gfa-debug) GFADEBUG=True; shift ;;
         -h|--help)
-            echo "Usage: $0 [--wgd] [--seed N] [--species N] [--chroms N] [--outdir DIR]"
-            exit 0 ;;
+            echo "Usage: $0 [--wgd] [--seed N] [--species N] [--chroms N] [--outdir DIR] [--gfa-debug]"
+            exit 0 ;; 
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -125,6 +127,7 @@ akr = AKR(
     min_genes=0,
     timeout=600,
 )
+akr.gfa_debug = $GFADEBUG
 akr.run()
 print(f'Done: {len(akr.events)} events detected')
 " 2>&1 > $RECON_DIR/AKR.log

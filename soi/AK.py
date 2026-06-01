@@ -299,6 +299,7 @@ class AKR:
         self.use_ilp_sa = use_ilp_sa and pulp is not None
         self.sa_iterations = sa_iterations
         self._start_time = None
+        self.gfa_debug = kargs.get('gfa_debug', False)
 
         self.hog = None
         self.tree = None
@@ -345,7 +346,7 @@ class AKR:
 
         # v4_colored event-driven reconstruction
         from soi.takr_event_driven import reconstruct_event_driven_v2
-        anc_graphs = reconstruct_event_driven_v2(self)
+        anc_graphs = reconstruct_event_driven_v2(self, gfa_debug=getattr(self, 'gfa_debug', False))
         self.anc_graphs = anc_graphs
 
         self._export_results()
@@ -660,6 +661,14 @@ class AKR:
             genes = [n for n in chrom if n not in graph.telomeres]
             if not genes:
                 continue
+            # 取原始染色体名（来自 chrom_map，避免 enumerate 重新编码）
+            chrom_name = str(cci)
+            for g in genes[:1]:
+                cm = graph.chrom_map.get(g, '')
+                if cm:
+                    # GFF 格式 Sp_1|1 → 取 | 后的染色体号
+                    chrom_name = cm.split('|', 1)[-1] if '|' in str(cm) else str(cm)
+                    break
             left_tel = chrom[0] if chrom[0] in graph.telomeres else None
             right_tel = chrom[-1] if chrom[-1] in graph.telomeres else None
             # 左端点：从最左端开始找第一个映射成功的基因
@@ -688,7 +697,7 @@ class AKR:
             # 计算端点类型和位置：基于映射后的HOG在该染色体上的相对位置
             if mapped_genes:
                 n_mapped = len(mapped_genes)
-                mapped.chrom_hogs[cci] = mapped_genes
+                mapped.chrom_hogs[chrom_name] = mapped_genes
                 for k, hog in enumerate(mapped_genes):
                     mapped.hog_to_pos[hog] = k
                     if n_mapped == 1:

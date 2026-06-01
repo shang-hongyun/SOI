@@ -40,6 +40,48 @@ def _merge_chromosome_paths(path_a, path_b):
     return merged
 
 
+def _assign_pair_colors(labels):
+    """用 golden ratio hash 为 label 列表分配 HSL 色板。
+
+    Returns: {label: '#RRGGBB'}
+    """
+    if not labels:
+        return {}
+    result = {}
+    for i, label in enumerate(labels):
+        hue = (i * 0.618033988749895) % 1.0
+        r, g, b = _hsl_to_rgb(hue, 0.55, 0.50)
+        result[label] = f'#{r:02x}{g:02x}{b:02x}'
+    return result
+
+
+def _hsl_to_rgb(h, s, l):
+    """HSL (h,s,l ∈ [0,1]) → (r,g,b ∈ [0,255])."""
+    if s == 0:
+        v = int(l * 255)
+        return (v, v, v)
+
+    def _hue2rgb(p, q, t):
+        if t < 0:
+            t += 1
+        if t > 1:
+            t -= 1
+        if t < 1 / 6:
+            return p + (q - p) * 6 * t
+        if t < 1 / 2:
+            return q
+        if t < 2 / 3:
+            return p + (q - p) * (2 / 3 - t) * 6
+        return p
+
+    q = l * (1 + s) if l < 0.5 else l + s - l * s
+    p = 2 * l - q
+    r = int(_hue2rgb(p, q, h + 1 / 3) * 255)
+    g = int(_hue2rgb(p, q, h) * 255)
+    b = int(_hue2rgb(p, q, h - 1 / 3) * 255)
+    return (r, g, b)
+
+
 class ColoredGraph:
     """彩色邻接图 — 一条边可有多色 (child_id, chrom_idx)。"""
 
@@ -107,10 +149,14 @@ class ColoredGraph:
             hogs = [n for n in chrom_nodes if n not in child_graph.telomeres]
             child_hogs.update(hogs)
             child_chrom_paths.append(hogs)
-            for i in range(len(hogs) - 1):
-                h_a, h_b = hogs[i], hogs[i + 1]
-                direction = 1
-                self.add_edge(h_a, h_b, source_id, chrom_idx, direction=direction)
+            for i, h in enumerate(hogs):
+                # 节点属性: sources, telomere（per-child 集合，GFA/算法共用）
+                self._graph.add_node(h)  # 确保节点存在
+                self._graph.nodes[h].setdefault('sources', set()).add(
+                    (source_id, chrom_idx))
+                if i < len(hogs) - 1:
+                    self.add_edge(h, hogs[i + 1], source_id, chrom_idx,
+                                  direction=1)
 
         # 收集端粒信息
         for tel in child_graph.telomeres:
@@ -120,6 +166,11 @@ class ColoredGraph:
                 child_tels.add(h2)
             elif h2 in child_graph.telomeres and h1 in child_graph.gene_nodes:
                 child_tels.add(h1)
+
+        # 端粒属性写入节点（per-child 集合，支持 consensus 查询）
+        for tel in child_tels:
+            if self._graph.has_node(tel):
+                self._graph.nodes[tel].setdefault('telomere', set()).add(source_id)
 
         self._child_telomeres[source_id] = child_tels
         self._child_hogs[source_id] = child_hogs
@@ -215,25 +266,16 @@ class ColoredGraph:
         生物学原理：端粒位置保守，不会无缘无故获得或丢失。
         如果一个 HOG 在多个孩子中都与端粒相邻，它在祖先中也是端粒邻接的。
         """
-        tel_counts = defaultdict(int)
-        for cid, tels in self._child_telomeres.items():
-            for hog in tels:
-                tel_counts[hog] += 1
-        return {h for h, cnt in tel_counts.items() if cnt >= min_children}
+        return {n for n, d in self._graph.nodes(data=True)
+                if len(d.get('telomere', set())) >= min_children}
 
     def child_telomere_set(self) -> Set:
         """所有孩子的端粒邻接 HOG 的并集。"""
-        all_tels = set()
-        for tels in self._child_telomeres.values():
-            all_tels.update(tels)
-        return all_tels
+        return {n for n, d in self._graph.nodes(data=True) if d.get('telomere')}
 
     def is_telomere_adjacent(self, hog) -> bool:
         """该 HOG 是否在任意孩子中与端粒相邻。"""
-        for tels in self._child_telomeres.values():
-            if hog in tels:
-                return True
-        return False
+        return bool(self._graph.nodes[hog].get('telomere')) if self._graph.has_node(hog) else False
 
     def telomere_preserving_color(self, cycle_edges, edge_colors) -> Optional[str]:
         """在交替色环中，找出保留端粒邻接的颜色。
@@ -280,6 +322,36 @@ class ColoredGraph:
         """所有 HOG 节点。"""
         return {n for n in self._graph.nodes if not isinstance(n, tuple)
                 or len(n) != 2 or n[1] not in ('L', 'R')}
+
+    def log_events_summary(self, phase_label: str, event_types: set = None):
+        """统一的事件 log 格式。按孩子分组输出。"""
+        from collections import defaultdict
+        events = self.events
+        if event_types:
+            events = [e for e in events if e.event_type in event_types]
+        if not events:
+            return
+        child_events = defaultdict(list)
+        for e in events:
+            parts = e.branch.split('-')
+            cid = parts[-1] if parts else 'unknown'
+            child_events[cid].append(e)
+        for cid in sorted(child_events.keys()):
+            evts = child_events[cid]
+            type_counts = defaultdict(int)
+            type_lens = defaultdict(list)
+            for e in evts:
+                type_counts[e.event_type] += 1
+                type_lens[e.event_type].append(len(e.genes_involved))
+            parts = []
+            for etype in sorted(type_counts.keys()):
+                count = type_counts[etype]
+                lens = type_lens[etype]
+                if len(lens) == 1:
+                    parts.append(f"{etype}={count} (len {lens[0]})")
+                else:
+                    parts.append(f"{etype}={count} (len {min(lens)}-{max(lens)})")
+            logger.info("  [%s] %s events: %s", phase_label, cid, ", ".join(parts))
 
     def shared_edges(self) -> List[Tuple]:
         """返回多于一个颜色的边 → 祖先共享邻接。"""
@@ -1077,6 +1149,115 @@ class ColoredGraph:
         result.events = self.events
         return result
 
+    def _ensure_blocks(self):
+        """确保 blocks 和 block_graph 已构建。幂等。"""
+        if not hasattr(self, '_blocks') or not self._blocks:
+            self._build_synteny_blocks()
+        if not hasattr(self, '_block_graph') or not self._block_graph:
+            self._compress_to_block_level()
+
+    def to_gfa(self, fout, min_pair_nodes: int = 50):
+        """输出 GFA 格式（block 级）。无 block 时自动构建。
+
+        着色规则:
+          - 端粒节点 → 红色 (#FF0000)，优先级最高
+          - 非端粒节点 → 按节点来源 label 分组:
+            · 节点数 ≥ min_pair_nodes 的组 → hash 色板分配不同颜色
+            · 不足的组 → 灰色 (#808080)
+          - 每个节点输出 LB:Z:label 标明来源
+
+        GFA 格式:
+          S  node  *  CL:Z:#RRGGBB  LB:Z:label  LN:i:N
+          L  n1  +  n2  +  0M  CO:Z:c1:0,c2:1,...
+        """
+        from collections import defaultdict
+
+        # ── 确保 blocks 已构建 ──
+        self._ensure_blocks()
+        block_graph = getattr(self, '_block_graph', None)
+        use_blocks = (block_graph is not None
+                      and block_graph.number_of_nodes() > 0)
+        graph = block_graph if use_blocks else self._graph
+        _blocks = getattr(self, '_blocks', {})
+        _hog_to_block = getattr(self, '_hog_to_block', {})
+
+        # ── Block 级：从 HOG 聚合 sources + telomere ──
+        block_sources = {}   # block_id -> set of (child, chrom)
+        block_telomere = {}  # block_id -> set of child_ids
+        block_hog_count = {} # block_id -> int
+        if use_blocks:
+            for bid, hogs in _blocks.items():
+                sources_union = set()
+                tel_union = set()
+                for h in hogs:
+                    if self._graph.has_node(h):
+                        sources_union.update(
+                            self._graph.nodes[h].get('sources', set()))
+                        tel_union.update(
+                            self._graph.nodes[h].get('telomere', set()))
+                block_sources[bid] = sources_union
+                block_telomere[bid] = tel_union
+                block_hog_count[bid] = len(hogs)
+
+        # ── 收集节点 label 和计数 ──
+        label_counts = defaultdict(int)
+        node_label = {}
+
+        for node in graph.nodes:
+            if use_blocks:
+                sources = block_sources.get(node, set())
+                is_tel = bool(block_telomere.get(node))
+            else:
+                sources = self._graph.nodes[node].get('sources', set())
+                is_tel = bool(self._graph.nodes[node].get('telomere'))
+
+            if sources:
+                parts = sorted(f'{cid}|{ch}' for cid, ch in sources)
+                label = '+'.join(parts)
+            else:
+                label = ''
+            node_label[node] = label
+            if label and not is_tel:
+                label_counts[label] += 1
+
+        # ── 色板 ──
+        significant = {l for l, c in label_counts.items() if c >= min_pair_nodes}
+        label_colors = _assign_pair_colors(sorted(significant)) if significant else {}
+
+        # ── Segment 行 ──
+        for node in sorted(graph.nodes, key=str):
+            label = node_label[node]
+            if use_blocks:
+                is_tel = bool(block_telomere.get(node))
+            else:
+                is_tel = bool(self._graph.nodes[node].get('telomere'))
+
+            if is_tel:
+                color = '#FF0000'
+            elif label and label in label_colors:
+                color = label_colors[label]
+            else:
+                color = '#808080'
+
+            line = ['S', node, '*', f'CL:Z:{color}']
+            lb = f'{label}+telo' if (is_tel and label) else ('telo' if is_tel else label)
+            if lb:
+                line.append(f'LB:Z:{lb}')
+            # Length: 端粒固定 50（显眼），否则 block 大小
+            n_len = 50 if is_tel else (block_hog_count.get(node, 1) if use_blocks else 1)
+            line.append(f'LN:i:{n_len}')
+            fout.write('\t'.join(map(str, line)) + '\n')
+
+        # ── Link 行 ──
+        for n1, n2, data in sorted(graph.edges(data=True),
+                                    key=lambda x: (str(x[0]), str(x[1]))):
+            colors = data.get('colors', set())
+            color_tags = ','.join(f'{c[0]}:{c[1]}' for c in sorted(colors))
+            line = ['L', n1, '+', n2, '+', '0M']
+            if color_tags:
+                line.append(f'CO:Z:{color_tags}')
+            fout.write('\t'.join(map(str, line)) + '\n')
+
     # ==================== 一键执行 ====================
 
     def collapse_wgd(self, ploidy: int):
@@ -1187,36 +1368,54 @@ class ColoredGraph:
     # ==================== 共线性块压缩 ====================
 
     @staticmethod
-    def _extract_linear_paths(subgraph, min_size=2):
-        """从非线性组件中提取所有最大线性子路径。"""
-        paths = []
+    def _extract_unitigs(G, min_size=2):
+        """Undirected unitig extraction: maximal linear (deg≤2) paths.
+
+        从每个未访节点出发，向两端走到度≠2 的节点为止。
+        分支节点留在多个 unitig 的交界处（各算各的端点）。
+        """
+        unitigs = []
         visited = set()
-        degs = dict(subgraph.degree())
-        starts = [n for n in subgraph.nodes() if degs[n] != 2]
-        if not starts:
-            starts = [list(subgraph.nodes())[0]]
-        for start in starts:
-            if start in visited:
+        for node in G.nodes():
+            if node in visited:
                 continue
-            for first_neighbor in subgraph.neighbors(start):
-                if first_neighbor in visited:
-                    continue
-                path = [start, first_neighbor]
-                visited_local = {start, first_neighbor}
-                curr, prev = first_neighbor, start
-                while degs.get(curr, 0) == 2:
-                    nxts = [n for n in subgraph.neighbors(curr)
-                            if n != prev and n not in visited_local]
-                    if len(nxts) != 1:
-                        break
-                    nxt = nxts[0]
-                    visited_local.add(nxt)
+            path = [node]
+            visited.add(node)
+
+            # 向左走
+            curr = node
+            while True:
+                nbrs = [n for n in G.neighbors(curr) if n not in visited]
+                if len(nbrs) != 1 or G.degree(curr) > 2:
+                    break
+                nxt = nbrs[0]
+                if G.degree(nxt) > 2:
+                    # 只带走度≤2 的邻居，分支节点不加入
+                    path.insert(0, nxt)
+                    visited.add(nxt)
+                    break
+                path.insert(0, nxt)
+                visited.add(nxt)
+                curr = nxt
+
+            # 向右走
+            curr = node
+            while True:
+                nbrs = [n for n in G.neighbors(curr) if n not in visited]
+                if len(nbrs) != 1 or G.degree(curr) > 2:
+                    break
+                nxt = nbrs[0]
+                if G.degree(nxt) > 2:
                     path.append(nxt)
-                    prev, curr = curr, nxt
-                if len(path) >= min_size:
-                    paths.append(path)
-                    visited.update(path)
-        return paths
+                    visited.add(nxt)
+                    break
+                path.append(nxt)
+                visited.add(nxt)
+                curr = nxt
+
+            if len(path) >= min_size:
+                unitigs.append(path)
+        return unitigs
 
     def _build_synteny_blocks(self, min_block_size: int = 2):
         """构建共线性块。
@@ -1225,12 +1424,18 @@ class ColoredGraph:
         - 端粒 HOG 永远不进入任何块（始终是 1-HOG 块）
         - 非端粒 HOG：共享边连接的连续路径 = 一个块
         - 断开点：唯一边、端粒 HOG
-        - 单孩子：每条染色体路径 = 一个块（端粒除外）
         """
-        cons_tels = self.child_telomere_set()  # all telomere HOGs, never compressed
-        hog_set = self.all_hogs()  # cache
+        cons_tels = self.child_telomere_set()
+        hog_set = self.all_hogs()
         blocks = {}
         hog_to_block = {}
+
+        def _add_block(path):
+            bid = "blk_{}".format(len(blocks))
+            blocks[bid] = path
+            for h in path:
+                hog_to_block[h] = bid
+            return bid
 
         if len(self.children()) >= 2:
             # 多孩子：共享边图，排除端粒后找线性路径
@@ -1243,12 +1448,10 @@ class ColoredGraph:
                 sub = shared_G.subgraph(comp)
                 degs = dict(sub.degree())
                 if any(d > 2 for d in degs.values()):
-                    for path in self._extract_linear_paths(sub, min_block_size):
-                        bid = "blk_{}".format(len(blocks))
-                        blocks[bid] = path
-                        for h in path:
-                            hog_to_block[h] = bid
+                    for path in self._extract_unitigs(sub, min_block_size):
+                        _add_block(path)
                     continue
+                # Linear component: walk from one endpoint
                 endpoints = [n for n in sub.nodes() if degs[n] == 1]
                 if not endpoints:
                     endpoints = [list(comp)[0]]
@@ -1266,54 +1469,39 @@ class ColoredGraph:
                     path.append(nxt)
                     prev, curr = curr, nxt
                 if len(path) >= min_block_size:
-                    bid = "blk_{}".format(len(blocks))
-                    blocks[bid] = path
-                    for h in path:
-                        hog_to_block[h] = bid
+                    _add_block(path)
         else:
-            # 单孩子：每条染色体路径 = 一个块（端粒除外）
-            for cid in self.children():
-                for chrom_path in self._child_chromosomes.get(cid, []):
-                    hogs = [h for h in chrom_path
-                            if h in hog_set and h not in cons_tels]
-                    if len(hogs) >= min_block_size:
-                        bid = "blk_{}".format(len(blocks))
-                        blocks[bid] = hogs
-                        for h in hogs:
-                            hog_to_block[h] = bid
+            # 单孩子：用当前图提取线性路径
+            hog_nodes = [n for n in self._graph.nodes
+                         if n in hog_set and n not in cons_tels]
+            G_sub = self._graph.subgraph(hog_nodes)
+            for comp in nx.connected_components(G_sub):
+                sub = G_sub.subgraph(comp)
+                for path in self._extract_unitigs(sub, min_block_size):
+                    _add_block(path)
 
-        # 剩余未分配 HOG：按孩子路径中的连续段压缩成块
+        # 剩余未分配 HOG
         assigned = set(hog_to_block.keys())
-        for cid in self.children():
-            chrom_source = getattr(self, '_child_chromosomes', {})
-            chroms = chrom_source.get(cid, [])
-            if not chroms:
-                # 回退到 chrom_hogs
-                ch = getattr(self, '_child_chrom_hogs', {})
-                chroms = list(ch.values()) if ch else []
-            for chrom_path in chroms:
-                hogs = [h for h in chrom_path
-                        if h in hog_set and h not in cons_tels and h not in assigned]
-                if len(hogs) >= min_block_size:
-                    bid = "blk_{}".format(len(blocks))
-                    blocks[bid] = hogs
-                    for h in hogs:
-                        hog_to_block[h] = bid
+        unassigned = [n for n in self._graph.nodes
+                      if n in hog_set and n not in cons_tels and n not in assigned]
+        if unassigned:
+            G_rem = self._graph.subgraph(unassigned)
+            for comp in nx.connected_components(G_rem):
+                sub = G_rem.subgraph(comp)
+                for path in self._extract_unitigs(sub, min_block_size):
+                    _add_block(path)
+                    for h in path:
                         assigned.add(h)
 
         # 端粒 HOG → 1-HOG 块
         for h in cons_tels:
             if h not in hog_to_block and h in hog_set:
-                bid = "blk_{}".format(len(blocks))
-                blocks[bid] = [h]
-                hog_to_block[h] = bid
+                _add_block([h])
 
-        # 剩余未分配 HOG → 1-HOG 块
+        # 剩余孤立 HOG → 1-HOG 块
         for h in hog_set:
             if h not in hog_to_block:
-                bid = "blk_{}".format(len(blocks))
-                blocks[bid] = [h]
-                hog_to_block[h] = bid
+                _add_block([h])
 
         self._blocks = blocks
         self._hog_to_block = hog_to_block
@@ -2379,7 +2567,9 @@ class ColoredGraph:
 
     def resolve_all_events(self, outgroups: Dict = None,
                            outgroup_adjacency: Set = None,
-                           min_hogs: int = 3) -> List[TAKREvent]:
+                           min_hogs: int = 3,
+                           gfa_debug: bool = False,
+                           gfa_prefix: str = None) -> List[TAKREvent]:
         """Telomere-centric event resolution pipeline.
 
         Pipeline (简单→复杂，每步检查 postcondition，失败则报错停止):
@@ -2392,16 +2582,11 @@ class ColoredGraph:
            Postcondition: 所有 HOG 已分配到块
         4a. seg_deletion / seg_insertion (多基因 indel)
            Postcondition: 无大段不对称
-        4b. unidir_trans (单向转移)
-           Postcondition: 无单向转移模式
-        4c. telomere_inversion (端粒倒位，优先!)
-           Postcondition: 端粒位置一致
+        4b. inversion (方向冲突)
+        4c. unidir_trans (单向转移)
         4d. internal_inversion (内部倒位)
-           Postcondition: 块级图无环
         4e. RT / URT (相互易位)
-           Postcondition: 无跨染色体环
         4f. EEJ / NCF / fission (桥接事件，最后)
-           Postcondition: 无桥接边
         5. 端粒约束路径覆盖
            Postcondition: 所有 HOG 覆盖, 每条染色体 2 个端粒
         ─────────────────────────────────────────────────────────────
@@ -2409,17 +2594,31 @@ class ColoredGraph:
         logger.info("  [colored] resolve_all_events for %s: %d nodes, %d edges",
                      self.hog_level, self.node_count(), self.edge_count())
 
+        def _gfa_out(phase_label):
+            """输出 GFA 调试文件。"""
+            if not gfa_debug or not gfa_prefix:
+                return
+            path = f"{gfa_prefix}.{phase_label}.gfa"
+            with open(path, 'w') as fout:
+                fout.write(f"H\tphase:{phase_label}\tlevel:{self.hog_level}\t"
+                           f"nodes:{self.node_count()}\tedges:{self.edge_count()}\n")
+                self.to_gfa(fout)
+            logger.info("  [gfa] %s -> %s", phase_label, path)
+
         n_events_before = len(self.events)
 
         # Phase 1 dedup 在 orchestrator 中 add_child 前完成
         logger.info("  [colored] Phase 1 (dedup): done in orchestrator, %d children",
                      len(self._child_chrom_counts))
 
+        _gfa_out("p1_merged")
+
         # 保存原始共享组件（用于 bridge 检测验证）
         self._save_original_shared_components()
 
         # ====== Phase 2: 方向调和 ======
         self.harmonize_directions()
+        _gfa_out("p2_harmonize")
 
         # ====== Phase 3: 共线性块压缩 ======
         self._build_synteny_blocks()
@@ -2432,6 +2631,8 @@ class ColoredGraph:
         except RuntimeError as e:
             logger.warning("  [colored] %s", e)
 
+        _gfa_out("p3_blocks")
+
         # ====== Phase 4: 块级事件 (按复杂度递增) ======
 
         # Phase 4a: seg_deletion / seg_insertion (所有大小的 indel)
@@ -2440,6 +2641,8 @@ class ColoredGraph:
             seg_events = [e for e in self.events if e.event_type == 'seg_deletion']
             seg_str = ", ".join(f"{e.branch}" for e in seg_events[-5:])
             logger.info("  [colored] Phase 4a (seg_events): %d events [%s]", n_seg, seg_str)
+
+        _gfa_out("p4a_seg")
 
         # Phase 4b: inversion (方向冲突 = 真倒位，调和后)
         n_inv_before = len(self.events)
@@ -2450,12 +2653,16 @@ class ColoredGraph:
             inv_str = ", ".join(f"{t}={c}" for t, c in sorted(inv_types.items()))
             logger.info("  [colored] Phase 4b (inversions): %d events [%s]", n_inv_events, inv_str)
 
+        _gfa_out("p4b_inv")
+
         # Phase 4c: unidir_trans
         n_ut = self._resolve_unidir_trans(outgroup_adjacency=outgroup_adjacency)
         if n_ut:
             ut_events = [e for e in self.events if e.event_type == 'unidir_trans']
             ut_str = ", ".join(f"{e.branch}" for e in ut_events[-5:])
             logger.info("  [colored] Phase 4b (unidir_trans): %d events [%s]", n_ut, ut_str)
+
+        _gfa_out("p4c_ut")
 
         # ====== Phase 4c-4e: 块级结构重排 (inversion, RT) ======
         n_before_struct = len(self.events)
@@ -2469,6 +2676,8 @@ class ColoredGraph:
         logger.info("  [colored] Phase 4c-4e (structural): %d events [%s], nodes %d→%d (-%d), edges %d→%d (-%d)",
                      n_struct_events, struct_str,
                      n2, n3, n2 - n3, e2, e3, e2 - e3)
+
+        _gfa_out("p4e_struct")
 
         # ====== Phase 4f: 块级桥接 (EEJ/NCF/fission) ======
         n_before_bridge = len(self.events)
@@ -2487,6 +2696,8 @@ class ColoredGraph:
         except RuntimeError as e:
             logger.warning("  [colored] %s", e)
 
+        _gfa_out("p4f_bridge")
+
         # ====== Phase 5: 端粒约束路径覆盖 ======
         paths = self.path_cover()
         self._cached_paths = paths  # 缓存给 to_ancestral_graph 复用
@@ -2500,6 +2711,8 @@ class ColoredGraph:
                            len(uncovered))
         n_chrom = len(paths)
         logger.info("  [colored] Phase 5 (path cover): %d chromosomes", n_chrom)
+
+        _gfa_out("p5_paths")
 
         # 过滤小事件
         kept = []

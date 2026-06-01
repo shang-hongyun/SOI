@@ -315,8 +315,6 @@ class AKR:
                  node_timeout=300,
                  use_ilp_sa=True,
                  sa_iterations=5000,
-                 use_v3=True,
-                 use_v4=False,
                  reconstruction_algorithm='v4_colored',
                  **kargs):
 
@@ -331,30 +329,17 @@ class AKR:
         self.rounds = rounds
         self.chrom_list = chrom_list
         self.min_genes = min_genes
-        self.timeout = timeout  # 全局总超时秒数
-        self.node_timeout = node_timeout  # 单节点重建超时秒数
-        self.use_ilp_sa = use_ilp_sa and pulp is not None  # 是否使用ILP+SA混合线性化
+        self.timeout = timeout
+        self.node_timeout = node_timeout
+        self.use_ilp_sa = use_ilp_sa and pulp is not None
         self.sa_iterations = sa_iterations
-        # Unified algorithm selector
+
         # reconstruction_algorithm: 'v3' (CP-SAT), 'v4' (event-driven), 'v4_colored' (ColoredGraph)
-        # Falls back to use_v3/use_v4 for backward compatibility
-        self.use_v4_colored = False
-        if reconstruction_algorithm is not None:
-            if reconstruction_algorithm == 'v3':
-                self.use_v3 = True and ORTOOLS_AVAILABLE
-                self.use_v4 = False
-            elif reconstruction_algorithm == 'v4':
-                self.use_v3 = False
-                self.use_v4 = True
-            elif reconstruction_algorithm == 'v4_colored':
-                self.use_v3 = False
-                self.use_v4 = False
-                self.use_v4_colored = True
-            else:
-                raise ValueError("Unknown reconstruction_algorithm: %s (use 'v3', 'v4', or 'v4_colored')" % reconstruction_algorithm)
-        else:
-            self.use_v3 = use_v3 and ORTOOLS_AVAILABLE
-            self.use_v4 = use_v4
+        if reconstruction_algorithm not in ('v3', 'v4', 'v4_colored'):
+            raise ValueError("Unknown reconstruction_algorithm: %s" % reconstruction_algorithm)
+        if reconstruction_algorithm == 'v3' and not ORTOOLS_AVAILABLE:
+            raise RuntimeError("OR-Tools not available for v3 reconstruction")
+        self.algorithm = reconstruction_algorithm
         self._start_time = None
 
         self.hog = None
@@ -401,12 +386,11 @@ class AKR:
         self._build_leaf_graphs()
 
         # Handle polyploid leaves (v4_colored handles this internally)
-        if not self.use_v4_colored:
+        if self.algorithm != 'v4_colored':
             for leaf_name, ploidy in self.ploidy_map.items():
                 if leaf_name in self.leaf_graphs and ploidy > 1:
                     self._collapse_polyploid_leaf(leaf_name)
 
-        # Post-order traversal: reconstruct speciation nodes first, then pre-WGD pseudo-nodes
         for node in self.tree.traverse(strategy="postorder"):
             if node.is_leaf():
                 continue
@@ -416,26 +400,23 @@ class AKR:
                     self.timeout, elapsed))
                 break
             # Speciation node reconstruction
-            if self.use_v4_colored:
-                # ColoredGraph event-driven handles all nodes in one pass
+            if self.algorithm == 'v4_colored':
                 from soi.takr_event_driven import reconstruct_event_driven_v2
                 anc_graphs = reconstruct_event_driven_v2(self)
                 self.anc_graphs = anc_graphs
                 break
-            elif self.use_v4:
-                # Event-driven reconstruction handles all nodes in one pass
+            elif self.algorithm == 'v4':
                 from soi.takr_event_driven import reconstruct_event_driven
                 anc_graphs = reconstruct_event_driven(self)
                 self.anc_graphs = anc_graphs
-                break  # event-driven handles all nodes at once
-            elif self.use_v3:
+                break
+            elif self.algorithm == 'v3':
                 self._reconstruct_node_v3(node)
             else:
                 self._reconstruct_node(node)
 
-            # WGD nodes: additional pre-WGD pseudo-node reconstruction (unified log format)
             if node.name in self.ploidy_map and self.ploidy_map[node.name] > 1:
-                if self.use_v3:
+                if self.algorithm == 'v3':
                     self._collapse_wgd_v3(node)
                 else:
                     self._collapse_wgd(node)

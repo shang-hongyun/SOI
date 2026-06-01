@@ -13,7 +13,7 @@ from .mcscan import ColinearGroups, Gff, GffGraph, SyntenyGraph, GffLine
 from .hog import HOG, HOGrecord
 from .RunCmdsMP import logger
 from .ak_dotplot import draw_akr_dotplots, draw_dotplot, aag_to_karyo
-from .chromosome_path_cover import ChromosomePathCover, GreedyPathCover, ORTOOLS_AVAILABLE
+from .chromosome_path_cover import ChromosomePathCover, GreedyPathCover
 from .telomere_constraint import TelomereConstraint
 from .validator import TAKRValidator
 
@@ -333,13 +333,6 @@ class AKR:
         self.node_timeout = node_timeout
         self.use_ilp_sa = use_ilp_sa and pulp is not None
         self.sa_iterations = sa_iterations
-
-        # reconstruction_algorithm: 'v3' (CP-SAT), 'v4' (event-driven), 'v4_colored' (ColoredGraph)
-        if reconstruction_algorithm not in ('v3', 'v4', 'v4_colored'):
-            raise ValueError("Unknown reconstruction_algorithm: %s" % reconstruction_algorithm)
-        if reconstruction_algorithm == 'v3' and not ORTOOLS_AVAILABLE:
-            raise RuntimeError("OR-Tools not available for v3 reconstruction")
-        self.algorithm = reconstruction_algorithm
         self._start_time = None
 
         self.hog = None
@@ -385,12 +378,6 @@ class AKR:
         self._parse_ploidy_map()
         self._build_leaf_graphs()
 
-        # Handle polyploid leaves (v4_colored handles this internally)
-        if self.algorithm != 'v4_colored':
-            for leaf_name, ploidy in self.ploidy_map.items():
-                if leaf_name in self.leaf_graphs and ploidy > 1:
-                    self._collapse_polyploid_leaf(leaf_name)
-
         for node in self.tree.traverse(strategy="postorder"):
             if node.is_leaf():
                 continue
@@ -399,28 +386,12 @@ class AKR:
                 logger.warning("Global timeout ({}s) reached at {:.1f}s, skipping remaining nodes".format(
                     self.timeout, elapsed))
                 break
-            # Speciation node reconstruction
-            if self.algorithm == 'v4_colored':
-                from soi.takr_event_driven import reconstruct_event_driven_v2
-                anc_graphs = reconstruct_event_driven_v2(self)
-                self.anc_graphs = anc_graphs
-                break
-            elif self.algorithm == 'v3':
-                self._reconstruct_node_v3(node)
+            # Specialtion node reconstruction (v4_colored)
+            from soi.takr_event_driven import reconstruct_event_driven_v2
+            anc_graphs = reconstruct_event_driven_v2(self)
+            self.anc_graphs = anc_graphs
+            break
 
-            if node.name in self.ploidy_map and self.ploidy_map[node.name] > 1:
-                if self.algorithm == 'v3':
-                    self._collapse_wgd_v3(node)
-                else:
-                    self._collapse_wgd(node)
-
-        # Skip optimization + top-down detection for v4/v4_colored (handled internally)
-        if not self.use_v4 and not self.use_v4_colored:
-            for i in range(self.rounds):
-                logger.info('Optimization round {}'.format(i))
-                self._optimize_round()
-
-            self._detect_events_topdown()
         self._export_results()
 
         logger.info("=== Ancestral Karyotype Reconstruction (AKR) completed ===")
@@ -791,266 +762,6 @@ class AKR:
         )
 
         self.anc_graphs[node_id] = merged
-
-    def _reconstruct_node_v3(self, node):
-        """
-        使用v3 CP-SAT路径覆盖重建物种分化内部节点。
-        映射、合并、外类群同现有流程，但线性化步骤替换为CP-SAT。
-        """
-        node_id = node.name
-        children = node.children
-        if len(children) != 2:
-            logger.warning("Node {} has {} children; expecting binary tree".format(
-                node_id, len(children)))
-
-        child_graphs = []
-        child_source_ids = []
-        for child in children:
-            child_id = child.name
-            if child_id in self.pre_wgd_graphs:
-                child_graphs.append(self.pre_wgd_graphs[child_id])
-            elif child_id in self.anc_graphs:
-                child_graphs.append(self.anc_graphs[child_id])
-            elif child.is_leaf() and child_id in self.leaf_graphs:
-                child_graphs.append(self.leaf_graphs[child_id])
-            child_source_ids.append(child_id)
-
-        if not child_graphs:
-            logger.warning("No child graphs for {}".format(node_id))
-            return
-
-        outgroup_graphs = self._get_outgroup_graphs(node)
-        target_chromosomes = self._estimate_target_chromosomes(node, outgroup_graphs)
-
-        merged = self._reconstruct_v3(
-            target_node_id=node_id,
-            child_graphs=child_graphs,
-            child_source_ids=child_source_ids,
-            hog_level=node_id,
-            outgroup_graphs=outgroup_graphs,
-            target_chromosomes=target_chromosomes,
-            is_pre_wgd=False
-        )
-
-        self.anc_graphs[node_id] = merged
-
-    def _collapse_wgd_v3(self, node):
-        """使用v3 CP-SAT路径覆盖重建pre-WGD基因组。"""
-        node_id = node.name
-        post_graph = self.anc_graphs.get(node_id)
-        if post_graph is None:
-            return
-        parent = node.up
-        if not parent:
-            return
-
-        parent_id = parent.name
-        ploidy = self.ploidy_map.get(node_id, 2)
-        target = max(len(list(post_graph.chromosomes)) // ploidy, 1)
-
-        pre_id = "pre-WGD {}".format(node_id)
-        pre_graph = self._reconstruct_v3(
-            target_node_id=pre_id,
-            child_graphs=[post_graph],
-            child_source_ids=[node_id],
-            hog_level=parent_id,
-            outgroup_graphs=None,
-            target_chromosomes=target,
-            is_pre_wgd=True
-        )
-
-        pre_graph.node_id = "{}_pre".format(node_id)
-        self.pre_wgd_graphs[node_id] = pre_graph
-        n_pre = len(list(pre_graph.chromosomes))
-        logger.info("  WGD pre-WGD v3 for {}: {} post chroms -> {} pre chroms (target={})".format(
-            node_id, len(list(post_graph.chromosomes)), n_pre, target))
-
-    def _reconstruct_v3(self, target_node_id, child_graphs, child_source_ids=None,
-                        hog_level=None, outgroup_graphs=None,
-                        target_chromosomes=None, is_pre_wgd=False):
-        """
-        统一重建方法v3：使用CP-SAT路径覆盖替代贪心线性化。
-
-        Steps 1-3（映射、合并、外类群）同 _reconstruct，
-        Step 4 替换为 CP-SAT 路径覆盖 + 端粒约束。
-        """
-        if child_source_ids is None:
-            child_source_ids = [cg.node_id for cg in child_graphs]
-        if hog_level is None:
-            hog_level = target_node_id
-
-        prefix = "pre-WGD " if is_pre_wgd else ""
-        logger.info("Reconstructing node {}{} [v3]".format(prefix, target_node_id))
-        t0 = time.time()
-
-        # Step 1: 映射子节点到目标 HOGrecord
-        t1 = time.time()
-        mapped_children = [self._map_to_parent_hogs(hog_level, cg, source_id=sid)
-                           for cg, sid in zip(child_graphs, child_source_ids)]
-        for i, mc in enumerate(mapped_children):
-            n_edges = len(list(mc.get_adjacencies(include_telomere=False)))
-            n_chrom = mc.n_chromosomes
-            logger.info("  Mapped child {} -> {} HOGs, {} adjacencies, {} chromosomes ({:.2f}s)".format(
-                child_source_ids[i], len(mc.gene_nodes), n_edges, n_chrom, time.time()-t1))
-
-        # Step 2: 合并映射后的邻接图
-        t1 = time.time()
-        merged = self._merge_child_graphs(target_node_id, mapped_children, child_source_ids)
-        n_conflict = sum(1 for u, v, d in merged.graph.edges(data=True) if d.get('conflict'))
-        logger.info("  After merge: {} HOGs, {} conflict edges ({:.2f}s)".format(
-            len(merged.gene_nodes), n_conflict, time.time()-t1))
-
-        # 共识链向
-        strand_votes = defaultdict(lambda: {'+': 0, '-': 0})
-        for mc in mapped_children:
-            for rec in mc.gene_nodes:
-                strand = mc.graph.nodes[rec].get('strand')
-                if strand is None:
-                    strand = getattr(rec, 'strand', '+')
-                strand_votes[rec][strand] += 1
-        for rec in merged.gene_nodes:
-            votes = strand_votes.get(rec, {'+': 1, '-': 0})
-            consensus = '+' if votes['+'] >= votes['-'] else '-'
-            merged.graph.nodes[rec]['strand'] = consensus
-
-        # Step 3: 外类群反向映射
-        t1 = time.time()
-        mapped_outgroups = []
-        if outgroup_graphs:
-            mapped_outgroups = [(self._map_outgroup_to_current_hogs(hog_level, og), weight)
-                                for og, weight in outgroup_graphs]
-        logger.info("  Mapped {} outgroup graphs ({:.2f}s)".format(
-            len(mapped_outgroups), time.time()-t1))
-
-        # Step 4: 外类群投票解决冲突
-        t1 = time.time()
-        merged = self._resolve_merge_conflicts(merged, mapped_children, mapped_outgroups)
-        logger.info("  Conflict resolution: {:.2f}s".format(time.time()-t1))
-
-        # Step 5: 构建端粒约束
-        n_children = len(child_graphs)
-        ploidy_ctx = self.ploidy_map.get(target_node_id) if is_pre_wgd else None
-        tc = TelomereConstraint(merged.hog_endpoints, n_children=n_children,
-                                ploidy_context=ploidy_ctx)
-        logger.info("  {}".format(tc.summary()))
-
-        # Step 6: 构建边权重和支持度
-        edge_weights = {}
-        support_counts = {}
-        for u, v, d in merged.graph.edges(data=True):
-            if u in merged.telomeres or v in merged.telomeres:
-                continue
-            if u == v:
-                continue
-            key = (u, v) if u.hog_id < v.hog_id else (v, u)
-            if key not in edge_weights:
-                support = d.get('support', 1)
-                support_counts[key] = support
-                og_weight = d.get('og_weight', 0)
-                if support >= n_children:
-                    weight = 200
-                else:
-                    weight = 100 + min(og_weight * 50, 100)
-                edge_weights[key] = weight
-
-        # Step 7: CP-SAT求解
-        if target_chromosomes is None:
-            target_chromosomes = max(
-                len(list(child_graphs[0].chromosomes)), 1) if child_graphs else 1
-
-        telomere_hogs = tc.get_telomere_hogs()
-        telomere_weights = tc.get_telomere_weights()
-        cpc = ChromosomePathCover(
-            edge_weights=edge_weights,
-            support_counts=support_counts,
-            telomere_hogs=telomere_hogs,
-            target_chromosomes=target_chromosomes,
-            n_children=n_children,
-            cpsat_timeout=120 if is_pre_wgd else 60,
-            telomere_weights=telomere_weights,
-        )
-        paths, stats = cpc.solve()
-
-        # Step 8: Fallback
-        if paths is None:
-            logger.warning("CP-SAT failed for {}, fallback to greedy".format(
-                target_node_id))
-            greedy = GreedyPathCover(edge_weights, telomere_hogs, target_chromosomes,
-                                     telomere_weights=telomere_weights)
-            paths, stats = greedy.solve()
-
-        if paths is None:
-            logger.error("Both CP-SAT and greedy failed for {}".format(
-                target_node_id))
-            return merged
-
-        logger.info("  Path cover: {} paths, status={}".format(
-            len(paths), stats.get('status', 'UNKNOWN')))
-
-        # Step 9: 构建结果图
-        result = self._paths_to_aag_v3(paths, merged, target_chromosomes)
-
-        # Step 10: Small-scale rearrangement resolution (indel/duplication)
-        # NOTE: v3 uses _resolve_indels_v3 to preserve CP-SAT path structure
-        # Do NOT call _resolve_indels (it calls _linearize_graph which destroys paths)
-        paths, indel_events, n_indel_paths_removed = self._resolve_indels_v3(
-            paths, merged, mapped_children, mapped_outgroups)
-
-        # Rebuild result from updated paths (paths may have changed after indel removal)
-        result = self._paths_to_aag_v3(paths, merged, target_chromosomes)
-        result.events.extend(indel_events)
-        result = self._resolve_duplications(result, mapped_children)
-
-        # Step 11: 事件检测
-        result._add_telomeres()
-        self._detect_bottomup_events(result, mapped_children, child_source_ids, mapped_outgroups)
-
-        # Step 12: 染色体物种来源
-        for ci, chrom in enumerate(result.chromosomes):
-            genes = [n for n in chrom if n not in result.telomeres]
-            species = set()
-            for g in genes:
-                srcs = result.node_sources.get(g, set())
-                for src in srcs:
-                    for j, sid in enumerate(child_source_ids):
-                        if sid == src and j < len(child_graphs):
-                            species |= child_graphs[j].species_set
-            result.chrom_species[ci] = species
-
-        # Step 13: 校验
-        validator = TAKRValidator()
-        child_chrom_counts = [mc.n_chromosomes for mc in mapped_children]
-        is_ok, exp, act = validator.validate_chrom_event_balance(
-            len(list(result.chromosomes)), result.events, child_chrom_counts,
-            child_source_ids=child_source_ids,
-            ploidy_context=ploidy_ctx, is_pre_wgd=is_pre_wgd,
-            n_indel_paths_removed=n_indel_paths_removed)
-        if not is_ok:
-            logger.warning("  Chrom-event imbalance: expected={}, actual={}".format(
-                exp, act))
-
-        # 事件统计
-        n_chrom = len(list(result.chromosomes))
-        all_event_types = ['indel', 'tandem_dup', 'proximal_dup', 'dispersed_dup',
-                          'inversion', 'internal_inversion', 'telomere_inversion',
-                          'fission', 'ncf', 'eej', 'unidir_trans',
-                          'reciprocal_translocation', 'unbalanced_reciprocal_translocation']
-        evt_counts = Counter(e.event_type for e in result.events)
-        evt_summary = ', '.join('{}:{}'.format(k, evt_counts.get(k, 0))
-                                 for k in all_event_types)
-        logger.info("  Node {}{} final [v3]: {} chromosomes, events: {}".format(
-            prefix, target_node_id, n_chrom, evt_summary))
-
-        # 导出GFA
-        anc_gfa = "{}.{}.anc.gfa".format(self.outpre, target_node_id)
-        with open(anc_gfa, 'w') as fout:
-            result.to_gfa(fout)
-
-        # Step 14: 输出父节点与子节点的dotplot
-        self._draw_step_dotplots(result, mapped_children, child_graphs,
-                                 child_source_ids, target_node_id)
-
-        return result
 
     def _draw_step_dotplots(self, parent_aag, mapped_children, child_graphs,
                             child_source_ids, target_node_id):
@@ -2883,30 +2594,6 @@ class AKR:
                         child_source=src
                     ))
 
-    def _detect_events_topdown(self):
-        """
-        自顶向下事件检测：将每个节点（内部节点和叶子）与其父节点比较，
-        通过断点图（breakpoint graph）思想检测 EEJ、Fission、NCF、
-        Translocation 和 Inversion 事件。
-        """
-        for node in self.tree.traverse(strategy="preorder"):
-            if node.is_root():
-                continue
-            node_id = node.name
-            parent_id = node.up.name
-            # 对内部节点使用 anc_graphs，对叶子使用 leaf_graphs
-            if node.is_leaf():
-                if node_id not in self.leaf_graphs or parent_id not in self.anc_graphs:
-                    continue
-                anc = self.leaf_graphs[node_id]
-                par = self.anc_graphs[parent_id]
-            else:
-                if node_id not in self.anc_graphs or parent_id not in self.anc_graphs:
-                    continue
-                anc = self.anc_graphs[node_id]
-                par = self.anc_graphs[parent_id]
-            self._compare_ancestor_to_parent(anc, par, node_id)
-
     def _compare_ancestor_to_parent(self, anc, par, node_id):
         """
         比较祖先图 anc 与其父节点图 par，检测重排事件并写入 anc.events。
@@ -3268,21 +2955,6 @@ class AKR:
             result.append((self.leaf_graphs[leaf], weight))
         return result
 
-    def _optimize_round(self):
-        """迭代优化：清理孤立节点"""
-        for node_id, aag in self.anc_graphs.items():
-            if aag.node_id in self.leaf_graphs:
-                continue
-            to_remove = {n for n in aag.gene_nodes if aag.graph.degree(n) == 0}
-            if to_remove:
-                aag.remove_nodes(to_remove)
-                if self.use_ilp_sa:
-                    new_aag = self._linearize_graph_ilp_sa(aag)
-                else:
-                    new_aag = self._linearize_graph(aag)
-                new_aag._add_telomeres()
-                self.anc_graphs[node_id] = new_aag
-
     def _export_results(self):
         """导出祖先核型和重排事件"""
         for node_id, aag in self.anc_graphs.items():
@@ -3381,103 +3053,6 @@ class AKR:
         fgff.close()
         flen.close()
 
-
-    def _collapse_polyploid_leaf(self, leaf_id):
-        """
-        将多倍体叶子基因组推断为pre-WGD基因组。
-        直接将post-WGD图映射到父节点HOG，由support计数自然区分
-        亚基因组内保留邻接(support=ploidy)与亚基因组间假邻接(support=1)，
-        无需亚基因组拆分。
-        """
-        leaf_graph = self.leaf_graphs.get(leaf_id)
-        if leaf_graph is None:
-            return
-        ploidy = self.ploidy_map.get(leaf_id, 2)
-
-        leaf_node = self.tree.search_nodes(name=leaf_id)
-        if not leaf_node:
-            return
-        parent = leaf_node[0].up
-        if not parent:
-            return
-        parent_id = parent.name
-
-        # 目标染色体数 = post-WGD染色体数 / 倍性
-        target = max(len(list(leaf_graph.chromosomes)) // ploidy, 1)
-
-        # 将整个post-WGD图作为单个子图，映射到父节点HOG
-        # 支持计数自然区分：亚基因组内保守邻接 support=ploidy，
-        # 亚基因组间假邻接 support=1
-        pre_id = "pre-WGD {}".format(leaf_id)
-        if self.use_v3:
-            pre_graph = self._reconstruct_v3(
-                target_node_id=pre_id,
-                child_graphs=[leaf_graph],
-                child_source_ids=[leaf_id],
-                hog_level=parent_id,
-                outgroup_graphs=None,
-                target_chromosomes=target,
-                is_pre_wgd=True
-            )
-        else:
-            pre_graph = self._reconstruct(
-                target_node_id=pre_id,
-                child_graphs=[leaf_graph],
-                child_source_ids=[leaf_id],
-                hog_level=parent_id,
-                outgroup_graphs=None,   # 多倍体叶子无外类群
-                target_chromosomes=target,
-                is_pre_wgd=True
-            )
-
-        pre_graph.node_id = "{}_pre".format(leaf_id)
-        self.pre_wgd_graphs[leaf_id] = pre_graph
-        n_pre = len(list(pre_graph.chromosomes))
-        logger.info("  Leaf {} pre-WGD: {} post chroms -> {} pre chroms (target={})".format(
-            leaf_id, len(list(leaf_graph.chromosomes)), n_pre, target))
-
-    def _collapse_wgd(self, node):
-        """
-        将WGD节点的post-WGD基因组推断为pre-WGD基因组。
-        直接将post-WGD图映射到父节点HOG，由support计数自然区分
-        亚基因组内保留邻接与亚基因组间假邻接，
-        无需亚基因组拆分。
-        """
-        node_id = node.name
-        post_graph = self.anc_graphs.get(node_id)
-        if post_graph is None:
-            return
-        parent = node.up
-        if not parent:
-            return
-
-        parent_id = parent.name
-        ploidy = self.ploidy_map.get(node_id, 2)
-
-        # 目标染色体数 = post-WGD染色体数 / 倍性
-        target = max(len(list(post_graph.chromosomes)) // ploidy, 1)
-
-        # 将整个post-WGD图作为单个子图，映射到父节点HOG
-        pre_id = "pre-WGD {}".format(node_id)
-        pre_graph = self._reconstruct(
-            target_node_id=pre_id,
-            child_graphs=[post_graph],
-            child_source_ids=[node_id],
-            hog_level=parent_id,
-            outgroup_graphs=None,   # pre-WGD无外类群
-            target_chromosomes=target,
-            is_pre_wgd=True
-        )
-
-        pre_graph.node_id = "{}_pre".format(node_id)
-        self.pre_wgd_graphs[node_id] = pre_graph
-        n_pre = len(list(pre_graph.chromosomes))
-        logger.info("WGD pre-WGD for {}: {} post chroms -> {} pre chroms (target={})".format(
-            node_id, len(list(post_graph.chromosomes)), n_pre, target))
-
-    # =====================
-    # ILP + SA 混合线性化
-    # =====================
 
     def _linearize_graph_ilp_sa(self, aag, target_chromosomes=None):
         """

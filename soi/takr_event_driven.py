@@ -21,7 +21,7 @@ import itertools
 import logging
 import os
 import time
-from collections import defaultdict
+from collections import defaultdict, Counter
 from typing import Dict, List, Optional, Set, Tuple
 
 import networkx as nx
@@ -477,6 +477,15 @@ class ReconstructorV2:
                 hog_components = list(nx.connected_components(tmp._graph))
                 logger.info("  [gfa:child %s] HOG graph: %d nodes, %d edges, %d cc",
                             cid, tmp.node_count(), tmp.edge_count(), len(hog_components))
+
+                # Debug: 度数分布（分支节点 = deg>2）
+                degs = dict(tmp._graph.degree())
+                max_deg = max(degs.values()) if degs else 0
+                deg_counts = Counter(degs.values())
+                logger.info("  [gfa:child %s] degree: max=%d, dist=%s",
+                            cid, max_deg,
+                            ', '.join(f'd{d}={c}' for d, c in sorted(deg_counts.items())
+                                      if c > 0)[:15])
 
                 # Debug: 每染色体块数
                 tmp._ensure_blocks()

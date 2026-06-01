@@ -167,7 +167,7 @@ def reconstruct_event_driven(akr, min_hogs=3):
             # Use pre-WGD graph if available (post-WGD already collapsed)
             if cid in akr.pre_wgd_graphs:
                 child_graphs.append(akr.pre_wgd_graphs[cid])
-                child_source_ids.append(cid)
+                child_source_ids.append("{}_pre".format(cid))
             elif child.is_leaf():
                 if cid in akr.leaf_graphs:
                     child_graphs.append(akr.leaf_graphs[cid])
@@ -365,7 +365,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             cid = child.name
             if cid in akr.pre_wgd_graphs:
                 child_graphs.append(akr.pre_wgd_graphs[cid])
-                child_source_ids.append(cid)
+                child_source_ids.append("{}_pre".format(cid))
             elif child.is_leaf():
                 if cid in akr.leaf_graphs:
                     child_graphs.append(akr.leaf_graphs[cid])

@@ -1645,10 +1645,9 @@ class ColoredGraph:
         return block_G
 
     def _compress_to_block_level_linear(self):
-        """块压缩（线性路径版）：沿有向图行走 linear path 建块间边。
+        """块压缩（染色体路径版）：沿线性染色体顺序建块间边。
 
-        与 _compress_to_block_level 的区别：不从所有 HOG 边建块边，
-        而是从端粒出发沿唯一后继行走，只建沿路径方向的块间边。
+        从 _child_chromosomes 获取染色体 HOG 顺序，映射到 block 建边。
         生成的 block graph 保证非端粒 block 有 in>0 且 out>0。
         """
         if not hasattr(self, '_blocks') or not self._blocks:
@@ -1659,55 +1658,27 @@ class ColoredGraph:
             block_G.add_node(bid)
 
         hog_set = self.all_hogs()
-        visited = set()
 
-        # 从端粒出发沿有向边行走
-        tel_set = self.child_telomere_set()
-
-        for start in sorted(tel_set, key=str):
-            if start not in hog_set or start in visited:
-                continue
-            if not self._graph.has_node(start):
-                continue
-
-            # 沿有向边走线性路径：多后继时选 in_degree==1 的（主线）
-            path = [start]
-            visited.add(start)
-            curr = start
-            while True:
-                succ = [s for s in self._graph.successors(curr)
-                        if s in hog_set and s not in visited]
-                if len(succ) == 1:
-                    nxt = succ[0]
-                elif len(succ) > 1:
-                    # 分支：选 in_degree==1 的走主线，跳过旁系边
-                    main = [s for s in succ if self._graph.in_degree(s) == 1]
-                    if len(main) == 1:
-                        nxt = main[0]
-                    else:
-                        break
-                else:
-                    break
-                path.append(nxt)
-                visited.add(nxt)
-                curr = nxt
-
-            # HOG path → block edges
-            prev_bid = None
-            for h in path:
-                bid = self._hog_to_block.get(h)
-                if bid is None:
-                    prev_bid = None
-                    continue
-                if prev_bid is not None and prev_bid != bid:
-                    if not block_G.has_edge(prev_bid, bid):
-                        colors = set()
-                        for h1 in self._blocks.get(prev_bid, []):
-                            for h2 in self._blocks.get(bid, []):
-                                if self._graph.has_edge(h1, h2):
-                                    colors.update(self._graph[h1][h2].get('colors', set()))
-                        block_G.add_edge(prev_bid, bid, colors=colors)
-                prev_bid = bid
+        for cid in self.children():
+            for chrom_path in self._child_chromosomes.get(cid, []):
+                # 沿染色体路径映射 HOG → block，建块间边
+                prev_bid = None
+                for h in chrom_path:
+                    if h not in hog_set:
+                        continue
+                    bid = self._hog_to_block.get(h)
+                    if bid is None:
+                        prev_bid = None
+                        continue
+                    if prev_bid is not None and prev_bid != bid:
+                        if not block_G.has_edge(prev_bid, bid):
+                            colors = set()
+                            for h1 in self._blocks.get(prev_bid, []):
+                                for h2 in self._blocks.get(bid, []):
+                                    if self._graph.has_edge(h1, h2):
+                                        colors.update(self._graph[h1][h2].get('colors', set()))
+                            block_G.add_edge(prev_bid, bid, colors=colors)
+                    prev_bid = bid
 
         self._block_graph = block_G
         logger.debug("  [blocks:linear] block graph: %d nodes, %d edges",

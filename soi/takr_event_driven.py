@@ -72,6 +72,45 @@ def _validate_dedup(mc, cid, expected_chrom_count):
     return (len(errors) == 0, errors)
 
 
+def _log_child_events(events, phase_label, child_id=None):
+    """统一的事件 log 格式。按孩子分组输出。
+
+    Args:
+        events: TAKREvent 列表
+        phase_label: 阶段标签（如 "Phase 1", "Phase 4a"）
+        child_id: 如果指定，只输出该孩子的事件；否则按孩子分组
+    """
+    from collections import defaultdict
+    # 按孩子分组
+    child_events = defaultdict(list)
+    for e in events:
+        # 从 branch 提取 child_id: "HOG-node-Sp_1" → "Sp_1"
+        parts = e.branch.split('-')
+        cid = parts[-1] if parts else 'unknown'
+        if child_id and cid != child_id:
+            continue
+        child_events[cid].append(e)
+
+    for cid in sorted(child_events.keys()):
+        evts = child_events[cid]
+        # 按类型分组
+        type_counts = defaultdict(int)
+        type_lens = defaultdict(list)
+        for e in evts:
+            type_counts[e.event_type] += 1
+            type_lens[e.event_type].append(len(e.genes_involved))
+        # 格式化
+        parts = []
+        for etype in sorted(type_counts.keys()):
+            count = type_counts[etype]
+            lens = type_lens[etype]
+            if len(lens) == 1:
+                parts.append(f"{etype}={count} (len {lens[0]})")
+            else:
+                parts.append(f"{etype}={count} (len {min(lens)}-{max(lens)})")
+        logger.info("  [%s] %s events: %s", phase_label, cid, ", ".join(parts))
+
+
 # =========================================================================
 #  Visualization helpers
 # =========================================================================
@@ -193,31 +232,28 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
     from .takr_colored_graph import ColoredGraph
 
     def _wgd_collapse(post_graph, node_id, ploidy, parent_hog_level, min_hogs=3):
-        """WGD collapse: pair post-WGD chromosomes by HOG similarity → pre-WGD.
-
-        post_graph: ColoredGraph (node's own genome, already at the correct HOG level).
-        parent_hog_level: 父节点的 HOG 层级（结果映射到此层级）。
-        """
+        """WGD collapse: pair post-WGD chromosomes by HOG similarity → pre-WGD."""
         logger.info("Reconstructing node %s_preWGD [v2 ColoredGraph]", node_id)
         t_collapse = time.time()
 
-        # 桥接检测：跨染色体边 = post-WGD 融合/嵌入
+        # 桥接检测
         n_before = len(post_graph.events)
         post_graph.resolve_bridge_events()
         n_bridges = len(post_graph.events) - n_before
         logger.info("  [colored] bridges: %d events", n_bridges)
 
-        paths = post_graph.path_cover()
-        n_post = len(paths)
-        logger.info("  Children: %s=%d", node_id, n_post)
+        # 用原始染色体路径（不 path_cover）
+        child_chroms = post_graph._child_chromosomes.get(node_id, [])
+        n_orig = len(child_chroms)
+        logger.info("  Children: %s=%d", node_id, n_orig)
 
-        # If ploidy==1 or fewer chroms than ploidy, no collapse needed
-        if ploidy <= 1 or n_post < ploidy:
+        if ploidy <= 1 or n_orig < ploidy:
+            paths = post_graph.path_cover()
+            n_post = len(paths)
             anc = post_graph.to_ancestral_graph()
             anc.node_id = "{}_pre".format(node_id)
             logger.info("  Done: %d -> %d chroms, 0 events (%.1fs)",
-                         n_post, n_post, time.time() - t_collapse)
-            # Map to parent HOG level
+                         n_orig, n_post, time.time() - t_collapse)
             if parent_hog_level != node_id:
                 saved_events = list(anc.events)
                 anc = akr._map_to_parent_hogs(parent_hog_level, anc,
@@ -226,10 +262,10 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             anc.node_id = "{}_pre".format(node_id)
             return anc, []
 
-        # Build chromosome-level similarity matrix
-        chrom_hogs = [set(p) for p in paths]
-        n = len(chrom_hogs)
+        # 按原始染色体配对
         import itertools
+        chrom_hogs = [set(p) for p in child_chroms]
+        n = len(chrom_hogs)
         pairs = []
         for i, j in itertools.combinations(range(n), 2):
             inter = len(chrom_hogs[i] & chrom_hogs[j])
@@ -238,7 +274,6 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             if inter > 0:
                 pairs.append((jaccard, inter, i, j))
 
-        # Greedy matching: pair highest similarity chromosomes
         pairs.sort(reverse=True)
         paired = set()
         target = n // ploidy
@@ -248,16 +283,15 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                 continue
             if len(pre_chroms) >= target:
                 break
-            pre_chroms.append((paths[i], paths[j]))
+            pre_chroms.append((child_chroms[i], child_chroms[j]))
             paired.add(i)
             paired.add(j)
 
-        # Unpaired chromosomes stay as singles
         for i in range(n):
             if i not in paired:
-                pre_chroms.append((paths[i],))
+                pre_chroms.append((child_chroms[i],))
 
-        # Build pre-WGD graph from merged chromosomes
+        # 构建 pre-WGD 图
         from .takr_colored_graph import _merge_chromosome_paths
         pre_G = ColoredGraph(hog_level="{}_preWGD".format(node_id))
         for chrom_idx, cp in enumerate(pre_chroms):
@@ -274,7 +308,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         pre_anc = pre_G.to_ancestral_graph()
         pre_anc.node_id = "{}_pre".format(node_id)
         n_pre = len(list(pre_anc.chromosomes))
-        # Map to parent HOG level
+
         if parent_hog_level != node_id:
             saved_events = list(all_events)
             pre_anc = akr._map_to_parent_hogs(parent_hog_level, pre_anc,
@@ -282,7 +316,7 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             pre_anc.events = saved_events
         pre_anc.node_id = "{}_pre".format(node_id)
         logger.info("  Done: %d -> %d chroms, %d events (%.1fs)",
-                     n_post, n_pre, len(all_events), time.time() - t_collapse)
+                     n_orig, n_pre, len(all_events), time.time() - t_collapse)
         return pre_anc, all_events
 
     logger.info("=== Event-driven reconstruction v2 (ColoredGraph) ===")
@@ -379,22 +413,6 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
             logger.info("  [Phase 1] %s deduped: %d chroms, %d nodes, %d edges, %d cc",
                         cid, n_chrom, n_nodes, n_edges, n_cc)
 
-            # 该孩子的事件汇总
-            child_events = [e for e in G.events
-                            if e.event_type in ('tandem_dup', 'dispersed_dup')
-                            and cid in e.branch]
-            if child_events:
-                tandem = [e for e in child_events if e.event_type == 'tandem_dup']
-                disp = [e for e in child_events if e.event_type == 'dispersed_dup']
-                parts = []
-                if tandem:
-                    lens = [len(e.genes_involved) for e in tandem]
-                    parts.append(f"tandem_dup={len(tandem)} (len {min(lens)}-{max(lens)})")
-                if disp:
-                    lens = [len(e.genes_involved) for e in disp]
-                    parts.append(f"dispersed_dup={len(disp)} (len {min(lens)}-{max(lens)})")
-                logger.info("  [Phase 1] %s events: %s", cid, ", ".join(parts))
-
             # ── dedup 后验证（重建后） ──
             ok, errors = _validate_dedup(mc, cid, pre_dedup_chroms[cid])
             if ok:
@@ -404,6 +422,12 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
                     logger.error("  [Phase 1] %s: %s", cid, err)
 
             G.add_child(cid, mc)
+
+        # dedup 事件汇总（统一格式）
+        dedup_events = [e for e in G.events
+                        if e.event_type in ('tandem_dup', 'dispersed_dup')]
+        if dedup_events:
+            _log_child_events(dedup_events, "Phase 1")
 
         # 合图后统计
         n_merged_nodes, n_merged_edges, n_merged_cc = _graph_stats(G._graph)

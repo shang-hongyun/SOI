@@ -591,12 +591,12 @@ class ColoredGraph:
                 continue
             if h not in hog_set:
                 continue
-            deg = self._graph.degree(h)
+            deg = self._degree(h)
             if deg != 2:
                 continue
 
             # 检查两条边是否都是 unique
-            neighbors = list(self._graph.neighbors(h))
+            neighbors = list(self._neighbors(h))
             if len(neighbors) != 2:
                 continue
             n1, n2 = neighbors
@@ -958,7 +958,7 @@ class ColoredGraph:
         # 备用：所有孩子的端粒并集
         all_tels = self.child_telomere_set()
         # 度=1 的节点（图结构上的端点）
-        degree_ends = {n for n, deg in self._graph.degree()
+        degree_ends = {n for n, deg in dict(self._graph.in_degree())
                        if deg == 1 and n in hog_set}
 
         # 选择端粒锚点集：共识端粒 > 所有端粒 > 度=1
@@ -1008,7 +1008,7 @@ class ColoredGraph:
             for hog in list(unvisited):
                 if not self._graph.has_node(hog):
                     continue
-                neighbors = [n for n in self._graph.neighbors(hog)
+                neighbors = [n for n in self._neighbors(hog)
                              if n in visited and n in all_nodes]
                 if not neighbors:
                     continue
@@ -1064,7 +1064,7 @@ class ColoredGraph:
         hog_set = self.all_hogs()  # cache
 
         while True:
-            neighbors = [n for n in self._graph.neighbors(curr)
+            neighbors = [n for n in self._neighbors(curr)
                          if n not in visited_local and n in hog_set]
             if not neighbors:
                 break
@@ -1074,7 +1074,7 @@ class ColoredGraph:
             else:
                 # 多个邻居时，按优先级排序
                 def neighbor_priority(n):
-                    if self._graph.degree(n) == 1:
+                    if self._degree(n) == 1:
                         return 0
                     if n in anchor_tels:
                         return 1
@@ -1100,7 +1100,7 @@ class ColoredGraph:
         hog_set = self.all_hogs()  # cache
 
         while True:
-            neighbors = [n for n in self._graph.neighbors(curr)
+            neighbors = [n for n in self._neighbors(curr)
                          if n not in visited_local and n in hog_set]
             if not neighbors:
                 break
@@ -1374,43 +1374,50 @@ class ColoredGraph:
 
     @staticmethod
     def _extract_unitigs(G, min_size=2):
-        """Undirected unitig extraction: maximal linear (deg≤2) paths.
+        """有向图 unitig：合并 indegree=1 且 outdegree=1 的连续节点。
 
-        从每个未访节点出发，依次沿各邻居方向走，prev 追踪避免回溯。
-        分支节点(deg>2)不标记 visited，可被多条路径共享为端点。
+        分支点(indegree≠1 或 outdegree≠1)作为端点，不被 visited 标记。
         """
-        def _walk(start, prev_node):
-            """从 start 出发（来自 prev_node），走到分支或端点。返回走过的节点列表。"""
-            seg = []
-            curr, prev = start, prev_node
-            while True:
-                seg.append(curr)
-                visited.add(curr)
-                nbrs = [n for n in set(G.predecessors(curr))|set(G.successors(curr)) if n != prev and n not in visited]
-                if len(nbrs) != 1:
-                    break
-                prev, curr = curr, nbrs[0]
-            return seg
+        def _linear(node):
+            return G.in_degree(node) == 1 and G.out_degree(node) == 1
 
         unitigs = []
         visited = set()
         for node in G.nodes():
             if node in visited:
                 continue
-            visited.add(node)
-            nbrs = [n for n in set(G.predecessors(node))|set(G.successors(node)) if n not in visited]
 
-            if not nbrs:
-                if min_size <= 1:
-                    unitigs.append([node])
-                continue
+            # 从当前节点出发，向前走后继，向回走前驱
+            fwd = []
+            curr = node
+            while True:
+                succ = list(G.successors(curr))
+                # 只沿 linear 节点走；非 linear 节点作为端点停下
+                if not _linear(curr) or len(succ) != 1:
+                    # 端点：加入但不标记 visited
+                    fwd.append(curr)
+                    break
+                fwd.append(curr)
+                visited.add(curr)
+                nxt = succ[0]
+                if nxt in visited:
+                    break
+                curr = nxt
 
-            # 第一个邻居 → 左半段（插入前面）
-            left = _walk(nbrs[0], node)
-            # 第二个邻居 → 右半段（追加后面）
-            right = _walk(nbrs[1], node) if len(nbrs) > 1 else []
+            bwd = []
+            curr = node
+            while True:
+                pred = list(G.predecessors(curr))
+                if not _linear(curr) or len(pred) != 1:
+                    break
+                nxt = pred[0]
+                if nxt in visited:
+                    break
+                curr = nxt
+                bwd.append(curr)
+                visited.add(curr)
 
-            path = list(reversed(left)) + [node] + right
+            path = list(reversed(bwd)) + fwd
             if len(path) >= min_size:
                 unitigs.append(path)
         return unitigs
@@ -1426,7 +1433,7 @@ class ColoredGraph:
         cons_tels = self.child_telomere_set()
         # 端粒 HOG 如果在图里度>1（端粒+内部都有），不单独抽
         cons_tels = {h for h in cons_tels
-                     if self._graph.has_node(h) and self._graph.degree(h) <= 1}
+                     if self._graph.has_node(h) and self._degree(h) <= 1}
         hog_set = self.all_hogs()
         blocks = {}
         hog_to_block = {}
@@ -1445,7 +1452,7 @@ class ColoredGraph:
                 if (len(data['colors']) >= 2
                         and h1 not in cons_tels and h2 not in cons_tels):
                     shared_G.add_edge(h1, h2)
-            for comp in nx.connected_components(shared_G):
+            for comp in nx.weakly_connected_components(shared_G):
                 sub = nx.DiGraph(shared_G.subgraph(comp))
                 degs = {n: sub.in_degree(n)+sub.out_degree(n) for n in sub.nodes()}
                 if any(d > 2 for d in degs.values()):
@@ -1461,7 +1468,7 @@ class ColoredGraph:
                 visited = {start}
                 curr, prev = start, None
                 while True:
-                    neighbors = [n for n in sub.neighbors(curr)
+                    neighbors = [n for n in (list(sub.predecessors(curr))+list(sub.successors(curr)))
                                  if n != prev and n not in visited]
                     if not neighbors:
                         break
@@ -2050,7 +2057,7 @@ class ColoredGraph:
         if shared_bg.number_of_edges() == 0:
             return 0
 
-        components = list(nx.connected_components(shared_bg))
+        components = list(nx.weakly_connected_components(shared_bg))
         block_to_comp = {}
         for ci, comp in enumerate(components):
             for b in comp:
@@ -2234,7 +2241,7 @@ class ColoredGraph:
             return
 
         # Find connected components in shared graph
-        components = list(nx.connected_components(shared_G))
+        components = list(nx.weakly_connected_components(shared_G))
         hog_to_comp = {}
         for ci, comp in enumerate(components):
             for h in comp:
@@ -2328,7 +2335,7 @@ class ColoredGraph:
         """Phase 1 postcondition: 每个节点 degree ≤ 2，无并行边。"""
         violations = []
         for n in self._graph.nodes():
-            deg = self._graph.degree(n)
+            deg = self._degree(n)
             if deg > 2:
                 violations.append((n, deg))
         if violations:
@@ -2369,7 +2376,7 @@ class ColoredGraph:
                 shared_G.add_edge(h1, h2)
         if shared_G.number_of_edges() == 0:
             return
-        components = list(nx.connected_components(shared_G))
+        components = list(nx.weakly_connected_components(shared_G))
         hog_to_comp = {}
         for ci, comp in enumerate(components):
             for h in comp:
@@ -2795,7 +2802,7 @@ class ColoredGraph:
             if len(data['colors']) >= 2:
                 shared_G.add_edge(h1, h2)
 
-        self._original_shared_components = list(nx.connected_components(shared_G))
+        self._original_shared_components = list(nx.weakly_connected_components(shared_G))
         hog_to_orig_comp = {}
         for ci, comp in enumerate(self._original_shared_components):
             for h in comp:

@@ -1422,6 +1422,9 @@ class ColoredGraph:
         - 断开点：唯一边、端粒 HOG
         """
         cons_tels = self.child_telomere_set()
+        # 端粒 HOG 如果在图里度>1（端粒+内部都有），不单独抽
+        cons_tels = {h for h in cons_tels
+                     if self._graph.has_node(h) and self._graph.degree(h) <= 1}
         hog_set = self.all_hogs()
         blocks = {}
         hog_to_block = {}

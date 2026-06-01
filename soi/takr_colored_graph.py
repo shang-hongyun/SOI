@@ -108,6 +108,29 @@ class ColoredGraph:
 
     # ==================== 构建 ====================
 
+    def _block_edge_data(self, b1, b2):
+        """获取块间边数据（有向图：自动找 b1→b2 或 b2→b1）。"""
+        if self._block_graph.has_edge(b1, b2):
+            return self._block_graph[b1][b2]
+        if self._block_graph.has_edge(b2, b1):
+            return self._block_graph[b2][b1]
+        return {}
+
+    def _block_has_edge(self, b1, b2) -> bool:
+        """块间边是否存在（任意方向）。"""
+        return self._block_graph.has_edge(b1, b2) or self._block_graph.has_edge(b2, b1)
+
+    def _block_add_edge(self, b1, b2, **attrs):
+        """添加块间有向边 b1→b2（保留方向）。"""
+        self._block_graph.add_edge(b1, b2, **attrs)
+
+    def _block_remove_edge(self, b1, b2):
+        """移除块间边（任意方向）。"""
+        if self._block_graph.has_edge(b1, b2):
+            self._block_graph.remove_edge(b1, b2)
+        elif self._block_graph.has_edge(b2, b1):
+            self._block_graph.remove_edge(b2, b1)
+
     def add_edge(self, h1, h2, child_id: str, chrom_idx: int, direction: int = 1):
         """添加有向边 h1→h2（direction=+1）或 h2→h1（direction=-1）。
 
@@ -1543,7 +1566,7 @@ class ColoredGraph:
         if not hasattr(self, '_blocks') or not self._blocks:
             self._build_synteny_blocks()
 
-        block_G = nx.Graph()
+        block_G = nx.DiGraph()  # 有向：保留 HOG 边的方向
         for bid in self._blocks:
             block_G.add_node(bid)
 
@@ -1649,7 +1672,7 @@ class ColoredGraph:
         if not hasattr(self, '_block_graph'):
             return []
         try:
-            return nx.cycle_basis(self._block_graph)
+            return nx.cycle_basis(self._block_graph.to_undirected())
         except Exception:
             return []
 
@@ -1869,7 +1892,7 @@ class ColoredGraph:
                 # 外类群投票：合并组只有一个极性
                 child_derived = defaultdict(int)
                 for (b1, b2) in conflict_edges:
-                    colors = self._block_graph[b1][b2].get('colors', set())
+                    colors = self._block_edge_data(b1, b2).get('colors', set())
                     if outgroup_adjacency is not None:
                         hogs1 = self._blocks.get(b1, [])
                         hogs2 = self._blocks.get(b2, [])
@@ -1900,7 +1923,7 @@ class ColoredGraph:
                     # 回退：边上的颜色出现次数较少的
                     cc = Counter()
                     for (b1, b2) in conflict_edges:
-                        for c in self._block_graph[b1][b2].get('colors', set()):
+                        for c in self._block_edge_data(b1, b2).get('colors', set()):
                             cc[c] += 1
                     derived_cid = min(cc, key=cc.get)[0] if cc else None
 
@@ -1909,15 +1932,15 @@ class ColoredGraph:
 
                 # 移除衍生方在冲突边上的颜色
                 for (b1, b2) in conflict_edges:
-                    colors = self._block_graph[b1][b2].get('colors', set())
+                    colors = self._block_edge_data(b1, b2).get('colors', set())
                     remaining = set()
                     for cid, chrom in colors:
                         if cid != derived_cid:
                             remaining.add((cid, chrom))
                     if remaining:
-                        self._block_graph[b1][b2]['colors'] = remaining
+                        self._block_edge_data(b1, b2)['colors'] = remaining
                     else:
-                        self._block_graph.remove_edge(b1, b2)
+                        self._block_remove_edge(b1, b2)
 
                 # 记录合并后的 inversion 事件
                 involved_hogs = []
@@ -1955,13 +1978,13 @@ class ColoredGraph:
                 conflict_edges = list(set(conflict_edges))
                 # 检查冲突边是否还在块级图中
                 valid_edges = [(b1, b2) for b1, b2 in conflict_edges
-                               if self._block_graph.has_edge(b1, b2)]
+                               if self._block_has_edge(b1, b2)]
                 if not valid_edges:
                     continue
                 # 外类群投票
                 child_derived2 = defaultdict(int)
                 for (b1, b2) in valid_edges:
-                    colors = self._block_graph[b1][b2].get('colors', set())
+                    colors = self._block_edge_data(b1, b2).get('colors', set())
                     if outgroup_adjacency is not None:
                         hogs1 = self._blocks.get(b1, [])
                         hogs2 = self._blocks.get(b2, [])
@@ -1985,7 +2008,7 @@ class ColoredGraph:
                 else:
                     cc2 = Counter()
                     for (b1, b2) in valid_edges:
-                        for c in self._block_graph[b1][b2].get('colors', set()):
+                        for c in self._block_edge_data(b1, b2).get('colors', set()):
                             cc2[c] += 1
                     derived_cid2 = min(cc2, key=cc2.get)[0] if cc2 else None
 
@@ -1994,15 +2017,15 @@ class ColoredGraph:
 
                 # 移除衍生方的边
                 for (b1, b2) in valid_edges:
-                    colors = self._block_graph[b1][b2].get('colors', set())
+                    colors = self._block_edge_data(b1, b2).get('colors', set())
                     remaining = set()
                     for cid, chrom in colors:
                         if cid != derived_cid2:
                             remaining.add((cid, chrom))
                     if remaining:
-                        self._block_graph[b1][b2]['colors'] = remaining
+                        self._block_edge_data(b1, b2)['colors'] = remaining
                     else:
-                        self._block_graph.remove_edge(b1, b2)
+                        self._block_remove_edge(b1, b2)
 
                 # 记录事件
                 involved_hogs2 = []
@@ -2853,7 +2876,7 @@ class ColoredGraph:
                 # 检查缺失块是否形成连续路径
                 bg = self._block_graph
                 missing_sub = bg.subgraph(missing) if missing else None
-                if missing_sub and nx.is_connected(missing_sub):
+                if missing_sub and nx.is_weakly_connected(missing_sub):
                     involved_hogs = []
                     for bid in missing:
                         involved_hogs.extend(self._blocks.get(bid, []))

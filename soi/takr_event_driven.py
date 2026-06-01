@@ -584,36 +584,43 @@ class ReconstructorV2:
                     tmp.to_gfa(fout)
                 logger.info("  [gfa] child %s -> %s", cid, path)
 
-                # 诊断：验证每个非端粒 HOG 都有 predecessors 和 successors
-                broken_nodes = []
-                hog_set = tmp.all_hogs()
-                for h in tmp._graph.nodes():
-                    if h not in hog_set:
-                        continue
-                    is_tel = bool(tmp._graph.nodes[h].get('telomere'))
-                    if is_tel:
-                        continue
-                    in_d = tmp._graph.in_degree(h)
-                    out_d = tmp._graph.out_degree(h)
-                    if in_d == 0 or out_d == 0:
-                        broken_nodes.append((h, in_d, out_d, is_tel))
-                if broken_nodes:
-                    # 按染色体分组
-                    by_chr = defaultdict(list)
-                    for h, in_d, out_d, _ in broken_nodes:
-                        srcs = tmp._graph.nodes[h].get('sources', set())
-                        ch = next(iter(srcs))[1] if srcs else '?'
-                        by_chr[ch].append((h, in_d, out_d))
-                    logger.warning("  [gfa:child %s] %d non-telomere HOGs missing in/out edges:",
-                                   cid, len(broken_nodes))
-                    for ch in sorted(by_chr.keys()):
-                        items = by_chr[ch]
-                        examples = [(h, f"in={id_},out={od}") for h, id_, od in items[:5]]
-                        logger.warning("  [gfa:child %s]   chr %s: %d broken, examples: %s",
-                                       cid, ch, len(items), examples)
-                else:
-                    logger.info("  [gfa:child %s] all non-telomere HOGs pass in/out check ✓",
-                                cid)
+                # 诊断：验证每个非端粒 block 都有 successors 和 predecessors
+                bg = getattr(tmp, '_block_graph', None)
+                if bg and bg.number_of_nodes() > 0:
+                    broken_blocks = []
+                    for bid in bg.nodes():
+                        is_tel = bool(tmp._blocks.get(bid) and 
+                                     len(tmp._blocks[bid]) == 1 and
+                                     tmp._graph.nodes[tmp._blocks[bid][0]].get('telomere'))
+                        if is_tel:
+                            continue
+                        in_d = bg.in_degree(bid)
+                        out_d = bg.out_degree(bid)
+                        if in_d == 0 or out_d == 0:
+                            # 找该 block 的染色体
+                            hogs = tmp._blocks.get(bid, [])
+                            ch = '?'
+                            for h in hogs[:1]:
+                                srcs = tmp._graph.nodes[h].get('sources', set())
+                                if srcs:
+                                    ch = next(iter(srcs))[1]
+                                    break
+                            broken_blocks.append((bid, in_d, out_d, ch, len(hogs)))
+                    if broken_blocks:
+                        by_chr = defaultdict(list)
+                        for bid, in_d, out_d, ch, sz in broken_blocks:
+                            by_chr[ch].append((bid, in_d, out_d, sz))
+                        logger.warning("  [gfa:child %s] %d non-tel BLOCKS missing in/out edges:",
+                                       cid, len(broken_blocks))
+                        for ch in sorted(by_chr.keys()):
+                            items = by_chr[ch]
+                            examples = [(bid, f"in={id_},out={od},sz={sz}") 
+                                       for bid, id_, od, sz in items[:5]]
+                            logger.warning("  [gfa:child %s]   chr %s: %d broken blocks: %s",
+                                           cid, ch, len(items), examples)
+                    else:
+                        logger.info("  [gfa:child %s] all non-tel BLOCKS pass in/out check ✓",
+                                    cid)
             except Exception as e:
                 logger.exception("  [gfa] child %s failed: %s", cid, e)
 

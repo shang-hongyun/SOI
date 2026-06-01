@@ -1433,9 +1433,9 @@ class ColoredGraph(nx.DiGraph):
 
     @staticmethod
     def _extract_unitigs(G, min_size=2):
-        """有向图 unitig：合并 indegree=1 且 outdegree=1 的连续节点。
+        """有向图 unitig：只提取 indegree=1 且 outdegree=1 的连续线性节点。
 
-        分支点(indegree≠1 或 outdegree≠1)作为端点，不被 visited 标记。
+        非线性节点不进入任何 unitig，后续作为 singleton block。
         """
         def _linear(node):
             return G.in_degree(node) == 1 and G.out_degree(node) == 1
@@ -1453,8 +1453,7 @@ class ColoredGraph(nx.DiGraph):
                 succ = list(G.successors(curr))
                 # 只沿 linear 节点走；非 linear 节点作为端点停下
                 if not _linear(curr) or len(succ) != 1:
-                    # 端点：加入但不标记 visited
-                    fwd.append(curr)
+                    # 非线性点不进入 unitig
                     break
                 fwd.append(curr)
                 visited.add(curr)
@@ -1497,8 +1496,12 @@ class ColoredGraph(nx.DiGraph):
 
         def _add_block(path):
             bid = "blk_{}".format(len(blocks))
-            blocks[bid] = path
-            for h in path:
+            # 只加入尚未分配的 HOG
+            deduped = [h for h in path if h not in hog_to_block]
+            if not deduped:
+                return None
+            blocks[bid] = deduped
+            for h in deduped:
                 hog_to_block[h] = bid
             return bid
 

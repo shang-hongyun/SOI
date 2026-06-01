@@ -236,12 +236,6 @@ def reconstruct_event_driven_v2(akr, min_hogs=3):
         logger.info("Reconstructing node %s_preWGD [v2 ColoredGraph]", node_id)
         t_collapse = time.time()
 
-        # 桥接检测
-        n_before = len(post_graph.events)
-        post_graph.resolve_bridge_events()
-        n_bridges = len(post_graph.events) - n_before
-        logger.info("  [colored] bridges: %d events", n_bridges)
-
         # 用原始染色体路径（不 path_cover）
         child_chroms = post_graph._child_chromosomes.get(node_id, [])
         n_orig = len(child_chroms)

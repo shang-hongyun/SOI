@@ -1,4 +1,4 @@
-H	phase:p4f_bridge	level:N3	nodes:23780	edges:29915
+H	phase:p5_paths	level:N3	nodes:23780	edges:29915
 S	blk_0	*	CL:Z:#3962c5	LB:Z:Arabis_montbretiana|Am1+Arabis_sagittata|Aa1	LN:i:36
 S	blk_1	*	CL:Z:#3962c5	LB:Z:Arabis_montbretiana|Am1+Arabis_sagittata|Aa1	LN:i:25
 S	blk_10	*	CL:Z:#3962c5	LB:Z:Arabis_montbretiana|Am1+Arabis_sagittata|Aa1	LN:i:2

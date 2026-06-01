@@ -1670,7 +1670,7 @@ class ColoredGraph:
             if not self._graph.has_node(start):
                 continue
 
-            # 沿唯一后继向前走 linear path
+            # 沿有向边走线性路径：多后继时选 in_degree==1 的（主线）
             path = [start]
             visited.add(start)
             curr = start
@@ -1679,11 +1679,18 @@ class ColoredGraph:
                         if s in hog_set and s not in visited]
                 if len(succ) == 1:
                     nxt = succ[0]
-                    path.append(nxt)
-                    visited.add(nxt)
-                    curr = nxt
+                elif len(succ) > 1:
+                    # 分支：选 in_degree==1 的走主线，跳过旁系边
+                    main = [s for s in succ if self._graph.in_degree(s) == 1]
+                    if len(main) == 1:
+                        nxt = main[0]
+                    else:
+                        break
                 else:
                     break
+                path.append(nxt)
+                visited.add(nxt)
+                curr = nxt
 
             # HOG path → block edges
             prev_bid = None

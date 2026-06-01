@@ -1579,50 +1579,25 @@ class ColoredGraph(nx.DiGraph):
     def _compress_to_block_level(self):
         """将 HOG 级图压缩为块级图（ColoredGraph）。
 
-        沿 unitig 建块间边，保证非端粒 block in>0 且 out>0。
+        直接 HOG 边 → block 边映射。
         """
         if not hasattr(self, '_blocks') or not self._blocks:
             self._build_synteny_blocks()
 
         block_cg = type(self)(hog_level=self.hog_level)
-        block_G = block_cg
         for bid in self._blocks:
-            block_G.add_node(bid)
+            block_cg.add_node(bid)
 
-        # unitig 路径 + 跨 unitig 建边
-        unitigs = self._extract_unitigs(self, min_size=1)
-        for unitig in unitigs:
-            prev_bid = None
-            for h in unitig:
-                bid = self._hog_to_block.get(h)
-                if bid is None:
-                    prev_bid = None
-                    continue
-                if prev_bid is not None and prev_bid != bid:
-                    if not block_G.has_edge(prev_bid, bid):
-                        colors = set()
-                        for h1 in self._blocks.get(prev_bid, []):
-                            for h2 in self._blocks.get(bid, []):
-                                if self.has_edge(h1, h2):
-                                    colors.update(self[h1][h2].get('colors', set()))
-                        block_G.add_edge(prev_bid, bid, colors=colors)
-                prev_bid = bid
-        # unitig 间建边
-        hog_unitig = {}
-        for ui, unitig in enumerate(unitigs):
-            for h in unitig:
-                if h not in hog_unitig:
-                    hog_unitig[h] = ui
         for h1, h2, data in self.edges(data=True):
-            ui1 = hog_unitig.get(h1)
-            ui2 = hog_unitig.get(h2)
-            if ui1 is not None and ui2 is not None and ui1 != ui2:
-                b1 = self._hog_to_block.get(h1)
-                b2 = self._hog_to_block.get(h2)
-                if b1 and b2 and b1 != b2 and not block_G.has_edge(b1, b2):
-                    block_G.add_edge(b1, b2, colors=set(data.get('colors', set())))
+            b1 = self._hog_to_block.get(h1)
+            b2 = self._hog_to_block.get(h2)
+            if b1 and b2 and b1 != b2:
+                if not block_cg.has_edge(b1, b2):
+                    for child_id, chrom_idx in data.get('colors', set()):
+                        block_cg.add_synteny_edge(b1, b2, child_id, chrom_idx)
 
         self._block_graph = block_cg
+        self._validate_block_compression(block_cg)
 
         # 块间顺序
         child_block_order = defaultdict(list)
@@ -1638,8 +1613,31 @@ class ColoredGraph(nx.DiGraph):
         self._child_block_order = dict(child_block_order)
 
         logger.debug("  [blocks] block graph: %d nodes, %d edges",
-                     block_G.number_of_nodes(), block_G.number_of_edges())
+                     block_cg.number_of_nodes(), block_cg.number_of_edges())
         return block_cg
+
+    def _validate_block_compression(self, block_cg):
+        """验证 block 压缩：同 block 的 HOG 边 + block 间边 == 总 HOG 边。"""
+        hog_set = self.all_hogs()
+        hog_edges_total = sum(1 for h1, h2 in self.edges()
+                              if h1 in hog_set and h2 in hog_set)
+        # 同 block 的 HOG 边：b1 == b2
+        same_block_edges = 0
+        for h1, h2 in self.edges():
+            if h1 in hog_set and h2 in hog_set:
+                b1 = self._hog_to_block.get(h1)
+                b2 = self._hog_to_block.get(h2)
+                if b1 is not None and b1 == b2:
+                    same_block_edges += 1
+        block_edges = block_cg.number_of_edges()
+        expected = hog_edges_total - same_block_edges
+        if block_edges != expected:
+            logger.info("  [blocks] edge count: hog=%d same_block=%d cross=%d (dedup %d→%d)",
+                        hog_edges_total, same_block_edges, expected,
+                        expected, block_edges)
+        else:
+            logger.debug("  [blocks] edge count verified: %d = %d - %d ✓",
+                         block_edges, hog_edges_total, same_block_edges)
 
     def _detect_inversions(self) -> int:
         """直接检测倒位：找方向冲突的边对。

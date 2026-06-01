@@ -13,9 +13,6 @@ from .mcscan import ColinearGroups, Gff, GffGraph, SyntenyGraph, GffLine
 from .hog import HOG, HOGrecord
 from .RunCmdsMP import logger
 from .ak_dotplot import draw_akr_dotplots, draw_dotplot, aag_to_karyo
-from .chromosome_path_cover import ChromosomePathCover, GreedyPathCover
-from .telomere_constraint import TelomereConstraint
-from .validator import TAKRValidator
 
 try:
     import pulp

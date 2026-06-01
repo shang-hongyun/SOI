@@ -509,7 +509,7 @@ class ColoredGraph:
 
     def _shortest_path_through_hogs(self, a, b, child_id: str) -> Optional[List]:
         """在指定孩子的子图中找 a→b 的最短路径（仅用该孩子的边）。"""
-        G_sub = nx.Graph()
+        G_sub = nx.DiGraph()
         for h1, h2, data in self._graph.edges(data=True):
             if any(cid == child_id for cid, _ in data['colors']):
                 G_sub.add_edge(h1, h2)
@@ -1233,7 +1233,9 @@ class ColoredGraph:
         for node in sorted(graph.nodes, key=str):
             label = node_label[node]
             if use_blocks:
-                is_tel = bool(block_telomere.get(node))
+                # 端粒 block: 必须是单 HOG 且带 telomere 属性
+                is_tel = (len(_blocks.get(node, [])) == 1
+                          and bool(block_telomere.get(node)))
             else:
                 is_tel = bool(self._graph.nodes[node].get('telomere'))
 
@@ -1430,10 +1432,8 @@ class ColoredGraph:
         - 非端粒 HOG：共享边连接的连续路径 = 一个块
         - 断开点：唯一边、端粒 HOG
         """
+        # 端粒 HOG 永远不压缩进 block，不论度数
         cons_tels = self.child_telomere_set()
-        # 端粒 HOG 如果在图里度>1（端粒+内部都有），不单独抽
-        cons_tels = {h for h in cons_tels
-                     if self._graph.has_node(h) and self._degree(h) <= 1}
         hog_set = self.all_hogs()
         blocks = {}
         hog_to_block = {}
@@ -1447,7 +1447,7 @@ class ColoredGraph:
 
         if len(self.children()) >= 2:
             # 多孩子：共享边图，排除端粒后找线性路径
-            shared_G = nx.Graph()
+            shared_G = nx.DiGraph()
             for h1, h2, data in self._graph.edges(data=True):
                 if (len(data['colors']) >= 2
                         and h1 not in cons_tels and h2 not in cons_tels):
@@ -2049,7 +2049,7 @@ class ColoredGraph:
         bg = self._block_graph
 
         # 块级共享边图
-        shared_bg = nx.Graph()
+        shared_bg = nx.DiGraph()
         for b1, b2, data in bg.edges(data=True):
             if len(data.get('colors', set())) > 1:
                 shared_bg.add_edge(b1, b2)
@@ -2232,7 +2232,7 @@ class ColoredGraph:
            → 用外类群投票分类 → 移除并记录事件
         """
         # Build shared-edge graph
-        shared_G = nx.Graph()
+        shared_G = nx.DiGraph()
         for h1, h2, data in self._graph.edges(data=True):
             if len(data['colors']) > 1:  # shared by ≥2 children
                 shared_G.add_edge(h1, h2)
@@ -2370,7 +2370,7 @@ class ColoredGraph:
 
     def _postcondition_no_bridge_edges(self, label: str):
         """Phase 4f postcondition: 无桥接边。"""
-        shared_G = nx.Graph()
+        shared_G = nx.DiGraph()
         for h1, h2, data in self._graph.edges(data=True):
             if len(data['colors']) > 1:
                 shared_G.add_edge(h1, h2)
@@ -2797,7 +2797,7 @@ class ColoredGraph:
     def _save_original_shared_components(self):
         """保存 Phase 2 前的原始共享组件和端粒信息。"""
         import networkx as nx
-        shared_G = nx.Graph()
+        shared_G = nx.DiGraph()
         for h1, h2, data in self._graph.edges(data=True):
             if len(data['colors']) >= 2:
                 shared_G.add_edge(h1, h2)

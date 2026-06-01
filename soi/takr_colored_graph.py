@@ -82,11 +82,11 @@ def _hsl_to_rgb(h, s, l):
     return (r, g, b)
 
 
-class ColoredGraph:
+class ColoredGraph(nx.DiGraph):
     """彩色邻接图 — 一条边可有多色 (child_id, chrom_idx)。"""
 
-    def __init__(self, hog_level: str):
-        self._graph = nx.DiGraph()  # edge attr: 'colors' = set of (child_id, int)
+    def __init__(self, hog_level: str = ''):
+        super().__init__()  # nx.DiGraph
         self.hog_level = hog_level
         self.events: List[TAKREvent] = []
         # 记录每个 child 的端粒集，用于 indel 检测和路径覆盖
@@ -100,25 +100,27 @@ class ColoredGraph:
 
     def _neighbors(self, node):
         """有向图邻居 = 前驱 ∪ 后继。"""
-        return set(self._graph.predecessors(node)) | set(self._graph.successors(node))
+        return set(self.predecessors(node)) | set(self.successors(node))
 
     def _degree(self, node):
         """有向图度数 = in_degree + out_degree。"""
-        return self._graph.in_degree(node) + self._graph.out_degree(node)
+        return self.in_degree(node) + self.out_degree(node)
 
     # ==================== 构建 ====================
 
     def _block_edge_data(self, b1, b2):
         """获取块间边数据（有向图：自动找 b1→b2 或 b2→b1）。"""
-        if self._block_graph.has_edge(b1, b2):
-            return self._block_graph[b1][b2]
-        if self._block_graph.has_edge(b2, b1):
-            return self._block_graph[b2][b1]
+        bg = self._block_graph
+        if bg.has_edge(b1, b2):
+            return bg[b1][b2]
+        if bg.has_edge(b2, b1):
+            return bg[b2][b1]
         return {}
 
     def _block_has_edge(self, b1, b2) -> bool:
         """块间边是否存在（任意方向）。"""
-        return self._block_graph.has_edge(b1, b2) or self._block_graph.has_edge(b2, b1)
+        bg = self._block_graph
+        return bg.has_edge(b1, b2) or bg.has_edge(b2, b1)
 
     def _block_add_edge(self, b1, b2, **attrs):
         """添加块间有向边 b1→b2（保留方向）。"""
@@ -126,12 +128,13 @@ class ColoredGraph:
 
     def _block_remove_edge(self, b1, b2):
         """移除块间边（任意方向）。"""
-        if self._block_graph.has_edge(b1, b2):
-            self._block_graph.remove_edge(b1, b2)
-        elif self._block_graph.has_edge(b2, b1):
-            self._block_graph.remove_edge(b2, b1)
+        bg = self._block_graph
+        if bg.has_edge(b1, b2):
+            bg.remove_edge(b1, b2)
+        elif bg.has_edge(b2, b1):
+            bg.remove_edge(b2, b1)
 
-    def add_edge(self, h1, h2, child_id: str, chrom_idx: int, direction: int = 1):
+    def add_synteny_edge(self, h1, h2, child_id: str, chrom_idx: int, direction: int = 1):
         """添加有向边 h1→h2（direction=+1）或 h2→h1（direction=-1）。
 
         有向图: 边方向由 direction 决定。
@@ -140,14 +143,14 @@ class ColoredGraph:
             h1, h2 = h2, h1
         key = (h1, h2)
 
-        if self._graph.has_edge(key[0], key[1]):
-            colors = self._graph[key[0]][key[1]]['colors']
+        if self.has_edge(key[0], key[1]):
+            colors = self[key[0]][key[1]]['colors']
             colors.add((child_id, chrom_idx))
-            directions = self._graph[key[0]][key[1]].get('directions', set())
+            directions = self[key[0]][key[1]].get('directions', set())
             directions.add((child_id, chrom_idx, 1))
-            self._graph[key[0]][key[1]]['directions'] = directions
+            self[key[0]][key[1]]['directions'] = directions
         else:
-            self._graph.add_edge(key[0], key[1],
+            self.add_edge(key[0], key[1],
                                  colors={(child_id, chrom_idx)},
                                  directions={(child_id, chrom_idx, 1)})
 
@@ -178,19 +181,19 @@ class ColoredGraph:
             child_chrom_paths.append(hogs)
             for i, h in enumerate(hogs):
                 # 节点属性: sources, telomere（per-child 集合，GFA/算法共用）
-                self._graph.add_node(h)  # 确保节点存在
-                self._graph.nodes[h].setdefault('sources', set()).add(
+                self.add_node(h)  # 确保节点存在
+                self.nodes[h].setdefault('sources', set()).add(
                     (source_id, chrom_idx))
                 if i < len(hogs) - 1:
-                    self.add_edge(h, hogs[i + 1], source_id, chrom_idx,
+                    self.add_synteny_edge(h, hogs[i + 1], source_id, chrom_idx,
                                   direction=1)
 
         # 端粒 = 每条染色体的首尾 HOG
         for hogs in child_chrom_paths:
             if hogs:
                 for h in (hogs[0], hogs[-1]):
-                    if self._graph.has_node(h):
-                        self._graph.nodes[h].setdefault('telomere', set()).add(source_id)
+                    if self.has_node(h):
+                        self.nodes[h].setdefault('telomere', set()).add(source_id)
                         child_tels.add(h)
 
         self._child_telomeres[source_id] = child_tels
@@ -203,9 +206,9 @@ class ColoredGraph:
 
     def get_directions(self, h1, h2) -> set:
         """获取边 (h1, h2) 的方向集合: {(child_id, chrom_idx, direction), ...}"""
-        if not self._graph.has_edge(h1, h2):
+        if not self.has_edge(h1, h2):
             return set()
-        return self._graph[h1][h2].get('directions', set())
+        return self[h1][h2].get('directions', set())
 
     def edge_has_direction_conflict(self, h1, h2) -> bool:
         """检查边 (h1, h2) 是否有方向冲突 — 不同孩子方向相反。
@@ -287,16 +290,16 @@ class ColoredGraph:
         生物学原理：端粒位置保守，不会无缘无故获得或丢失。
         如果一个 HOG 在多个孩子中都与端粒相邻，它在祖先中也是端粒邻接的。
         """
-        return {n for n, d in self._graph.nodes(data=True)
+        return {n for n, d in self.nodes(data=True)
                 if len(d.get('telomere', set())) >= min_children}
 
     def child_telomere_set(self) -> Set:
         """所有孩子的端粒邻接 HOG 的并集。"""
-        return {n for n, d in self._graph.nodes(data=True) if d.get('telomere')}
+        return {n for n, d in self.nodes(data=True) if d.get('telomere')}
 
     def is_telomere_adjacent(self, hog) -> bool:
         """该 HOG 是否在任意孩子中与端粒相邻。"""
-        return bool(self._graph.nodes[hog].get('telomere')) if self._graph.has_node(hog) else False
+        return bool(self.nodes[hog].get('telomere')) if self.has_node(hog) else False
 
     def telomere_preserving_color(self, cycle_edges, edge_colors) -> Optional[str]:
         """在交替色环中，找出保留端粒邻接的颜色。
@@ -329,19 +332,19 @@ class ColoredGraph:
 
     def get_colors(self, h1, h2) -> Set[Tuple[str, int]]:
         """返回 (h1, h2) 上的颜色集。"""
-        if not self._graph.has_edge(h1, h2):
+        if not self.has_edge(h1, h2):
             return set()
-        return set(self._graph[h1][h2]['colors'])
+        return set(self[h1][h2]['colors'])
 
     def edge_count(self) -> int:
-        return self._graph.number_of_edges()
+        return self.number_of_edges()
 
     def node_count(self) -> int:
-        return self._graph.number_of_nodes()
+        return self.number_of_nodes()
 
     def all_hogs(self) -> Set:
         """所有 HOG 节点。"""
-        return {n for n in self._graph.nodes if not isinstance(n, tuple)
+        return {n for n in self.nodes if not isinstance(n, tuple)
                 or len(n) != 2 or n[1] not in ('L', 'R')}
 
     def log_events_summary(self, phase_label: str, event_types: set = None):
@@ -377,7 +380,7 @@ class ColoredGraph:
     def shared_edges(self) -> List[Tuple]:
         """返回多于一个颜色的边 → 祖先共享邻接。"""
         result = []
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if len(data['colors']) > 1:
                 result.append((h1, h2))
         return result
@@ -385,7 +388,7 @@ class ColoredGraph:
     def unique_edges(self) -> List[Tuple]:
         """返回只有一个颜色的边 → 可能为衍生边。"""
         result = []
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if len(data['colors']) == 1:
                 result.append((h1, h2))
         return result
@@ -393,7 +396,7 @@ class ColoredGraph:
     def edges_by_color(self, color: Tuple[str, int]) -> List[Tuple]:
         """返回所有带有指定颜色的边。"""
         result = []
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if color in data['colors']:
                 result.append((h1, h2))
         return result
@@ -401,7 +404,7 @@ class ColoredGraph:
     def children(self) -> Set[str]:
         """所有参与颜色的 child_id 集合。"""
         children = set()
-        for _, _, data in self._graph.edges(data=True):
+        for _, _, data in self.edges(data=True):
             for child_id, _ in data['colors']:
                 children.add(child_id)
         return children
@@ -428,7 +431,7 @@ class ColoredGraph:
         # 收集参考孩子的边方向
         # ref_dir: (h1, h2) -> direction
         ref_dir = {}
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             for cid, ci, d in data.get('directions', set()):
                 if cid == ref_cid:
                     ref_dir[(h1, h2)] = d
@@ -437,7 +440,7 @@ class ColoredGraph:
         # 对每个其他孩子，比较共享边方向
         for cid in children[1:]:
             child_dir = {}
-            for h1, h2, data in self._graph.edges(data=True):
+            for h1, h2, data in self.edges(data=True):
                 for c, ci, d in data.get('directions', set()):
                     if c == cid:
                         child_dir[(h1, h2)] = d
@@ -464,7 +467,7 @@ class ColoredGraph:
 
     def _flip_all_directions(self, child_id: str):
         """翻转指定孩子的所有边方向。"""
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             directions = data.get('directions', set())
             new_directions = set()
             for cid, ci, d in directions:
@@ -477,12 +480,12 @@ class ColoredGraph:
 
     def remove_edge_color(self, h1, h2, color: Tuple[str, int]):
         """移除边上的一个颜色。如果该边没有其他颜色，移除整条边。"""
-        if not self._graph.has_edge(h1, h2):
+        if not self.has_edge(h1, h2):
             return
-        colors = self._graph[h1][h2]['colors']
+        colors = self[h1][h2]['colors']
         colors.discard(color)
         if not colors:
-            self._graph.remove_edge(h1, h2)
+            self.remove_edge(h1, h2)
 
     def remove_edges_with_color(self, color: Tuple[str, int]):
         """移除所有带有指定颜色的边。"""
@@ -527,7 +530,7 @@ class ColoredGraph:
     def _shortest_path_through_hogs(self, a, b, child_id: str) -> Optional[List]:
         """在指定孩子的子图中找 a→b 的最短路径（仅用该孩子的边）。"""
         G_sub = nx.DiGraph()
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if any(cid == child_id for cid, _ in data['colors']):
                 G_sub.add_edge(h1, h2)
         try:
@@ -565,7 +568,7 @@ class ColoredGraph:
                         event_type = 'gene_gain'
                         # 移除路径边（它们由插入产生）
                         for ch in spanned_hogs:
-                            for u, v in list(self._graph.edges(ch)):
+                            for u, v in list(self.edges(ch)):
                                 colors = self.get_colors(u, v)
                                 if any(cid == child_id for cid, _ in colors):
                                     for c in list(colors):
@@ -603,7 +606,7 @@ class ColoredGraph:
         """
         removed = set()
         hog_set = self.all_hogs()  # compute once, not per iteration
-        for h in list(self._graph.nodes()):
+        for h in list(self.nodes()):
             if h in removed:
                 continue
             if h not in hog_set:
@@ -623,7 +626,7 @@ class ColoredGraph:
                 continue  # 有 shared 边，不是插入节点
 
             # 检查两个邻居之间是否有 shared 边
-            if not self._graph.has_edge(n1, n2):
+            if not self.has_edge(n1, n2):
                 continue
             shared_colors = self.get_colors(n1, n2)
             if len(shared_colors) < 2:
@@ -631,7 +634,7 @@ class ColoredGraph:
 
             # 确认是插入节点: 删除 h 及其边
             child_id = next(iter(c1))[0]
-            self._graph.remove_node(h)
+            self.remove_node(h)
             removed.add(h)
             logger.debug("  [indel] inserted node: remove %s between %s-%s (%s)",
                          h, n1, n2, child_id)
@@ -648,7 +651,7 @@ class ColoredGraph:
     def find_cycles(self) -> List[List]:
         """nx.cycle_basis 包装。"""
         try:
-            return nx.cycle_basis(self._graph)
+            return nx.cycle_basis(self)
         except Exception:
             return []
 
@@ -975,8 +978,8 @@ class ColoredGraph:
         # 备用：所有孩子的端粒并集
         all_tels = self.child_telomere_set()
         # 度=1 的节点（图结构上的端点）
-        degree_ends = {n for n in self._graph.nodes()
-                       if self._graph.in_degree(n) == 1 and n in hog_set}
+        degree_ends = {n for n in self.nodes()
+                       if self.in_degree(n) == 1 and n in hog_set}
 
         # 选择端粒锚点集：共识端粒 > 所有端粒 > 度=1
         # 注意：度=1 包含 bridge 移除后的假端点，优先级最低
@@ -989,7 +992,7 @@ class ColoredGraph:
 
         # 从每个锚点出发行走
         for start in sorted(anchor_tels, key=str):
-            if start in visited or not self._graph.has_node(start):
+            if start in visited or not self.has_node(start):
                 continue
 
             path = self._walk_telomere_path(start, visited, anchor_tels)
@@ -1001,7 +1004,7 @@ class ColoredGraph:
         all_nodes = self.all_hogs()
         unvisited = all_nodes - visited
         if unvisited:
-            G_rem = self._graph.subgraph(unvisited)
+            G_rem = self.subgraph(unvisited)
             for comp_nodes in nx.weakly_connected_components(G_rem):
                 comp = list(comp_nodes)
                 if len(comp) >= 2:
@@ -1023,7 +1026,7 @@ class ColoredGraph:
                          len(unvisited))
             recovered = 0
             for hog in list(unvisited):
-                if not self._graph.has_node(hog):
+                if not self.has_node(hog):
                     continue
                 neighbors = [n for n in self._neighbors(hog)
                              if n in visited and n in all_nodes]
@@ -1050,7 +1053,7 @@ class ColoredGraph:
             # 仍有未覆盖的 HOGs → 断开组件作为独立路径
             still_unvisited = all_nodes - visited
             if still_unvisited:
-                G_rem = self._graph.subgraph(still_unvisited)
+                G_rem = self.subgraph(still_unvisited)
                 for comp_nodes in nx.weakly_connected_components(G_rem):
                     comp = list(comp_nodes)
                     if len(comp) >= 2:
@@ -1176,6 +1179,7 @@ class ColoredGraph:
         Returns: [(bid, in_deg, out_deg, chr_name, size), ...] 不合格的 block 列表。
         """
         bg = getattr(self, '_block_graph', None)
+        bg = getattr(self, '_block_graph', None)
         if bg is None or bg.number_of_nodes() == 0:
             return []
         broken = []
@@ -1183,8 +1187,8 @@ class ColoredGraph:
             hogs = self._blocks.get(bid, [])
             # 端粒判定：单 HOG block 且 HOG 带 telomere 属性
             is_tel = (len(hogs) == 1 and
-                      self._graph.has_node(hogs[0]) and
-                      bool(self._graph.nodes[hogs[0]].get('telomere')))
+                      self.has_node(hogs[0]) and
+                      bool(self.nodes[hogs[0]].get('telomere')))
             if is_tel:
                 continue
             in_d = bg.in_degree(bid)
@@ -1192,7 +1196,7 @@ class ColoredGraph:
             if in_d == 0 or out_d == 0:
                 ch = '?'
                 for h in hogs[:1]:
-                    srcs = self._graph.nodes[h].get('sources', set())
+                    srcs = self.nodes[h].get('sources', set())
                     if srcs:
                         ch = next(iter(srcs))[1]
                         break
@@ -1226,9 +1230,10 @@ class ColoredGraph:
         if use_blocks:
             self._ensure_blocks()
         block_graph = getattr(self, '_block_graph', None)
+        block_graph = getattr(self, '_block_graph', None)
         use_blocks = (block_graph is not None
                       and block_graph.number_of_nodes() > 0)
-        graph = block_graph if use_blocks else self._graph
+        graph = block_graph if use_blocks else self
         _blocks = getattr(self, '_blocks', {})
         _hog_to_block = getattr(self, '_hog_to_block', {})
 
@@ -1241,11 +1246,11 @@ class ColoredGraph:
                 sources_union = set()
                 tel_union = set()
                 for h in hogs:
-                    if self._graph.has_node(h):
+                    if self.has_node(h):
                         sources_union.update(
-                            self._graph.nodes[h].get('sources', set()))
+                            self.nodes[h].get('sources', set()))
                         tel_union.update(
-                            self._graph.nodes[h].get('telomere', set()))
+                            self.nodes[h].get('telomere', set()))
                 block_sources[bid] = sources_union
                 block_telomere[bid] = tel_union
                 block_hog_count[bid] = len(hogs)
@@ -1259,8 +1264,8 @@ class ColoredGraph:
                 sources = block_sources.get(node, set())
                 is_tel = bool(block_telomere.get(node))
             else:
-                sources = self._graph.nodes[node].get('sources', set())
-                is_tel = bool(self._graph.nodes[node].get('telomere'))
+                sources = self.nodes[node].get('sources', set())
+                is_tel = bool(self.nodes[node].get('telomere'))
 
             if sources:
                 parts = sorted(f'{cid}|{ch}' for cid, ch in sources)
@@ -1284,7 +1289,7 @@ class ColoredGraph:
                 is_tel = (len(_blocks.get(node, [])) == 1
                           and bool(block_telomere.get(node)))
             else:
-                is_tel = bool(self._graph.nodes[node].get('telomere'))
+                is_tel = bool(self.nodes[node].get('telomere'))
 
             if is_tel:
                 color = '#FF0000'
@@ -1495,7 +1500,7 @@ class ColoredGraph:
         if len(self.children()) >= 2:
             # 多孩子：共享边图，排除端粒后找线性路径
             shared_G = nx.DiGraph()
-            for h1, h2, data in self._graph.edges(data=True):
+            for h1, h2, data in self.edges(data=True):
                 if (len(data['colors']) >= 2
                         and h1 not in cons_tels and h2 not in cons_tels):
                     shared_G.add_edge(h1, h2)
@@ -1528,7 +1533,7 @@ class ColoredGraph:
         else:
             # 单孩子：全图（去端粒）_extract_unitigs 直接做 block
             non_tel_G = nx.DiGraph()
-            for h1, h2 in self._graph.edges():
+            for h1, h2 in self.edges():
                 if h1 in hog_set and h2 in hog_set and h1 not in cons_tels and h2 not in cons_tels:
                     non_tel_G.add_edge(h1, h2)
             for path in self._extract_unitigs(non_tel_G, min_block_size):
@@ -1536,10 +1541,14 @@ class ColoredGraph:
 
         # 剩余未分配 HOG
         assigned = set(hog_to_block.keys())
-        unassigned = [n for n in self._graph.nodes
+        unassigned = [n for n in self.nodes
                       if n in hog_set and n not in cons_tels and n not in assigned]
         if unassigned:
-            G_rem = nx.DiGraph(self._graph.subgraph(unassigned))
+            G_rem = nx.DiGraph()
+            G_rem.add_nodes_from(unassigned)
+            G_rem.add_edges_from(
+                (u, v, d) for u, v, d in self.edges(data=True)
+                if u in unassigned and v in unassigned)
             for comp in nx.weakly_connected_components(G_rem):
                 sub = G_rem.subgraph(comp)
                 for path in self._extract_unitigs(sub, min_block_size):
@@ -1568,83 +1577,20 @@ class ColoredGraph:
         return blocks
 
     def _compress_to_block_level(self):
-        """将 HOG 级图压缩为块级图。
+        """将 HOG 级图压缩为块级图（ColoredGraph）。
 
-        block_graph: nx.Graph
-          - 节点 = block_id
-          - 边 = 块间邻接，colors = 所有跨块 HOG 边颜色的并集
-
-        block_order: {block_id: [block_id, ...]}
-          块之间的顺序关系（每个孩子中相邻块的关系）
+        沿 unitig 建块间边，保证非端粒 block in>0 且 out>0。
         """
         if not hasattr(self, '_blocks') or not self._blocks:
             self._build_synteny_blocks()
 
-        block_G = nx.DiGraph()  # 有向：保留 HOG 边的方向
+        block_cg = type(self)(hog_level=self.hog_level)
+        block_G = block_cg
         for bid in self._blocks:
             block_G.add_node(bid)
 
-        # 块间边：聚合所有跨块 HOG 边
-        for h1, h2, data in self._graph.edges(data=True):
-            b1 = self._hog_to_block.get(h1)
-            b2 = self._hog_to_block.get(h2)
-            if b1 and b2 and b1 != b2:
-                if block_G.has_edge(b1, b2):
-                    block_G[b1][b2]['colors'].update(data['colors'])
-                else:
-                    block_G.add_edge(b1, b2, colors=set(data['colors']))
-
-        self._block_graph = block_G
-
-        # 清理无颜色的块间边
-        empty_edges = [(b1, b2) for b1, b2, data in block_G.edges(data=True)
-                       if not data.get('colors', set())]
-        for b1, b2 in empty_edges:
-            block_G.remove_edge(b1, b2)
-        if empty_edges:
-            logger.debug("  [blocks] removed %d empty-colored block edges",
-                         len(empty_edges))
-
-        # 块间顺序：对每个孩子，统计相邻块
-        child_block_order = defaultdict(list)
-        for cid in self.children():
-            seen_blocks = set()
-            chrom_path = []
-            # 收集该孩子所有 HOG → 块 + 顺序
-            child_hogs = sorted(self._child_hogs.get(cid, []),
-                                key=lambda h: str(h.hog_id if hasattr(h, 'hog_id') else h))
-            # 用边顺序重建块序列
-            for h1, h2, data in self._graph.edges(data=True):
-                if any(c == cid for c, _ in data['colors']):
-                    b1 = self._hog_to_block.get(h1)
-                    b2 = self._hog_to_block.get(h2)
-                    if b1 and b2 and b1 != b2:
-                        order = (b1, b2)
-                        if order not in child_block_order[cid]:
-                            child_block_order[cid].append(order)
-
-        self._child_block_order = dict(child_block_order)
-
-        logger.debug("  [blocks] block graph: %d nodes, %d edges",
-                     block_G.number_of_nodes(), block_G.number_of_edges())
-        return block_G
-
-    def _compress_to_block_level_linear(self):
-        """块压缩（unitig 版）：_extract_unitigs 找线性路径，沿路径建块间边。
-
-        非端粒 block 保证 in>0 且 out>0。
-        """
-        if not hasattr(self, '_blocks') or not self._blocks:
-            self._build_synteny_blocks()
-
-        block_G = nx.DiGraph()
-        for bid in self._blocks:
-            block_G.add_node(bid)
-
-        # 在完整 HOG 图上提 unitigs（含端粒 HOG 作为端点）
-        unitigs = self._extract_unitigs(self._graph, min_size=1)
-
-        # 1. unitig 内部建块间边
+        # unitig 路径 + 跨 unitig 建边
+        unitigs = self._extract_unitigs(self, min_size=1)
         for unitig in unitigs:
             prev_bid = None
             for h in unitig:
@@ -1657,19 +1603,17 @@ class ColoredGraph:
                         colors = set()
                         for h1 in self._blocks.get(prev_bid, []):
                             for h2 in self._blocks.get(bid, []):
-                                if self._graph.has_edge(h1, h2):
-                                    colors.update(self._graph[h1][h2].get('colors', set()))
+                                if self.has_edge(h1, h2):
+                                    colors.update(self[h1][h2].get('colors', set()))
                         block_G.add_edge(prev_bid, bid, colors=colors)
                 prev_bid = bid
-
-        # 2. unitig 间建边：相邻 unitig 共享端点，跨 unitig 的 HOG 边也建块间边
-        #    建 hog→unitig 索引（取首次出现的 unitig）
+        # unitig 间建边
         hog_unitig = {}
         for ui, unitig in enumerate(unitigs):
             for h in unitig:
                 if h not in hog_unitig:
                     hog_unitig[h] = ui
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             ui1 = hog_unitig.get(h1)
             ui2 = hog_unitig.get(h2)
             if ui1 is not None and ui2 is not None and ui1 != ui2:
@@ -1678,10 +1622,24 @@ class ColoredGraph:
                 if b1 and b2 and b1 != b2 and not block_G.has_edge(b1, b2):
                     block_G.add_edge(b1, b2, colors=set(data.get('colors', set())))
 
-        self._block_graph = block_G
-        logger.debug("  [blocks:linear] block graph: %d nodes, %d edges",
+        self._block_graph = block_cg
+
+        # 块间顺序
+        child_block_order = defaultdict(list)
+        for cid in self.children():
+            for h1, h2, data in self.edges(data=True):
+                if any(c == cid for c, _ in data['colors']):
+                    b1 = self._hog_to_block.get(h1)
+                    b2 = self._hog_to_block.get(h2)
+                    if b1 and b2 and b1 != b2:
+                        order = (b1, b2)
+                        if order not in child_block_order[cid]:
+                            child_block_order[cid].append(order)
+        self._child_block_order = dict(child_block_order)
+
+        logger.debug("  [blocks] block graph: %d nodes, %d edges",
                      block_G.number_of_nodes(), block_G.number_of_edges())
-        return block_G
+        return block_cg
 
     def _detect_inversions(self) -> int:
         """直接检测倒位：找方向冲突的边对。
@@ -1694,7 +1652,7 @@ class ColoredGraph:
         events_before = len(self.events)
         hog_set = self.all_hogs()
 
-        for h1, h2 in list(self._graph.edges()):
+        for h1, h2 in list(self.edges()):
             if h1 not in hog_set or h2 not in hog_set:
                 continue
             if not self.edge_has_direction_conflict(h1, h2):
@@ -1967,7 +1925,7 @@ class ColoredGraph:
                         any_ancestral = False
                         for h1 in hogs1:
                             for h2 in hogs2:
-                                if self._graph.has_edge(h1, h2):
+                                if self.has_edge(h1, h2):
                                     u_p = getattr(h1, 'parent',
                                                   h1.hog_id if hasattr(h1, 'hog_id') else str(h1))
                                     v_p = getattr(h2, 'parent',
@@ -2032,7 +1990,7 @@ class ColoredGraph:
                 for (b1, b2) in conflict_edges:
                     for h1 in self._blocks.get(b1, []):
                         for h2 in self._blocks.get(b2, []):
-                            if self._graph.has_edge(h1, h2):
+                            if self.has_edge(h1, h2):
                                 colors = self.get_colors(h1, h2)
                                 for cid, chrom in list(colors):
                                     if cid == derived_cid:
@@ -2059,7 +2017,7 @@ class ColoredGraph:
                         any_ancestral = False
                         for h1 in hogs1:
                             for h2 in hogs2:
-                                if self._graph.has_edge(h1, h2):
+                                if self.has_edge(h1, h2):
                                     u_p = getattr(h1, 'parent',
                                                   h1.hog_id if hasattr(h1, 'hog_id') else str(h1))
                                     v_p = getattr(h2, 'parent',
@@ -2117,7 +2075,7 @@ class ColoredGraph:
                 for (b1, b2) in valid_edges:
                     for h1 in self._blocks.get(b1, []):
                         for h2 in self._blocks.get(b2, []):
-                            if self._graph.has_edge(h1, h2):
+                            if self.has_edge(h1, h2):
                                 colors = self.get_colors(h1, h2)
                                 for cid, chrom in list(colors):
                                     if cid == derived_cid2:
@@ -2221,7 +2179,7 @@ class ColoredGraph:
                     matched_key = None
                     for h1 in hogs1:
                         for h2 in hogs2:
-                            if self._graph.has_edge(h1, h2):
+                            if self.has_edge(h1, h2):
                                 u_p = getattr(h1, 'parent',
                                               h1.hog_id if hasattr(h1, 'hog_id') else str(h1))
                                 v_p = getattr(h2, 'parent',
@@ -2295,7 +2253,7 @@ class ColoredGraph:
                 if etype in ('eej', 'ncf'):
                     for h1 in self._blocks.get(b1, []):
                         for h2 in self._blocks.get(b2, []):
-                            if self._graph.has_edge(h1, h2):
+                            if self.has_edge(h1, h2):
                                 self.remove_edge_color(h1, h2, color)
                     bg.remove_edge(b1, b2)
                 # fission: 不移除边，只记录事件
@@ -2324,7 +2282,7 @@ class ColoredGraph:
         """
         # Build shared-edge graph
         shared_G = nx.DiGraph()
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if len(data['colors']) > 1:  # shared by ≥2 children
                 shared_G.add_edge(h1, h2)
 
@@ -2349,7 +2307,7 @@ class ColoredGraph:
                     comp_has_telomere.add(ci)
                     break
 
-        for h1, h2, data in list(self._graph.edges(data=True)):
+        for h1, h2, data in list(self.edges(data=True)):
             if len(data['colors']) != 1:
                 continue  # not a unique edge
             c1 = hog_to_comp.get(h1)
@@ -2425,7 +2383,7 @@ class ColoredGraph:
     def _postcondition_linear(self, label: str):
         """Phase 1 postcondition: 每个节点 degree ≤ 2，无并行边。"""
         violations = []
-        for n in self._graph.nodes():
+        for n in self.nodes():
             deg = self._degree(n)
             if deg > 2:
                 violations.append((n, deg))
@@ -2462,7 +2420,7 @@ class ColoredGraph:
     def _postcondition_no_bridge_edges(self, label: str):
         """Phase 4f postcondition: 无桥接边。"""
         shared_G = nx.DiGraph()
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if len(data['colors']) > 1:
                 shared_G.add_edge(h1, h2)
         if shared_G.number_of_edges() == 0:
@@ -2474,7 +2432,7 @@ class ColoredGraph:
                 hog_to_comp[h] = ci
         cons_tels = self.consensus_telomeres(min_children=2)
         bridges = []
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if len(data['colors']) != 1:
                 continue
             c1 = hog_to_comp.get(h1)
@@ -2889,7 +2847,7 @@ class ColoredGraph:
         """保存 Phase 2 前的原始共享组件和端粒信息。"""
         import networkx as nx
         shared_G = nx.DiGraph()
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if len(data['colors']) >= 2:
                 shared_G.add_edge(h1, h2)
 
@@ -3264,7 +3222,7 @@ class ColoredGraph:
 
         # Add HOGs not in any block
         all_hogs = set()
-        for n in self._graph.nodes():
+        for n in self.nodes():
             all_hogs.add(n)
         for h in sorted(all_hogs, key=str):
             if h not in set(hog_order):
@@ -3282,7 +3240,7 @@ class ColoredGraph:
         children = sorted(self.children())
         child_list = list(children)
 
-        for h1, h2, data in self._graph.edges(data=True):
+        for h1, h2, data in self.edges(data=True):
             if h1 in hog_idx and h2 in hog_idx:
                 i, j = hog_idx[h1], hog_idx[h2]
                 colors = data.get('colors', set())

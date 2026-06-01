@@ -515,6 +515,14 @@ class ReconstructorV2:
                                 cid, ch, chr_info[ch]['nodes'], chr_edges.get(ch, 0),
                                 chr_info[ch]['branch'], chr_info[ch]['tel'])
 
+                # HOG 级 GFA（压缩前对照）
+                hog_path = f'{self._viz_prefix(node_id)}.child_{cid}.hog.gfa'
+                with open(hog_path, 'w') as fout:
+                    fout.write(f"H\ttype:child_hog\tparent:{node_id}\tchild:{cid}\t"
+                               f"nodes:{tmp.node_count()}\tedges:{tmp.edge_count()}\n")
+                    tmp.to_gfa(fout, use_blocks=False)
+                logger.info("  [gfa] child HOG %s -> %s", cid, hog_path)
+
                 # Debug: 每染色体块数
                 tmp._ensure_blocks()
                 # 重建块间边：沿有向图线性行走，保证非端粒 block 有 in/out

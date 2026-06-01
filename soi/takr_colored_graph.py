@@ -185,19 +185,13 @@ class ColoredGraph:
                     self.add_edge(h, hogs[i + 1], source_id, chrom_idx,
                                   direction=1)
 
-        # 收集端粒信息
-        for tel in child_graph.telomeres:
-            child_tels.add(tel)
-        for h1, h2 in child_graph.get_adjacencies(include_telomere=True):
-            if h1 in child_graph.telomeres and h2 in child_graph.gene_nodes:
-                child_tels.add(h2)
-            elif h2 in child_graph.telomeres and h1 in child_graph.gene_nodes:
-                child_tels.add(h1)
-
-        # 端粒属性写入节点（per-child 集合，支持 consensus 查询）
-        for tel in child_tels:
-            if self._graph.has_node(tel):
-                self._graph.nodes[tel].setdefault('telomere', set()).add(source_id)
+        # 端粒 = 每条染色体的首尾 HOG
+        for hogs in child_chrom_paths:
+            if hogs:
+                for h in (hogs[0], hogs[-1]):
+                    if self._graph.has_node(h):
+                        self._graph.nodes[h].setdefault('telomere', set()).add(source_id)
+                        child_tels.add(h)
 
         self._child_telomeres[source_id] = child_tels
         self._child_hogs[source_id] = child_hogs
@@ -1212,8 +1206,8 @@ class ColoredGraph:
         if not hasattr(self, '_block_graph') or not self._block_graph:
             self._compress_to_block_level()
 
-    def to_gfa(self, fout, min_pair_nodes: int = 50):
-        """输出 GFA 格式（block 级）。无 block 时自动构建。
+    def to_gfa(self, fout, min_pair_nodes: int = 50, use_blocks: bool = True):
+        """输出 GFA 格式。use_blocks=False 输出 HOG 级，否则 block 级。
 
         着色规则:
           - 端粒节点 → 红色 (#FF0000)，优先级最高
@@ -1229,7 +1223,8 @@ class ColoredGraph:
         from collections import defaultdict
 
         # ── 确保 blocks 已构建 ──
-        self._ensure_blocks()
+        if use_blocks:
+            self._ensure_blocks()
         block_graph = getattr(self, '_block_graph', None)
         use_blocks = (block_graph is not None
                       and block_graph.number_of_nodes() > 0)

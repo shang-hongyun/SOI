@@ -1379,9 +1379,6 @@ class ColoredGraph:
             seg = []
             curr, prev = start, prev_node
             while True:
-                if G.degree(curr) > 2:
-                    seg.append(curr)          # 分支点作端点，不标记 visited
-                    break
                 seg.append(curr)
                 visited.add(curr)
                 nbrs = [n for n in G.neighbors(curr) if n != prev and n not in visited]
@@ -1470,14 +1467,24 @@ class ColoredGraph:
                 if len(path) >= min_block_size:
                     _add_block(path)
         else:
-            # 单孩子：用当前图提取线性路径
-            hog_nodes = [n for n in self._graph.nodes
-                         if n in hog_set and n not in cons_tels]
-            G_sub = self._graph.subgraph(hog_nodes)
-            for comp in nx.connected_components(G_sub):
-                sub = G_sub.subgraph(comp)
-                for path in self._extract_unitigs(sub, min_block_size):
-                    _add_block(path)
+            # 单孩子：按染色体路径走，用图边验证连续性
+            for cid in self.children():
+                for chrom_path in self._child_chromosomes.get(cid, []):
+                    hogs = [h for h in chrom_path
+                            if h in hog_set and h not in cons_tels]
+                    if not hogs:
+                        continue
+                    # 沿路径走：相邻 HOG 间有图边就连成一段
+                    segment = [hogs[0]]
+                    for i in range(1, len(hogs)):
+                        if self._graph.has_edge(hogs[i-1], hogs[i]):
+                            segment.append(hogs[i])
+                        else:
+                            if len(segment) >= min_block_size:
+                                _add_block(segment)
+                            segment = [hogs[i]]
+                    if len(segment) >= min_block_size:
+                        _add_block(segment)
 
         # 剩余未分配 HOG
         assigned = set(hog_to_block.keys())

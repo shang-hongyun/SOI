@@ -306,6 +306,10 @@ class ReconstructorV2:
                 for err in errors:
                     logger.error("  [Phase 1] %s: %s", cid, err)
 
+            # 输出 dedup 后子图 block GFA
+            if self.gfa_debug:
+                self._output_deduped_child_gfa(mc, cid, node_id)
+
             G.add_child(cid, mc)
 
         # Dedup events
@@ -583,6 +587,24 @@ class ReconstructorV2:
                                 cid)
             except Exception as e:
                 logger.exception("  [gfa] child %s failed: %s", cid, e)
+
+    def _output_deduped_child_gfa(self, mc, cid, node_id):
+        """输出 dedup 后单个子图的 block 级 GFA。"""
+        from .takr_colored_graph import ColoredGraph
+        try:
+            tmp = ColoredGraph(hog_level=node_id)
+            tmp.add_child(cid, mc)
+            tmp._ensure_blocks()
+            tmp._compress_to_block_level()
+
+            path = f'{self._viz_prefix(node_id)}.child_{cid}.dedup.gfa'
+            with open(path, 'w') as fout:
+                fout.write(f"H\ttype:child_dedup\tparent:{node_id}\tchild:{cid}\t"
+                           f"nodes:{tmp.node_count()}\tedges:{tmp.edge_count()}\n")
+                tmp.to_gfa(fout)
+            logger.info("  [gfa] child dedup %s -> %s", cid, path)
+        except Exception as e:
+            logger.exception("  [gfa] dedup child %s failed: %s", cid, e)
 
     def _viz_child_paths(self, children, child_source_ids, node_id):
         """Draw per-child block graphs before merging."""

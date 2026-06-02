@@ -1601,10 +1601,12 @@ class ColoredGraph(nx.DiGraph):
         hog_n = self.number_of_edges()
         blk_n = block_cg.number_of_edges()
         internal = sum(len(hogs) - 1 for hogs in self._blocks.values())
-        logger.info("  [blocks] hog=%d, blk=%d, internal=%d%s",
-                    hog_n, blk_n, internal,
-                    "" if hog_n == blk_n + internal else
-                    " (diff=%d)" % (hog_n - blk_n - internal))
+        expected = blk_n + internal
+        if hog_n == expected:
+            logger.info("  [blocks] %d = %d + %d ✓", hog_n, blk_n, internal)
+        else:
+            logger.info("  [blocks] %d != %d + %d (diff=%d)",
+                        hog_n, blk_n, internal, hog_n - expected)
 
     def _detect_inversions(self) -> int:
         """直接检测倒位：找方向冲突的边对。

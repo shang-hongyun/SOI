@@ -2674,27 +2674,24 @@ class ColoredGraph(nx.DiGraph):
            Postcondition: 所有 HOG 覆盖, 每条染色体 2 个端粒
         ─────────────────────────────────────────────────────────────
         """
-        logger.info("  [colored] resolve_all_events for %s: %d nodes, %d edges",
-                     self.hog_level, self.node_count(), self.edge_count())
-
-        def _gfa_out(phase_label):
+        def _gfa_out(phase_label, use_blocks=True):
             """输出 GFA 调试文件。"""
             if not gfa_debug or not gfa_prefix:
                 return
-            path = f"{gfa_prefix}.{phase_label}.gfa"
+            suffix = ".hog.gfa" if not use_blocks else ".gfa"
+            path = f"{gfa_prefix}.{phase_label}{suffix}"
             with open(path, 'w') as fout:
                 fout.write(f"H\tphase:{phase_label}\tlevel:{self.hog_level}\t"
                            f"nodes:{self.node_count()}\tedges:{self.edge_count()}\n")
-                self.to_gfa(fout)
+                self.to_gfa(fout, use_blocks=use_blocks)
             logger.info("  [gfa] %s -> %s", phase_label, path)
 
         n_events_before = len(self.events)
 
         # Phase 1 dedup 在 orchestrator 中 add_child 前完成
-        logger.info("  [colored] Phase 1 (dedup): done in orchestrator, %d children",
-                     len(self._child_chrom_counts))
 
         _gfa_out("p1_merged")
+        _gfa_out("p1_merged", use_blocks=False)  # HOG 级
 
         # 保存原始共享组件（用于 bridge 检测验证）
         self._save_original_shared_components()
@@ -2722,7 +2719,7 @@ class ColoredGraph(nx.DiGraph):
 
         # Phase 4a: seg_deletion / seg_insertion (所有大小的 indel)
         n_seg = self._resolve_seg_events(outgroup_adjacency=outgroup_adjacency)
-        if n_seg:
+        if 1:
             seg_events = [e for e in self.events if e.event_type == 'seg_deletion']
             seg_str = ", ".join(f"{e.branch}" for e in seg_events[-5:])
             logger.info("  [colored] Phase 4a (seg_events): %d events [%s]", n_seg, seg_str)
@@ -2733,7 +2730,7 @@ class ColoredGraph(nx.DiGraph):
         n_inv_before = len(self.events)
         n_inv = self._detect_inversions()
         n_inv_events = len(self.events) - n_inv_before
-        if n_inv_events:
+        if 1:
             inv_types = Counter(e.event_type for e in self.events[n_inv_before:])
             inv_str = ", ".join(f"{t}={c}" for t, c in sorted(inv_types.items()))
             logger.info("  [colored] Phase 4b (inversions): %d events [%s]", n_inv_events, inv_str)
@@ -2742,7 +2739,7 @@ class ColoredGraph(nx.DiGraph):
 
         # Phase 4c: unidir_trans
         n_ut = self._resolve_unidir_trans(outgroup_adjacency=outgroup_adjacency)
-        if n_ut:
+        if 1:
             ut_events = [e for e in self.events if e.event_type == 'unidir_trans']
             ut_str = ", ".join(f"{e.branch}" for e in ut_events[-5:])
             logger.info("  [colored] Phase 4b (unidir_trans): %d events [%s]", n_ut, ut_str)

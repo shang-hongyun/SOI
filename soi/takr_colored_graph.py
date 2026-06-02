@@ -1585,7 +1585,7 @@ class ColoredGraph(nx.DiGraph):
         for h1, h2, data in self.edges(data=True):
             b1 = self._hog_to_block.get(h1)
             b2 = self._hog_to_block.get(h2)
-            if b1 and b2 and b1 != b2:
+            if b1 and b2:
                 if not block_cg.has_edge(b1, b2):
                     for child_id, chrom_idx in data.get('colors', set()):
                         block_cg.add_synteny_edge(b1, b2, child_id, chrom_idx)
@@ -1600,7 +1600,7 @@ class ColoredGraph(nx.DiGraph):
                 if any(c == cid for c, _ in data['colors']):
                     b1 = self._hog_to_block.get(h1)
                     b2 = self._hog_to_block.get(h2)
-                    if b1 and b2 and b1 != b2:
+                    if b1 and b2:
                         order = (b1, b2)
                         if order not in child_block_order[cid]:
                             child_block_order[cid].append(order)
@@ -1623,12 +1623,15 @@ class ColoredGraph(nx.DiGraph):
                 b2 = self._hog_to_block.get(h2)
                 if b1 is not None and b1 == b2:
                     same_block_edges += 1
-        block_edges = block_cg.number_of_edges()
+        block_edges_total = block_cg.number_of_edges()
+        self_loops = sum(1 for n in block_cg.nodes() if block_cg.has_edge(n, n))
+        block_edges = block_edges_total - self_loops
         expected = hog_edges_total - same_block_edges
         if block_edges != expected:
-            logger.info("  [blocks] edge count: hog=%d same_block=%d cross=%d (dedup %d→%d)",
+            logger.info("  [blocks] edge count: hog=%d same_block=%d expected_cross=%d "
+                        "actual_cross=%d (self_loops=%d, total=%d)",
                         hog_edges_total, same_block_edges, expected,
-                        expected, block_edges)
+                        block_edges, self_loops, block_edges_total)
         else:
             logger.info("  [blocks] edge count verified: %d = %d - %d ✓",
                          block_edges, hog_edges_total, same_block_edges)

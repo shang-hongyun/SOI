@@ -1444,9 +1444,13 @@ class ColoredGraph(nx.DiGraph):
     def _extract_unitigs(G, min_size=2, skip_nodes=None):
         """有向图 unitig：提取 indegree=1 且 outdegree=1 的连续节点。
 
-        skip_nodes 中的节点为 stop——不进入 unitig，但提供边保持相邻节点度数正确。
+        skip_nodes 中的节点为 stop——不进入 unitig。
+        相邻节点物种来源不一致也断——单孩子/多孩子统一处理。
         """
         skip = skip_nodes or set()
+
+        def _species_set(node):
+            return set(cid for cid, _ in G.nodes[node].get('sources', set()))
 
         def _linear(node):
             return (G.in_degree(node) == 1 and G.out_degree(node) == 1
@@ -1463,14 +1467,15 @@ class ColoredGraph(nx.DiGraph):
             curr = node
             while True:
                 succ = list(G.successors(curr))
-                # 只沿 linear 节点走；非 linear 节点（含端粒）作为端点停下
                 if not _linear(curr) or len(succ) != 1:
-                    # 非线性点不进入 unitig
                     break
                 fwd.append(curr)
                 visited.add(curr)
                 nxt = succ[0]
                 if nxt in visited:
+                    break
+                # 物种来源不一致 → 断
+                if _species_set(curr) != _species_set(nxt):
                     break
                 curr = nxt
 
@@ -1482,6 +1487,9 @@ class ColoredGraph(nx.DiGraph):
                     break
                 nxt = pred[0]
                 if nxt in visited or not _linear(nxt):
+                    break
+                # 物种来源不一致 → 断
+                if _species_set(curr) != _species_set(nxt):
                     break
                 curr = nxt
                 bwd.append(curr)
@@ -1517,47 +1525,10 @@ class ColoredGraph(nx.DiGraph):
                 hog_to_block[h] = bid
             return bid
 
-        if len(self.children()) >= 2:
-            # 多孩子：共享边子图（视图，不拷贝）
-            shared_edges = [(h1, h2) for h1, h2, d in self.edges(data=True)
-                            if len(d['colors']) >= 2]
-            shared_sub = self.edge_subgraph(shared_edges)
-            for comp in nx.weakly_connected_components(shared_sub):
-                sub = shared_sub.subgraph(comp)
-                degs = {n: sub.in_degree(n)+sub.out_degree(n) for n in sub.nodes()}
-                if any(d > 2 for d in degs.values()):
-                    for path in self._extract_unitigs(sub, min_block_size,
-                                                      skip_nodes=cons_tels):
-                        _add_block(path)
-                    continue
-                # Linear component: walk from one endpoint, stop at telomeres
-                endpoints = [n for n in sub.nodes() if degs[n] == 1
-                             and n not in cons_tels]
-                if not endpoints:
-                    endpoints = [n for n in sub.nodes() if n not in cons_tels]
-                if not endpoints:
-                    continue
-                start = endpoints[0]
-                path = [start]
-                visited = {start}
-                curr, prev = start, None
-                while True:
-                    neighbors = [n for n in (list(sub.predecessors(curr))+list(sub.successors(curr)))
-                                 if n != prev and n not in visited
-                                 and n not in cons_tels]
-                    if not neighbors:
-                        break
-                    nxt = neighbors[0]
-                    visited.add(nxt)
-                    path.append(nxt)
-                    prev, curr = curr, nxt
-                if len(path) >= min_block_size:
-                    _add_block(path)
-        else:
-            # 单孩子：直接用 self
-            for path in self._extract_unitigs(self, min_block_size,
-                                              skip_nodes=cons_tels):
-                _add_block(path)
+        # 统一调用：物种来源一致判定自动区分单/多孩子/共享段/独有段
+        for path in self._extract_unitigs(self, min_block_size,
+                                          skip_nodes=cons_tels):
+            _add_block(path)
 
         # 剩余孤立 HOG → 1-HOG 块（含端粒）
         for h in hog_set:

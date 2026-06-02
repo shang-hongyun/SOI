@@ -1432,16 +1432,15 @@ class ColoredGraph(nx.DiGraph):
     # ==================== 共线性块压缩 ====================
 
     @staticmethod
-    def _extract_unitigs(G, min_size=2, telomeres=None):
+    def _extract_unitigs(G, min_size=2):
         """有向图 unitig：提取 indegree=1 且 outdegree=1 的非端粒连续节点。
 
         端粒 HOG 为 stop 节点——提供边保持相邻节点度数正确，但不进入 unitig。
+        端粒判定直接读节点属性，不依赖外部传入集合。
         """
-        tels = telomeres or set()
-
         def _linear(node):
             return (G.in_degree(node) == 1 and G.out_degree(node) == 1
-                    and node not in tels)
+                    and not G.nodes[node].get('telomere'))
 
         unitigs = []
         visited = set()
@@ -1517,8 +1516,7 @@ class ColoredGraph(nx.DiGraph):
                 sub = shared_sub.subgraph(comp)
                 degs = {n: sub.in_degree(n)+sub.out_degree(n) for n in sub.nodes()}
                 if any(d > 2 for d in degs.values()):
-                    for path in self._extract_unitigs(sub, min_block_size,
-                                                      telomeres=cons_tels):
+                    for path in self._extract_unitigs(sub, min_block_size):
                         _add_block(path)
                     continue
                 # Linear component: walk from one endpoint, stop at telomeres
@@ -1546,8 +1544,7 @@ class ColoredGraph(nx.DiGraph):
                     _add_block(path)
         else:
             # 单孩子：直接用 self
-            for path in self._extract_unitigs(self, min_block_size,
-                                              telomeres=cons_tels):
+            for path in self._extract_unitigs(self, min_block_size):
                 _add_block(path)
 
         # 剩余孤立 HOG → 1-HOG 块（含端粒）

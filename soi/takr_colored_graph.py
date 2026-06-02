@@ -1524,8 +1524,7 @@ class ColoredGraph(nx.DiGraph):
                 return None
             if agreed is None:
                 agreed = child_nbrs[0]
-            elif child_nbrs[0] != agreed:
-                return None
+            # 方向不一致：取第一个孩子的邻居继续（双向边进 block）
         return agreed
 
     def _build_synteny_blocks(self, min_block_size: int = 2):

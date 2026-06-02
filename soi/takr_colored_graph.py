@@ -2582,6 +2582,7 @@ class ColoredGraph(nx.DiGraph):
         if hasattr(self, '_dedup_pending') and self._dedup_pending:
             from itertools import groupby
             dedup_gene_count = 0
+            tandem_blocks = 0
             # 按 (source_id, chrom_idx) 分组
             pending = sorted(self._dedup_pending,
                              key=lambda x: (x['source_id'], x['chrom_idx'], x['pos']))
@@ -2601,25 +2602,30 @@ class ColoredGraph(nx.DiGraph):
 
                 for block in blocks:
                     genes = [it['hog_obj'] for it in block]
-                    dedup_gene_count += len(genes)
                     if len(block) == 1:
                         event_type = 'dispersed_dup'
+                        extra = len(block)
                     else:
                         event_type = 'tandem_dup'
+                        extra = len(block) - 1
+                        tandem_blocks += 1
+                    dedup_gene_count += extra
                     self.events.append(TAKREvent(
                         event_type=event_type,
                         branch=f"{self.hog_level}-{sid}",
                         genes_involved=genes,
-                        desc=f"{event_type}: {len(genes)} genes at chrom{ci} "
+                        desc=f"{event_type}: {extra} extra copies at chrom{ci} "
                              f"pos{block[0]['pos']}-{block[-1]['pos']}",
-                        support=len(genes),
+                        support=extra,
                     ))
-                    logger.debug("  [dedup] %s: %s block of %d genes at chrom%d pos%d-%d",
-                                sid, event_type, len(genes), ci,
+                    logger.debug("  [dedup] %s: %s block of %d genes (%d extra) at chrom%d pos%d-%d",
+                                sid, event_type, len(genes), extra, ci,
                                 block[0]['pos'], block[-1]['pos'])
-            if dedup_gene_count != len(self._dedup_pending):
-                logger.warning("  [dedup] %s: removed %d positions but events cover %d genes",
-                               source_id, len(self._dedup_pending), dedup_gene_count)
+            if dedup_gene_count + tandem_blocks != len(self._dedup_pending):
+                logger.warning("  [dedup] %s: removed %d positions != extra %d + tandem %d = %d",
+                               source_id, len(self._dedup_pending),
+                               dedup_gene_count, tandem_blocks,
+                               dedup_gene_count + tandem_blocks)
             self._dedup_pending = []
 
         return new_graph

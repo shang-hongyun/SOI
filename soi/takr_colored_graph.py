@@ -1581,6 +1581,10 @@ class ColoredGraph(nx.DiGraph):
             b1 = self._hog_to_block.get(h1)
             b2 = self._hog_to_block.get(h2)
             if b1 and b2:
+                # 同 block 边：仅保留 HOG 级自环（h1==h2），
+                # h1≠h2 的内部边已被压缩在 block 内，不映射
+                if b1 == b2 and h1 != h2:
+                    continue
                 if not block_cg.has_edge(b1, b2):
                     for child_id, chrom_idx in data.get('colors', set()):
                         block_cg.add_synteny_edge(b1, b2, child_id, chrom_idx)
@@ -1588,39 +1592,32 @@ class ColoredGraph(nx.DiGraph):
         self._block_graph = block_cg
         self._validate_block_compression(block_cg)
 
-        # 块间顺序
-        child_block_order = defaultdict(list)
-        for cid in self.children():
-            for h1, h2, data in self.edges(data=True):
-                if any(c == cid for c, _ in data['colors']):
-                    b1 = self._hog_to_block.get(h1)
-                    b2 = self._hog_to_block.get(h2)
-                    if b1 and b2:
-                        order = (b1, b2)
-                        if order not in child_block_order[cid]:
-                            child_block_order[cid].append(order)
-        self._child_block_order = dict(child_block_order)
-
         logger.debug("  [blocks] block graph: %d nodes, %d edges",
                      block_cg.number_of_nodes(), block_cg.number_of_edges())
         return block_cg
 
     def _validate_block_compression(self, block_cg):
-        """直接比较 HOG 图和 block 图的边数。
-        
-        block 边 + Σ(L-1) - multi_block_count == HOG 边。
-        （multi_block_count 扣掉 block 自环已被计入 blk_n 的部分）
-        """
-        hog_n = self.number_of_edges()
+        """一遍扫描分类 HOG 边，比较 block 图边数。"""
+        cross = 0       # b1 != b2: 跨 block 边
+        internal = 0    # b1 == b2, h1 != h2: 压缩掉的内部边
+        hog_self = 0    # h1 == h2: HOG 自环 → block 自环
+        for h1, h2 in self.edges():
+            b1 = self._hog_to_block.get(h1)
+            b2 = self._hog_to_block.get(h2)
+            if b1 is None or b2 is None:
+                continue
+            if h1 == h2:
+                hog_self += 1
+            elif b1 == b2:
+                internal += 1
+            else:
+                cross += 1
         blk_n = block_cg.number_of_edges()
-        internal = sum(len(hogs) - 1 for hogs in self._blocks.values() if len(hogs) > 1)
-        multi = sum(1 for hogs in self._blocks.values() if len(hogs) > 1)
-        if hog_n != blk_n + internal - multi:
-            logger.info("  [blocks] hog=%d, blk=%d + internal=%d - multi=%d = %d",
-                        hog_n, blk_n, internal, multi, blk_n + internal - multi)
-        else:
-            logger.info("  [blocks] %d = %d + %d - %d ✓",
-                        hog_n, blk_n, internal, multi)
+        # blk_n ≈ cross + hog_self（dedup 后可能更少）
+        expected = cross + hog_self
+        logger.info("  [blocks] hog=%d (cross=%d internal=%d self=%d) → blk=%d%s",
+                    self.number_of_edges(), cross, internal, hog_self,
+                    blk_n, " ✓" if expected == blk_n else f" (expected ~{expected})")
 
     def _detect_inversions(self) -> int:
         """直接检测倒位：找方向冲突的边对。

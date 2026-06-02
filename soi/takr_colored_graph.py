@@ -1210,14 +1210,14 @@ class ColoredGraph(nx.DiGraph):
         if not hasattr(self, '_block_graph') or not self._block_graph:
             self._compress_to_block_level()
 
-    def to_gfa(self, fout, min_pair_nodes: int = 50, use_blocks: bool = True):
+    def to_gfa(self, fout, min_pair_nodes: int = 50, use_blocks: bool = True,
+               color_by: str = 'first'):
         """输出 GFA 格式。use_blocks=False 输出 HOG 级，否则 block 级。
 
         着色规则:
           - 端粒节点 → 红色 (#FF0000)，优先级最高
-          - 非端粒节点 → 按节点来源 label 分组:
-            · 节点数 ≥ min_pair_nodes 的组 → hash 色板分配不同颜色
-            · 不足的组 → 灰色 (#808080)
+          - 非端粒节点 → color_by='first': 按第一个物种染色体着色（默认）
+                          color_by='all': 按所有物种|染色体组合着色
           - 每个节点输出 LB:Z:label 标明来源
 
         GFA 格式:
@@ -1267,11 +1267,13 @@ class ColoredGraph(nx.DiGraph):
                 is_tel = bool(self.nodes[node].get('telomere'))
 
             if sources:
-                # 按第一个物种的染色体着色
-                first_sp = sorted(sources)[0][0]
-                chrom_label = '+'.join(sorted(ch for cid, ch in sources if cid == first_sp))
-                label = chrom_label if chrom_label else '+'.join(
-                    sorted(f'{cid}|{ch}' for cid, ch in sources))
+                if color_by == 'first':
+                    first_sp = sorted(sources)[0][0]
+                    chrom_label = '+'.join(sorted(ch for cid, ch in sources if cid == first_sp))
+                    label = chrom_label if chrom_label else '+'.join(
+                        sorted(f'{cid}|{ch}' for cid, ch in sources))
+                else:
+                    label = '+'.join(sorted(f'{cid}|{ch}' for cid, ch in sources))
             else:
                 label = ''
             node_label[node] = label

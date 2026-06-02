@@ -1257,6 +1257,7 @@ class ColoredGraph(nx.DiGraph):
         # ── 收集节点 label 和计数 ──
         label_counts = defaultdict(int)
         node_label = {}
+        node_sources = {}   # LB 标签：完整来源信息
 
         for node in graph.nodes:
             if use_blocks:
@@ -1266,14 +1267,16 @@ class ColoredGraph(nx.DiGraph):
                 sources = self.nodes[node].get('sources', set())
                 is_tel = bool(self.nodes[node].get('telomere'))
 
+            full_src = '+'.join(sorted(f'{cid}|{ch}' for cid, ch in sources)) if sources else ''
+            node_sources[node] = full_src
+
             if sources:
                 if color_by == 'first':
                     first_sp = sorted(sources)[0][0]
                     chrom_label = '+'.join(sorted(ch for cid, ch in sources if cid == first_sp))
-                    label = chrom_label if chrom_label else '+'.join(
-                        sorted(f'{cid}|{ch}' for cid, ch in sources))
+                    label = chrom_label if chrom_label else full_src
                 else:
-                    label = '+'.join(sorted(f'{cid}|{ch}' for cid, ch in sources))
+                    label = full_src
             else:
                 label = ''
             node_label[node] = label
@@ -1303,7 +1306,8 @@ class ColoredGraph(nx.DiGraph):
                 color = '#808080'
 
             line = ['S', node, '*', f'CL:Z:{color}']
-            lb = f'{label}+telo' if (is_tel and label) else ('telo' if is_tel else label)
+            src = node_sources.get(node, '')
+            lb = f'{src}+telo' if (is_tel and src) else ('telo' if is_tel else src)
             if lb:
                 line.append(f'LB:Z:{lb}')
             # Length: 端粒固定 50（显眼），否则 block 大小

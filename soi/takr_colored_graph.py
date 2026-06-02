@@ -2670,8 +2670,8 @@ class ColoredGraph(nx.DiGraph):
 
         # Phase 1 dedup 在 orchestrator 中 add_child 前完成
 
-        _gfa_out("p1_merged")
         _gfa_out("p1_merged", use_blocks=False)  # HOG 级
+        _gfa_out("p1_merged")
 
         # 保存原始共享组件（用于 bridge 检测验证）
         self._save_original_shared_components()

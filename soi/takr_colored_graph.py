@@ -2452,23 +2452,7 @@ class ColoredGraph(nx.DiGraph):
         import copy
         new_graph = copy.deepcopy(child_graph)
 
-        # 构建参照图（无向）—— 支持最短路径距离查询
-        ref_graph = nx.Graph()
-        if ref_graphs:
-            for ref in ref_graphs:
-                ch_source = getattr(ref, 'chrom_hogs', None)
-                if ch_source:
-                    for ci, hogs in ch_source.items():
-                        gene_hogs = [n for n in hogs if n not in ref.telomeres]
-                        for i in range(len(gene_hogs) - 1):
-                            a, b = str(gene_hogs[i]), str(gene_hogs[i+1])
-                            ref_graph.add_edge(a, b)
-                else:
-                    for chrom in ref.chromosomes:
-                        gene_hogs = [n for n in chrom if n not in ref.telomeres]
-                        for i in range(len(gene_hogs) - 1):
-                            a, b = str(gene_hogs[i]), str(gene_hogs[i+1])
-                            ref_graph.add_edge(a, b)
+        ref_graph = self._build_ref_graph(ref_graphs)
 
         # 优先用 chrom_hogs（保留重复），回退到 chromosomes
         chrom_source = getattr(new_graph, 'chrom_hogs', None)
@@ -2579,64 +2563,90 @@ class ColoredGraph(nx.DiGraph):
                 chrom_source[chrom_idx] = new_chrom
 
         # 按块分组生成事件（连续位置合并为一个事件）
-        if hasattr(self, '_dedup_pending') and self._dedup_pending:
-            from itertools import groupby
-            dedup_gene_count = 0
-            tandem_blocks = 0
-            # 按 (source_id, chrom_idx) 分组
-            pending = sorted(self._dedup_pending,
-                             key=lambda x: (x['source_id'], x['chrom_idx'], x['pos']))
-            for (sid, ci), group in groupby(
-                    pending, key=lambda x: (x['source_id'], x['chrom_idx'])):
-                items = sorted(group, key=lambda x: x['pos'])
-                # 连续位置合并为块
-                blocks = []
-                current_block = [items[0]]
-                for item in items[1:]:
-                    if item['pos'] == current_block[-1]['pos'] + 1:
-                        current_block.append(item)
-                    else:
-                        blocks.append(current_block)
-                        current_block = [item]
-                blocks.append(current_block)
-
-                for block in blocks:
-                    genes = [it['hog_obj'] for it in block]
-                    if len(block) == 1:
-                        extra = len(block)
-                        anc_chrom = block[0].get('ancestral_chrom')
-                        if anc_chrom is not None and ci == anc_chrom:
-                            event_type = 'dispersed_dup_intra'
-                        else:
-                            event_type = 'dispersed_dup_inter'
-                    else:
-                        event_type = 'tandem_dup'
-                        extra = len(block) - 1
-                        tandem_blocks += 1
-                    dedup_gene_count += extra
-                    self.events.append(TAKREvent(
-                        event_type=event_type,
-                        branch=f"{self.hog_level}-{sid}",
-                        genes_involved=genes,
-                        desc=f"{event_type}: {extra} extra copies at chrom{ci} "
-                             f"pos{block[0]['pos']}-{block[-1]['pos']}",
-                        support=extra,
-                    ))
-                    logger.debug("  [dedup] %s: %s block of %d genes (%d extra) at chrom%d pos%d-%d",
-                                sid, event_type, len(genes), extra, ci,
-                                block[0]['pos'], block[-1]['pos'])
-            if dedup_gene_count + tandem_blocks != len(self._dedup_pending):
-                logger.warning("  [dedup] %s: removed %d positions != extra %d + tandem %d = %d",
-                               source_id, len(self._dedup_pending),
-                               dedup_gene_count, tandem_blocks,
-                               dedup_gene_count + tandem_blocks)
-            else:
-                logger.info("  [dedup] %s: %d = %d + %d ✓",
-                            source_id, len(self._dedup_pending),
-                            dedup_gene_count, tandem_blocks)
-            self._dedup_pending = []
+        self._flush_dedup_events(source_id)
 
         return new_graph
+
+    @staticmethod
+    def _build_ref_graph(ref_graphs):
+        """从参照图列表构建无向图（最短路径距离查询）。"""
+        g = nx.Graph()
+        if not ref_graphs:
+            return g
+        for ref in ref_graphs:
+            ch_source = getattr(ref, 'chrom_hogs', None)
+            if ch_source:
+                for ci, hogs in ch_source.items():
+                    gene_hogs = [n for n in hogs if n not in ref.telomeres]
+                    for i in range(len(gene_hogs) - 1):
+                        a, b = str(gene_hogs[i]), str(gene_hogs[i + 1])
+                        g.add_edge(a, b)
+            else:
+                for chrom in ref.chromosomes:
+                    gene_hogs = [n for n in chrom if n not in ref.telomeres]
+                    for i in range(len(gene_hogs) - 1):
+                        a, b = str(gene_hogs[i]), str(gene_hogs[i + 1])
+                        g.add_edge(a, b)
+        return g
+
+    def _flush_dedup_events(self, source_id):
+        if not hasattr(self, '_dedup_pending') or not self._dedup_pending:
+            return
+        from itertools import groupby
+        dedup_gene_count = 0
+        tandem_blocks = 0
+        # 按 (source_id, chrom_idx) 分组
+        pending = sorted(self._dedup_pending,
+                         key=lambda x: (x['source_id'], x['chrom_idx'], x['pos']))
+        for (sid, ci), group in groupby(
+                pending, key=lambda x: (x['source_id'], x['chrom_idx'])):
+            items = sorted(group, key=lambda x: x['pos'])
+            # 连续位置合并为块
+            blocks = []
+            current_block = [items[0]]
+            for item in items[1:]:
+                if item['pos'] == current_block[-1]['pos'] + 1:
+                    current_block.append(item)
+                else:
+                    blocks.append(current_block)
+                    current_block = [item]
+            blocks.append(current_block)
+
+            for block in blocks:
+                genes = [it['hog_obj'] for it in block]
+                if len(block) == 1:
+                    extra = len(block)
+                    anc_chrom = block[0].get('ancestral_chrom')
+                    if anc_chrom is not None and ci == anc_chrom:
+                        event_type = 'dispersed_dup_intra'
+                    else:
+                        event_type = 'dispersed_dup_inter'
+                else:
+                    event_type = 'tandem_dup'
+                    extra = len(block) - 1
+                    tandem_blocks += 1
+                dedup_gene_count += extra
+                self.events.append(TAKREvent(
+                    event_type=event_type,
+                    branch=f"{self.hog_level}-{sid}",
+                    genes_involved=genes,
+                    desc=f"{event_type}: {extra} extra copies at chrom{ci} "
+                         f"pos{block[0]['pos']}-{block[-1]['pos']}",
+                    support=extra,
+                ))
+                logger.debug("  [dedup] %s: %s block of %d genes (%d extra) at chrom%d pos%d-%d",
+                            sid, event_type, len(genes), extra, ci,
+                            block[0]['pos'], block[-1]['pos'])
+        if dedup_gene_count + tandem_blocks != len(self._dedup_pending):
+            logger.warning("  [dedup] %s: removed %d positions != extra %d + tandem %d = %d",
+                           source_id, len(self._dedup_pending),
+                           dedup_gene_count, tandem_blocks,
+                           dedup_gene_count + tandem_blocks)
+        else:
+            logger.info("  [dedup] %s: %d = %d + %d ✓",
+                        source_id, len(self._dedup_pending),
+                        dedup_gene_count, tandem_blocks)
+        self._dedup_pending = []
 
     def resolve_all_events(self, outgroups: Dict = None,
                            outgroup_adjacency: Set = None,

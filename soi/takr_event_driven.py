@@ -282,22 +282,24 @@ class ReconstructorV2:
         """Per-child dedup, validate, merge into ColoredGraph."""
         pre_dedup_chroms = {}
         for mc, cid in zip(mapped_children, child_source_ids):
-            n_chrom = len(list(mc.chromosomes))
+            ch = getattr(mc, 'chrom_hogs', None) or {}
+            n_chrom = len(ch)
             pre_dedup_chroms[cid] = n_chrom
-            n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
-            logger.info("  [Phase 1] %s: %d chroms, %d nodes, %d edges, %d cc",
-                        cid, n_chrom, n_nodes, n_edges, n_cc)
+            n_nodes = sum(len(hogs) for hogs in ch.values())
+            n_edges = sum(len(hogs) - 1 for hogs in ch.values() if len(hogs) > 1)
+            logger.info("  [Phase 1] %s: %d chroms, %d nodes, %d edges",
+                        cid, n_chrom, n_nodes, n_edges)
 
         deduped = G._deduplicate_children(mapped_children, child_source_ids,
                                            ref_graphs=mapped_children)
 
         for mc, cid in zip(deduped, child_source_ids):
-            mc.rebuild_edges_from_chrom_hogs()
-
-            n_chrom = len(list(mc.chromosomes))
-            n_nodes, n_edges, n_cc = _graph_stats(mc.graph)
-            logger.info("  [Phase 1] %s deduped: %d chroms, %d nodes, %d edges, %d cc",
-                        cid, n_chrom, n_nodes, n_edges, n_cc)
+            ch = getattr(mc, 'chrom_hogs', None) or {}
+            n_chrom = len(ch)
+            n_nodes = sum(len(hogs) for hogs in ch.values())
+            n_edges = sum(len(hogs) - 1 for hogs in ch.values() if len(hogs) > 1)
+            logger.info("  [Phase 1] %s deduped: %d chroms, %d nodes, %d edges",
+                        cid, n_chrom, n_nodes, n_edges)
 
             ok, errors = _validate_dedup(mc, cid, pre_dedup_chroms[cid])
             if ok:

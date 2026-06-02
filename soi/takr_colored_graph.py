@@ -1534,10 +1534,7 @@ class ColoredGraph(nx.DiGraph):
         for bid in self._blocks:
             block_cg.add_node(bid)
             # 全量继承第一个 HOG 的节点属性
-            hogs = self._blocks[bid]
-            first = next((h for h in hogs if self.has_node(h)), None)
-            if first:
-                block_cg.nodes[bid].update(self.nodes[first])
+            block_cg.nodes[bid].update(self.nodes[self._blocks[bid][0]])
 
         for h1, h2, data in self.edges(data=True):
             b1 = self._hog_to_block.get(h1)

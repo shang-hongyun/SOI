@@ -461,22 +461,27 @@ class ColoredGraph(nx.DiGraph):
 
             if disagree > agree:
                 # 多数边方向相反 → 翻转该孩子的所有边
-                self._flip_all_directions(cid)
-                logger.info("  [harmonize] %s: flipped (%d agree, %d disagree, %d shared)",
-                            cid, agree, disagree, len(shared_edges))
+                n_chroms, n_edges = self._flip_all_directions(cid)
+                logger.info("  [harmonize] %s: flipped (%d agree, %d disagree, %d shared → %d chroms, %d edges)",
+                            cid, agree, disagree, len(shared_edges), n_chroms, n_edges)
 
     def _flip_all_directions(self, child_id: str):
-        """翻转指定孩子的所有边方向。"""
+        """翻转指定孩子的所有边方向。返回 (chroms_flipped, edges_flipped)。"""
+        edges_flipped = 0
+        chroms = set()
         for h1, h2, data in self.edges(data=True):
             directions = data.get('directions', set())
             new_directions = set()
             for cid, ci, d in directions:
                 if cid == child_id:
                     new_directions.add((cid, ci, -d))
+                    chroms.add(ci)
                 else:
                     new_directions.add((cid, ci, d))
             if new_directions != directions:
                 data['directions'] = new_directions
+                edges_flipped += 1
+        return len(chroms), edges_flipped
 
     def remove_edge_color(self, h1, h2, color: Tuple[str, int]):
         """移除边上的一个颜色。如果该边没有其他颜色，移除整条边。"""

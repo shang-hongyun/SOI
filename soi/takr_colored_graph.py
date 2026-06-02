@@ -438,6 +438,7 @@ class ColoredGraph(nx.DiGraph):
                     break
 
         # 对每个其他孩子，比较共享边方向
+        flipped = []  # (cid, agree, disagree, shared, chroms, edges)
         for cid in children[1:]:
             child_dir = {}
             for h1, h2, data in self.edges(data=True):
@@ -460,10 +461,13 @@ class ColoredGraph(nx.DiGraph):
                     disagree += 1
 
             if disagree > agree:
-                # 多数边方向相反 → 翻转该孩子的所有边
                 n_chroms, n_edges = self._flip_all_directions(cid)
-                logger.info("  [harmonize] %s: flipped (%d agree, %d disagree, %d shared → %d chroms, %d edges)",
-                            cid, agree, disagree, len(shared_edges), n_chroms, n_edges)
+                flipped.append((cid, agree, disagree, len(shared_edges), n_chroms, n_edges))
+
+        if flipped:
+            parts = ", ".join(f"{cid}({str_agg}/{str_dis}/{str_shr}→{nc}c/{ne}e)"
+                              for cid, str_agg, str_dis, str_shr, nc, ne in flipped)
+            logger.info("  [harmonize] %d children flipped: %s", len(flipped), parts)
 
     def _flip_all_directions(self, child_id: str):
         """翻转指定孩子的所有边方向。返回 (chroms_flipped, edges_flipped)。"""

@@ -1547,23 +1547,6 @@ class ColoredGraph(nx.DiGraph):
             for path in self._extract_unitigs(non_tel_G, min_block_size):
                 _add_block(path)
 
-        # 剩余未分配 HOG
-        assigned = set(hog_to_block.keys())
-        unassigned = [n for n in self.nodes
-                      if n in hog_set and n not in cons_tels and n not in assigned]
-        if unassigned:
-            G_rem = nx.DiGraph()
-            G_rem.add_nodes_from(unassigned)
-            G_rem.add_edges_from(
-                (u, v, d) for u, v, d in self.edges(data=True)
-                if u in unassigned and v in unassigned)
-            for comp in nx.weakly_connected_components(G_rem):
-                sub = G_rem.subgraph(comp)
-                for path in self._extract_unitigs(sub, min_block_size):
-                    _add_block(path)
-                    for h in path:
-                        assigned.add(h)
-
         # 端粒 HOG → 1-HOG 块
         for h in cons_tels:
             if h not in hog_to_block and h in hog_set:

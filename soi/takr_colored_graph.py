@@ -1467,15 +1467,13 @@ class ColoredGraph(nx.DiGraph):
             curr = node
             while True:
                 succ = list(G.successors(curr))
-                if not _linear(curr) or len(succ) != 1:
+                if (not _linear(curr) or len(succ) != 1
+                        or _species_set(curr) != _species_set(succ[0])):
                     break
                 fwd.append(curr)
                 visited.add(curr)
                 nxt = succ[0]
                 if nxt in visited:
-                    break
-                # 物种来源不一致 → 断
-                if _species_set(curr) != _species_set(nxt):
                     break
                 curr = nxt
 
@@ -1486,10 +1484,8 @@ class ColoredGraph(nx.DiGraph):
                 if not _linear(curr) or len(pred) != 1:
                     break
                 nxt = pred[0]
-                if nxt in visited or not _linear(nxt):
-                    break
-                # 物种来源不一致 → 断
-                if _species_set(curr) != _species_set(nxt):
+                if (nxt in visited or not _linear(nxt)
+                        or _species_set(curr) != _species_set(nxt)):
                     break
                 curr = nxt
                 bwd.append(curr)

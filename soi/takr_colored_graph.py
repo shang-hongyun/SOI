@@ -1442,12 +1442,16 @@ class ColoredGraph(nx.DiGraph):
         def _species_set(node):
             return set(cid for cid, _ in G.nodes[node].get('sources', set()))
 
-        def _linear(node, direction=None):
-            """检查节点线性度。
+        def _linear(node, direction):
+            """所有孩子是否同意同一个 direction 方向上的邻居。
 
-            direction='succ': 仅检查所有孩子后继一致。
-            direction='pred': 仅检查所有孩子前驱一致。
-            direction=None:   检查邻居对（succ/pred frozenset）一致，允许双向边互换。
+            direction='succ': 所有孩子的后继是同一个节点 → fwd walk 可继续
+            direction='pred': 所有孩子的前驱是同一个节点 → bwd walk 可继续
+
+            不满足条件的情况：
+            - 端粒 / 跳过节点
+            - 任何孩子 indegree≠1 或 outdegree≠1
+            - 多孩子时指定方向的邻居不一致（分叉/汇合点）
             """
             if G.nodes[node].get('telomere') or node in skip:
                 return False
@@ -1458,41 +1462,22 @@ class ColoredGraph(nx.DiGraph):
                 if inn != 1 or out != 1:
                     return False
             sources = G.nodes[node].get('sources', set())
-            children = list(set(c for c, _ in sources))
+            children = set(c for c, _ in sources)
             if len(children) <= 1:
                 return True
-            if direction:
-                # 只检查指定方向的邻居一致性
-                neighbors = list(G.successors(node) if direction == 'succ'
-                                 else G.predecessors(node))
-                agreed = None
-                for cid in children:
-                    child_nbrs = [n for n in neighbors
-                                  if any(c == cid for c, _ in
-                                         (G[node][n] if direction == 'succ'
-                                          else G[n][node]).get('colors', set()))]
-                    if len(child_nbrs) != 1:
-                        return False
-                    if agreed is None:
-                        agreed = child_nbrs[0]
-                    elif agreed != child_nbrs[0]:
-                        return False
-                return True
-            # 无方向：邻居对（succ/pred frozenset）一致，允许双向边互换
-            succs = list(G.successors(node))
-            preds = list(G.predecessors(node))
-            pair0 = None
+            neighbors = list(G.successors(node) if direction == 'succ'
+                             else G.predecessors(node))
+            agreed = None
             for cid in children:
-                s = next((n for n in succs
-                          if any(c == cid for c, _ in G[node][n].get('colors', set()))), None)
-                p = next((n for n in preds
-                          if any(c == cid for c, _ in G[n][node].get('colors', set()))), None)
-                if s is None or p is None:
+                child_nbrs = [n for n in neighbors
+                              if any(c == cid for c, _ in
+                                     (G[node][n] if direction == 'succ'
+                                      else G[n][node]).get('colors', set()))]
+                if len(child_nbrs) != 1:
                     return False
-                pair = frozenset([s, p])
-                if pair0 is None:
-                    pair0 = pair
-                elif pair != pair0:
+                if agreed is None:
+                    agreed = child_nbrs[0]
+                elif agreed != child_nbrs[0]:
                     return False
             return True
 

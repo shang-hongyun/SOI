@@ -1442,7 +1442,13 @@ class ColoredGraph(nx.DiGraph):
         def _species_set(node):
             return set(cid for cid, _ in G.nodes[node].get('sources', set()))
 
-        def _linear(node):
+        def _linear(node, direction=None):
+            """检查节点线性度。
+
+            direction='succ': 仅检查所有孩子后继一致。
+            direction='pred': 仅检查所有孩子前驱一致。
+            direction=None:   检查邻居对（succ/pred frozenset）一致，允许双向边互换。
+            """
             if G.nodes[node].get('telomere') or node in skip:
                 return False
             deg = ColoredGraph._per_child_degree(G, node)
@@ -1451,16 +1457,32 @@ class ColoredGraph(nx.DiGraph):
             for (inn, out) in deg.values():
                 if inn != 1 or out != 1:
                     return False
-            # 多孩子时所有孩子的邻居对（succ/pred 的集合）必须一致
-            # 允许双向边时角色互换：孩子 A 的 succ 可以是孩子 B 的 pred
             sources = G.nodes[node].get('sources', set())
             children = list(set(c for c, _ in sources))
             if len(children) <= 1:
                 return True
+            if direction:
+                # 只检查指定方向的邻居一致性
+                neighbors = list(G.successors(node) if direction == 'succ'
+                                 else G.predecessors(node))
+                agreed = None
+                for cid in children:
+                    child_nbrs = [n for n in neighbors
+                                  if any(c == cid for c, _ in
+                                         (G[node][n] if direction == 'succ'
+                                          else G[n][node]).get('colors', set()))]
+                    if len(child_nbrs) != 1:
+                        return False
+                    if agreed is None:
+                        agreed = child_nbrs[0]
+                    elif agreed != child_nbrs[0]:
+                        return False
+                return True
+            # 无方向：邻居对（succ/pred frozenset）一致，允许双向边互换
             succs = list(G.successors(node))
             preds = list(G.predecessors(node))
             pair0 = None
-            for i, cid in enumerate(children):
+            for cid in children:
                 s = next((n for n in succs
                           if any(c == cid for c, _ in G[node][n].get('colors', set()))), None)
                 p = next((n for n in preds
@@ -1468,7 +1490,7 @@ class ColoredGraph(nx.DiGraph):
                 if s is None or p is None:
                     return False
                 pair = frozenset([s, p])
-                if i == 0:
+                if pair0 is None:
                     pair0 = pair
                 elif pair != pair0:
                     return False
@@ -1484,10 +1506,10 @@ class ColoredGraph(nx.DiGraph):
             fwd = []
             curr = node
             while True:
-                if not _linear(curr):
-                    break
                 fwd.append(curr)
                 visited.add(curr)
+                if not _linear(curr, 'succ'):
+                    break
                 nxt = ColoredGraph._per_child_neighbor(G, curr, 'succ')
                 if nxt is None:
                     break
@@ -1499,17 +1521,17 @@ class ColoredGraph(nx.DiGraph):
             bwd = []
             curr = node
             while True:
-                if not _linear(curr):
-                    break
                 nxt = ColoredGraph._per_child_neighbor(G, curr, 'pred')
                 if nxt is None:
                     break
-                # 前驱已访问、非线性或物种不一致 → 断
-                if nxt in visited or not _linear(nxt) or _species_set(curr) != _species_set(nxt):
+                # 前驱已访问或物种不一致 → 断
+                if nxt in visited or _species_set(curr) != _species_set(nxt):
                     break
                 curr = nxt
                 bwd.append(curr)
                 visited.add(curr)
+                if not _linear(curr, 'pred'):
+                    break
 
             path = list(reversed(bwd)) + fwd
             if len(path) >= min_size:

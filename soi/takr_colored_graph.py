@@ -1427,10 +1427,11 @@ class ColoredGraph(nx.DiGraph):
 
     @staticmethod
     def _extract_unitigs(G, min_size=2, skip_nodes=None):
-        """有向图 unitig：提取 indegree=1 且 outdegree=1 的连续节点。
+        """有向图 unitig：每个孩子 indegree=1 且 outdegree=1 的连续节点。
 
         skip_nodes 中的节点为 stop——不进入 unitig。
         相邻节点物种来源不一致也断——单孩子/多孩子统一处理。
+        双向边按单孩子视角判断 linearity，两个孩子方向相反也各自算 linear。
         """
         skip = skip_nodes or set()
 
@@ -1438,9 +1439,12 @@ class ColoredGraph(nx.DiGraph):
             return set(cid for cid, _ in G.nodes[node].get('sources', set()))
 
         def _linear(node):
-            return (G.in_degree(node) == 1 and G.out_degree(node) == 1
-                    and not G.nodes[node].get('telomere')
-                    and node not in skip)
+            if G.nodes[node].get('telomere') or node in skip:
+                return False
+            for (inn, out) in ColoredGraph._per_child_degree(G, node).values():
+                if inn != 1 or out != 1:
+                    return False
+            return True
 
         unitigs = []
         visited = set()
@@ -1452,12 +1456,13 @@ class ColoredGraph(nx.DiGraph):
             fwd = []
             curr = node
             while True:
-                succ = list(G.successors(curr))
-                if not _linear(curr) or len(succ) != 1:
+                if not _linear(curr):
                     break
                 fwd.append(curr)
                 visited.add(curr)
-                nxt = succ[0]
+                nxt = ColoredGraph._per_child_neighbor(G, curr, 'succ')
+                if nxt is None:
+                    break
                 # 后继已访问或物种不一致 → 断（curr 已在 unitig 内）
                 if nxt in visited or _species_set(curr) != _species_set(nxt):
                     break
@@ -1466,10 +1471,11 @@ class ColoredGraph(nx.DiGraph):
             bwd = []
             curr = node
             while True:
-                pred = list(G.predecessors(curr))
-                if not _linear(curr) or len(pred) != 1:
+                if not _linear(curr):
                     break
-                nxt = pred[0]
+                nxt = ColoredGraph._per_child_neighbor(G, curr, 'pred')
+                if nxt is None:
+                    break
                 # 前驱已访问、非线性或物种不一致 → 断
                 if nxt in visited or not _linear(nxt) or _species_set(curr) != _species_set(nxt):
                     break
@@ -1481,6 +1487,42 @@ class ColoredGraph(nx.DiGraph):
             if len(path) >= min_size:
                 unitigs.append(path)
         return unitigs
+
+    @staticmethod
+    def _per_child_degree(G, node):
+        """返回 {child_id: (indegree, outdegree)} 单孩子视角度数。"""
+        deg = {}
+        sources = G.nodes[node].get('sources', set())
+        for cid in set(c for c, _ in sources):
+            out = sum(1 for s in G.successors(node)
+                      if any(c == cid for c, _ in G[node][s].get('colors', set())))
+            inn = sum(1 for p in G.predecessors(node)
+                      if any(c == cid for c, _ in G[p][node].get('colors', set())))
+            deg[cid] = (inn, out)
+        return deg
+
+    @staticmethod
+    def _per_child_neighbor(G, node, direction='succ'):
+        """所有孩子指向同一个后继/前驱则返回该节点，否则 None。"""
+        sources = G.nodes[node].get('sources', set())
+        children = set(c for c, _ in sources)
+        if not children:
+            return None
+        agreed = None
+        neighbors = list(G.successors(node) if direction == 'succ'
+                         else G.predecessors(node))
+        for cid in children:
+            child_nbrs = [n for n in neighbors
+                          if any(c == cid for c, _ in
+                                 (G[node][n] if direction == 'succ'
+                                  else G[n][node]).get('colors', set()))]
+            if len(child_nbrs) != 1:
+                return None
+            if agreed is None:
+                agreed = child_nbrs[0]
+            elif child_nbrs[0] != agreed:
+                return None
+        return agreed
 
     def _build_synteny_blocks(self, min_block_size: int = 2):
         """构建共线性块。

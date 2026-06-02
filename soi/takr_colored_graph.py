@@ -1493,6 +1493,10 @@ class ColoredGraph(nx.DiGraph):
             while True:
                 if G.nodes[curr].get('telomere') or curr in skip:
                     break
+                deg = ColoredGraph._per_child_degree(G, curr)
+                if not deg or any(inn != 1 or out != 1
+                                  for (inn, out) in deg.values()):
+                    break
                 fwd.append(curr)
                 visited.add(curr)
                 if not _linear(curr, 'succ'):
@@ -1515,6 +1519,10 @@ class ColoredGraph(nx.DiGraph):
                 if nxt in visited or _species_set(curr) != _species_set(nxt):
                     break
                 curr = nxt
+                deg = ColoredGraph._per_child_degree(G, curr)
+                if not deg or any(inn != 1 or out != 1
+                                  for (inn, out) in deg.values()):
+                    break
                 if G.nodes[curr].get('telomere') or curr in skip:
                     break
                 bwd.append(curr)

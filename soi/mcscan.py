@@ -701,6 +701,13 @@ class Collinearity():
 			genes1,genes2 = rc.genes1, rc.genes2
 	'''
 
+	# Pre-compiled regex patterns -- avoids re.compile() on 17M+ lines
+	_RE_ALIGN_HEADER = re.compile(r'#+ Alignment')
+	_RE_JCV_END = re.compile(r'###$')
+	_RE_MCSCANX_HEADER = re.compile(
+	    r'#+ Alignment (\d+): score=(\S+) \S+value=(\S+) N=(\S+) (\S+)&(\S+) (plus|minus)')
+	_RE_MCSCANX_LINE = re.compile(r'.*?\d+.*?\d+:\s+(\S+)\s+(\S+)\s+\d+')
+
 	def __init__(self, collinearity=None, gff=None, chrmap=None, kaks=None,
 				 homology=False, source=None, inherit={}, **ks_args):
 		# some common variables
@@ -743,20 +750,17 @@ class Collinearity():
 			self.has_head = 1
 			for line in open(self.collinearity):
 				line = lazy_decode(line)
-				if re.compile(r'#+ Alignment').match(line):  # mcscanx or wgdi
+				if Collinearity._RE_ALIGN_HEADER.match(line):  # mcscanx or wgdi
 					if self.source is None and re.compile(r'# Alignment').match(line):
 						self.source = 'wgdi'
 						self.has_head = 0
-					#else:
-					#	self.source = 'mcscanx'
-					#print(self.source)
 					self.header = ''.join(head)
 					if lines:
 						self.parse_lines(lines)
 						yield self
 						lines = []
 					lines.append(line)
-				elif re.compile(r'###$').match(line):  # jcvi
+				elif Collinearity._RE_JCV_END.match(line):  # jcvi
 					self.source = 'jcvi'
 					self.has_head = 0
 					if lines:
@@ -785,11 +789,10 @@ class Collinearity():
 			if i == 0 and self.source == 'jcvi':
 				pass
 			elif i == 0:  # mcscanx or wgdi
-				pattern = r'#+ Alignment (\d+): score=(\S+) \S+value=(\S+) N=(\S+) (\S+)&(\S+) (plus|minus)'
 				try:
 					self.Alignment, self.score, self.e_value, self.N, \
 						self.chr1, self.chr2, self.orient = \
-						re.compile(pattern).match(line).groups()
+						Collinearity._RE_MCSCANX_HEADER.match(line).groups()
 				except AttributeError:
 					print('unparsed head LINE: {}'.format(line), file=sys.stderr)
 					raise AttributeError()
@@ -812,9 +815,8 @@ class Collinearity():
 					gene1, idx1, gene2, idx2, strand = tmp
 
 				else:  # mcscanx
-					pattern = r'.*?\d+.*?\d+:\s+(\S+)\s+(\S+)\s+\d+'
 					try:
-						gene1, gene2 = re.compile(pattern).match(line).groups()
+						gene1, gene2 = Collinearity._RE_MCSCANX_LINE.match(line).groups()
 					except AttributeError:
 						print('unparsed LINE: {}'.format(
 							line), file=sys.stderr)

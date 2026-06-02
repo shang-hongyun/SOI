@@ -528,7 +528,7 @@ class ReconstructorV2:
                 logger.info("  [gfa] child HOG %s -> %s", cid, hog_path)
 
                 # Debug: 每染色体块数
-                tmp._ensure_blocks()
+#                tmp._ensure_blocks()
                 # 重建块间边：沿有向图线性行走，保证非端粒 block 有 in/out
                 tmp._compress_to_block_level()
                 chr_blocks = defaultdict(list)

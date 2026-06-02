@@ -1608,7 +1608,6 @@ class ColoredGraph(nx.DiGraph):
             # 全量继承第一个 HOG 的节点属性
             block_cg.nodes[bid].update(self.nodes[self._blocks[bid][0]])
 
-        suppressed = 0
         for h1, h2, data in self.edges(data=True):
             b1 = self._hog_to_block.get(h1)
             b2 = self._hog_to_block.get(h2)
@@ -1623,31 +1622,29 @@ class ColoredGraph(nx.DiGraph):
                 if not (blk1 and blk2
                         and (h1 == blk1[0] or h1 == blk1[-1])
                         and (h2 == blk2[0] or h2 == blk2[-1])):
-                    suppressed += 1
                     continue
                 if not block_cg.has_edge(b1, b2):
                     # 全量继承 HOG 边的所有属性
                     block_cg.add_edge(b1, b2, **data)
 
         self._block_graph = block_cg
-        self._validate_block_compression(block_cg, suppressed)
+        self._validate_block_compression(block_cg)
 
         logger.debug("  [blocks] block graph: %d nodes, %d edges",
                      block_cg.number_of_nodes(), block_cg.number_of_edges())
         return block_cg
 
-    def _validate_block_compression(self, block_cg, suppressed=0):
-        """验证：hog_n = blk_n + Σ(L-1) + suppressed（非末端边被抑制）。"""
+    def _validate_block_compression(self, block_cg):
+        """简单比较：hog_n = blk_n + Σ(L-1)。"""
         hog_n = self.number_of_edges()
         blk_n = block_cg.number_of_edges()
         internal = sum(len(hogs) - 1 for hogs in self._blocks.values())
-        expected = blk_n + internal + suppressed
+        expected = blk_n + internal
         if hog_n == expected:
-            logger.info("  [blocks] verified hog-blk: %d = %d + %d (+%d sup) ✓",
-                        hog_n, blk_n, internal, suppressed)
+            logger.info("  [blocks] verified hog-blk: %d = %d + %d ✓", hog_n, blk_n, internal)
         else:
-            logger.info("  [blocks] not verified : hog %d !=  blk %d + %d (+%d sup) (diff=%d)",
-                        hog_n, blk_n, internal, suppressed, hog_n - expected)
+            logger.info("  [blocks] not verified : hog %d !=  blk %d + %d (diff=%d)",
+                        hog_n, blk_n, internal, hog_n - expected)
 
     def _detect_inversions(self) -> int:
         """直接检测倒位：找方向冲突的边对。

@@ -1454,6 +1454,7 @@ class ColoredGraph(nx.DiGraph):
 
         def _linear(node):
             return (G.in_degree(node) == 1 and G.out_degree(node) == 1
+                    and not G.nodes[node].get('telomere')
                     and node not in skip)
 
         unitigs = []
@@ -1467,13 +1468,13 @@ class ColoredGraph(nx.DiGraph):
             curr = node
             while True:
                 succ = list(G.successors(curr))
-                if (not _linear(curr) or len(succ) != 1
-                        or _species_set(curr) != _species_set(succ[0])):
+                if not _linear(curr) or len(succ) != 1:
                     break
                 fwd.append(curr)
                 visited.add(curr)
                 nxt = succ[0]
-                if nxt in visited:
+                # 后继已访问或物种不一致 → 断（curr 已在 unitig 内）
+                if nxt in visited or _species_set(curr) != _species_set(nxt):
                     break
                 curr = nxt
 
@@ -1484,8 +1485,8 @@ class ColoredGraph(nx.DiGraph):
                 if not _linear(curr) or len(pred) != 1:
                     break
                 nxt = pred[0]
-                if (nxt in visited or not _linear(nxt)
-                        or _species_set(curr) != _species_set(nxt)):
+                # 前驱已访问、非线性或物种不一致 → 断
+                if nxt in visited or not _linear(nxt) or _species_set(curr) != _species_set(nxt):
                     break
                 curr = nxt
                 bwd.append(curr)

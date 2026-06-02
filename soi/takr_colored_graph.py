@@ -2678,10 +2678,20 @@ class ColoredGraph(nx.DiGraph):
 
         # Phase 4a: seg_deletion / seg_insertion (所有大小的 indel)
         n_seg = self._resolve_seg_events(outgroup_adjacency=outgroup_adjacency)
-        if 1:
+        if n_seg:
             seg_events = [e for e in self.events if e.event_type == 'seg_deletion']
-            seg_str = ", ".join(f"{e.branch}" for e in seg_events[-5:])
-            logger.info("  [colored] Phase 4a (seg_events): %d events [%s]", n_seg, seg_str)
+            from collections import defaultdict
+            child_counts = defaultdict(int)
+            child_lens = defaultdict(list)
+            for e in seg_events:
+                cid = e.branch.split('-')[-1] if '-' in e.branch else e.branch
+                child_counts[cid] += 1
+                child_lens[cid].append(e.support)
+            for cid in sorted(child_counts):
+                lens = child_lens[cid]
+                len_str = f"len {min(lens)}-{max(lens)}" if len(lens) > 1 else f"len {lens[0]}"
+                logger.info("  [Phase 4a] %s events: %s=%d (%s)",
+                            cid, 'seg_deletion', child_counts[cid], len_str)
 
         _gfa_out("p4a_seg")
 
@@ -2872,7 +2882,7 @@ class ColoredGraph(nx.DiGraph):
                     involved_hogs.extend(self._blocks.get(bid, []))
                 self.events.append(TAKREvent(
                     event_type='seg_deletion',
-                    branch=self.hog_level,
+                    branch=f"{self.hog_level}-{cid}",
                     genes_involved=involved_hogs,
                     desc=f"seg_deletion: {len(comp)} blocks missing in {cid}",
                     support=len(comp),

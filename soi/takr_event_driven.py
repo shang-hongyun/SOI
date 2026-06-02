@@ -308,7 +308,8 @@ class ReconstructorV2:
 
         # Dedup events
         dedup_events = [e for e in G.events
-                        if e.event_type in ('tandem_dup', 'dispersed_dup')]
+                        if e.event_type in ('tandem_dup', 'dispersed_dup_intra',
+                                            'dispersed_dup_inter')]
         if dedup_events:
             _log_child_events(dedup_events, "Phase 1")
 

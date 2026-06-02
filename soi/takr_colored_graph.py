@@ -2603,8 +2603,12 @@ class ColoredGraph(nx.DiGraph):
                 for block in blocks:
                     genes = [it['hog_obj'] for it in block]
                     if len(block) == 1:
-                        event_type = 'dispersed_dup'
                         extra = len(block)
+                        anc_chrom = block[0].get('ancestral_chrom')
+                        if anc_chrom is not None and ci == anc_chrom:
+                            event_type = 'dispersed_dup_intra'
+                        else:
+                            event_type = 'dispersed_dup_inter'
                     else:
                         event_type = 'tandem_dup'
                         extra = len(block) - 1

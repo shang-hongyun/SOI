@@ -2488,6 +2488,7 @@ class ColoredGraph(nx.DiGraph):
 
         # 找所有重复 HOG（出现 >1 次）
         remove_set = set()  # (chrom_idx, pos)
+        zero_evidence_hogs = []  # 零证据 HOG 汇总
         for hog_str, occurrences in hog_occurrences.items():
             if len(occurrences) <= 1:
                 continue
@@ -2526,8 +2527,7 @@ class ColoredGraph(nx.DiGraph):
                     best = (chrom_idx, pos, hog_obj)
 
             if not hog_in_ref or all_unreachable:
-                logger.warning("  [dedup] %s: zero evidence for %s (in_ref=%s), deleting all %d copies",
-                               source_id, hog_str, hog_in_ref, len(occurrences))
+                zero_evidence_hogs.append((hog_str, len(occurrences)))
 
             # 收集非祖先拷贝（基因级）
             for chrom_idx, pos, hog_obj in occurrences:
@@ -2550,6 +2550,12 @@ class ColoredGraph(nx.DiGraph):
                 logger.debug("  [dedup] %s chrom%d pos%d: %s (ancestral chrom%d pos%d, dist=%d)",
                              source_id, chrom_idx, pos, hog_str,
                              best[0], best[1], best_score)
+
+        if zero_evidence_hogs:
+            total_copies = sum(n for _, n in zero_evidence_hogs)
+            logger.warning("  [dedup] %s: zero evidence for %d HOGs (%d copies total): %s ...",
+                           source_id, len(zero_evidence_hogs), total_copies,
+                           ", ".join(h for h, _ in zero_evidence_hogs[:5]))
 
         # 更新 chrom_hogs：移除被删除的位置
         if remove_set and chrom_source:

@@ -2630,6 +2630,10 @@ class ColoredGraph(nx.DiGraph):
                                source_id, len(self._dedup_pending),
                                dedup_gene_count, tandem_blocks,
                                dedup_gene_count + tandem_blocks)
+            else:
+                logger.info("  [dedup] %s: %d = %d + %d ✓",
+                            source_id, len(self._dedup_pending),
+                            dedup_gene_count, tandem_blocks)
             self._dedup_pending = []
 
         return new_graph

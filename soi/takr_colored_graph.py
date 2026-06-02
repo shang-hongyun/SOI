@@ -1606,13 +1606,21 @@ class ColoredGraph(nx.DiGraph):
         return block_cg
 
     def _validate_block_compression(self, block_cg):
-        """直接比较 HOG 图和 block 图的边数。"""
+        """直接比较 HOG 图和 block 图的边数。
+        
+        block 边 + Σ(L-1) - multi_block_count == HOG 边。
+        （multi_block_count 扣掉 block 自环已被计入 blk_n 的部分）
+        """
         hog_n = self.number_of_edges()
         blk_n = block_cg.number_of_edges()
-        if hog_n != blk_n:
-            logger.info("  [blocks] HOG edges %d → block edges %d", hog_n, blk_n)
+        internal = sum(len(hogs) - 1 for hogs in self._blocks.values() if len(hogs) > 1)
+        multi = sum(1 for hogs in self._blocks.values() if len(hogs) > 1)
+        if hog_n != blk_n + internal - multi:
+            logger.info("  [blocks] hog=%d, blk=%d + internal=%d - multi=%d = %d",
+                        hog_n, blk_n, internal, multi, blk_n + internal - multi)
         else:
-            logger.info("  [blocks] edge count %d ✓", blk_n)
+            logger.info("  [blocks] %d = %d + %d - %d ✓",
+                        hog_n, blk_n, internal, multi)
 
     def _detect_inversions(self) -> int:
         """直接检测倒位：找方向冲突的边对。

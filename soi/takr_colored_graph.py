@@ -1267,8 +1267,11 @@ class ColoredGraph(nx.DiGraph):
                 is_tel = bool(self.nodes[node].get('telomere'))
 
             if sources:
-                parts = sorted(f'{cid}|{ch}' for cid, ch in sources)
-                label = '+'.join(parts)
+                # 按第一个物种的染色体着色
+                first_sp = sorted(sources)[0][0]
+                chrom_label = '+'.join(sorted(ch for cid, ch in sources if cid == first_sp))
+                label = chrom_label if chrom_label else '+'.join(
+                    sorted(f'{cid}|{ch}' for cid, ch in sources))
             else:
                 label = ''
             node_label[node] = label

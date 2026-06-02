@@ -2692,6 +2692,8 @@ class ColoredGraph(nx.DiGraph):
                 len_str = f"len {min(lens)}-{max(lens)}" if len(lens) > 1 else f"len {lens[0]}"
                 logger.info("  [Phase 4a] %s events: %s=%d (%s)",
                             cid, 'seg_deletion', child_counts[cid], len_str)
+        else:
+            logger.warning("  [colored] Phase 4a: 0 seg_deletion events — unexpected")
 
         _gfa_out("p4a_seg")
 

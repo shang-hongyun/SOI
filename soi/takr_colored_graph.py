@@ -1506,6 +1506,8 @@ class ColoredGraph(nx.DiGraph):
             fwd = []
             curr = node
             while True:
+                if G.nodes[curr].get('telomere') or curr in skip:
+                    break
                 fwd.append(curr)
                 visited.add(curr)
                 if not _linear(curr, 'succ'):
@@ -1528,6 +1530,8 @@ class ColoredGraph(nx.DiGraph):
                 if nxt in visited or _species_set(curr) != _species_set(nxt):
                     break
                 curr = nxt
+                if G.nodes[curr].get('telomere') or curr in skip:
+                    break
                 bwd.append(curr)
                 visited.add(curr)
                 if not _linear(curr, 'pred'):

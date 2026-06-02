@@ -1553,8 +1553,8 @@ class ColoredGraph(nx.DiGraph):
                 if b1 == b2 and h1 != h2:
                     continue
                 if not block_cg.has_edge(b1, b2):
-                    for child_id, chrom_idx in data.get('colors', set()):
-                        block_cg.add_synteny_edge(b1, b2, child_id, chrom_idx)
+                    # 全量继承 HOG 边的所有属性
+                    block_cg.add_edge(b1, b2, **data)
 
         self._block_graph = block_cg
         self._validate_block_compression(block_cg)

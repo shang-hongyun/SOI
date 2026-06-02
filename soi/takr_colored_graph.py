@@ -1509,13 +1509,12 @@ class ColoredGraph(nx.DiGraph):
             return bid
 
         if len(self.children()) >= 2:
-            # 多孩子：共享边图，端粒边保留（保证相邻 HOG 度数正确）
-            shared_G = nx.DiGraph()
-            for h1, h2, data in self.edges(data=True):
-                if len(data['colors']) >= 2:
-                    shared_G.add_edge(h1, h2)
-            for comp in nx.weakly_connected_components(shared_G):
-                sub = nx.DiGraph(shared_G.subgraph(comp))
+            # 多孩子：共享边子图（视图，不拷贝）
+            shared_edges = [(h1, h2) for h1, h2, d in self.edges(data=True)
+                            if len(d['colors']) >= 2]
+            shared_sub = self.edge_subgraph(shared_edges)
+            for comp in nx.weakly_connected_components(shared_sub):
+                sub = shared_sub.subgraph(comp)
                 degs = {n: sub.in_degree(n)+sub.out_degree(n) for n in sub.nodes()}
                 if any(d > 2 for d in degs.values()):
                     for path in self._extract_unitigs(sub, min_block_size,
@@ -1546,12 +1545,8 @@ class ColoredGraph(nx.DiGraph):
                 if len(path) >= min_block_size:
                     _add_block(path)
         else:
-            # 单孩子：全图（端粒边保留）_extract_unitigs 直接做 block
-            full_G = nx.DiGraph()
-            for h1, h2 in self.edges():
-                if h1 in hog_set and h2 in hog_set:
-                    full_G.add_edge(h1, h2)
-            for path in self._extract_unitigs(full_G, min_block_size,
+            # 单孩子：直接用 self
+            for path in self._extract_unitigs(self, min_block_size,
                                               telomeres=cons_tels):
                 _add_block(path)
 
@@ -1611,30 +1606,23 @@ class ColoredGraph(nx.DiGraph):
         return block_cg
 
     def _validate_block_compression(self, block_cg):
-        """验证 block 压缩：同 block 的 HOG 边 + block 间边 == 总 HOG 边。"""
+        """验证每条 HOG 边都映射到了 block 边。"""
         hog_set = self.all_hogs()
-        hog_edges_total = sum(1 for h1, h2 in self.edges()
-                              if h1 in hog_set and h2 in hog_set)
-        # 同 block 的 HOG 边：b1 == b2
-        same_block_edges = 0
+        missing = 0
         for h1, h2 in self.edges():
-            if h1 in hog_set and h2 in hog_set:
-                b1 = self._hog_to_block.get(h1)
-                b2 = self._hog_to_block.get(h2)
-                if b1 is not None and b1 == b2:
-                    same_block_edges += 1
-        block_edges_total = block_cg.number_of_edges()
-        self_loops = sum(1 for n in block_cg.nodes() if block_cg.has_edge(n, n))
-        block_edges = block_edges_total - self_loops
-        expected = hog_edges_total - same_block_edges
-        if block_edges != expected:
-            logger.info("  [blocks] edge count: hog=%d same_block=%d expected_cross=%d "
-                        "actual_cross=%d (self_loops=%d, total=%d)",
-                        hog_edges_total, same_block_edges, expected,
-                        block_edges, self_loops, block_edges_total)
+            if h1 not in hog_set or h2 not in hog_set:
+                continue
+            b1 = self._hog_to_block.get(h1)
+            b2 = self._hog_to_block.get(h2)
+            if b1 is None or b2 is None:
+                missing += 1
+                continue
+            if not block_cg.has_edge(b1, b2):
+                missing += 1
+        if missing:
+            logger.info("  [blocks] %d HOG edges not mapped to block edges", missing)
         else:
-            logger.info("  [blocks] edge count verified: %d = %d - %d ✓",
-                         block_edges, hog_edges_total, same_block_edges)
+            logger.info("  [blocks] all HOG edges mapped ✓")
 
     def _detect_inversions(self) -> int:
         """直接检测倒位：找方向冲突的边对。

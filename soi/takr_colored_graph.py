@@ -1445,8 +1445,30 @@ class ColoredGraph(nx.DiGraph):
         def _linear(node):
             if G.nodes[node].get('telomere') or node in skip:
                 return False
-            for (inn, out) in ColoredGraph._per_child_degree(G, node).values():
+            deg = ColoredGraph._per_child_degree(G, node)
+            if not deg:
+                return False
+            for (inn, out) in deg.values():
                 if inn != 1 or out != 1:
+                    return False
+            # 多孩子时所有孩子必须同意同一个后继和同一个前驱
+            sources = G.nodes[node].get('sources', set())
+            children = list(set(c for c, _ in sources))
+            if len(children) <= 1:
+                return True
+            succs = list(G.successors(node))
+            preds = list(G.predecessors(node))
+            succ0 = pred0 = None
+            for i, cid in enumerate(children):
+                s = next((n for n in succs
+                          if any(c == cid for c, _ in G[node][n].get('colors', set()))), None)
+                p = next((n for n in preds
+                          if any(c == cid for c, _ in G[n][node].get('colors', set()))), None)
+                if s is None or p is None:
+                    return False
+                if i == 0:
+                    succ0, pred0 = s, p
+                elif s != succ0 or p != pred0:
                     return False
             return True
 
@@ -1586,6 +1608,7 @@ class ColoredGraph(nx.DiGraph):
             # 全量继承第一个 HOG 的节点属性
             block_cg.nodes[bid].update(self.nodes[self._blocks[bid][0]])
 
+        suppressed = 0
         for h1, h2, data in self.edges(data=True):
             b1 = self._hog_to_block.get(h1)
             b2 = self._hog_to_block.get(h2)
@@ -1594,28 +1617,37 @@ class ColoredGraph(nx.DiGraph):
                 # h1≠h2 的内部边已被压缩在 block 内，不映射
                 if b1 == b2 and h1 != h2:
                     continue
+                # 只有末端 HOG 的边才映射为块间边
+                blk1 = self._blocks.get(b1, [])
+                blk2 = self._blocks.get(b2, [])
+                if not (blk1 and blk2
+                        and (h1 == blk1[0] or h1 == blk1[-1])
+                        and (h2 == blk2[0] or h2 == blk2[-1])):
+                    suppressed += 1
+                    continue
                 if not block_cg.has_edge(b1, b2):
                     # 全量继承 HOG 边的所有属性
                     block_cg.add_edge(b1, b2, **data)
 
         self._block_graph = block_cg
-        self._validate_block_compression(block_cg)
+        self._validate_block_compression(block_cg, suppressed)
 
         logger.debug("  [blocks] block graph: %d nodes, %d edges",
                      block_cg.number_of_nodes(), block_cg.number_of_edges())
         return block_cg
 
-    def _validate_block_compression(self, block_cg):
-        """简单比较：hog_n = blk_n + Σ(L-1)。"""
+    def _validate_block_compression(self, block_cg, suppressed=0):
+        """验证：hog_n = blk_n + Σ(L-1) + suppressed（非末端边被抑制）。"""
         hog_n = self.number_of_edges()
         blk_n = block_cg.number_of_edges()
         internal = sum(len(hogs) - 1 for hogs in self._blocks.values())
-        expected = blk_n + internal
+        expected = blk_n + internal + suppressed
         if hog_n == expected:
-            logger.info("  [blocks] verified hog-blk: %d = %d + %d ✓", hog_n, blk_n, internal)
+            logger.info("  [blocks] verified hog-blk: %d = %d + %d (+%d sup) ✓",
+                        hog_n, blk_n, internal, suppressed)
         else:
-            logger.info("  [blocks] not verified : hog %d !=  blk %d + %d (diff=%d)",
-                        hog_n, blk_n, internal, hog_n - expected)
+            logger.info("  [blocks] not verified : hog %d !=  blk %d + %d (+%d sup) (diff=%d)",
+                        hog_n, blk_n, internal, suppressed, hog_n - expected)
 
     def _detect_inversions(self) -> int:
         """直接检测倒位：找方向冲突的边对。

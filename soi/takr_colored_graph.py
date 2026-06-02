@@ -1432,13 +1432,16 @@ class ColoredGraph(nx.DiGraph):
     # ==================== 共线性块压缩 ====================
 
     @staticmethod
-    def _extract_unitigs(G, min_size=2):
-        """有向图 unitig：只提取 indegree=1 且 outdegree=1 的连续线性节点。
+    def _extract_unitigs(G, min_size=2, telomeres=None):
+        """有向图 unitig：提取 indegree=1 且 outdegree=1 的非端粒连续节点。
 
-        非线性节点不进入任何 unitig，后续作为 singleton block。
+        端粒 HOG 为 stop 节点——提供边保持相邻节点度数正确，但不进入 unitig。
         """
+        tels = telomeres or set()
+
         def _linear(node):
-            return G.in_degree(node) == 1 and G.out_degree(node) == 1
+            return (G.in_degree(node) == 1 and G.out_degree(node) == 1
+                    and node not in tels)
 
         unitigs = []
         visited = set()
@@ -1451,7 +1454,7 @@ class ColoredGraph(nx.DiGraph):
             curr = node
             while True:
                 succ = list(G.successors(curr))
-                # 只沿 linear 节点走；非 linear 节点作为端点停下
+                # 只沿 linear 节点走；非 linear 节点（含端粒）作为端点停下
                 if not _linear(curr) or len(succ) != 1:
                     # 非线性点不进入 unitig
                     break
@@ -1506,30 +1509,34 @@ class ColoredGraph(nx.DiGraph):
             return bid
 
         if len(self.children()) >= 2:
-            # 多孩子：共享边图，排除端粒后找线性路径
+            # 多孩子：共享边图，端粒边保留（保证相邻 HOG 度数正确）
             shared_G = nx.DiGraph()
             for h1, h2, data in self.edges(data=True):
-                if (len(data['colors']) >= 2
-                        and h1 not in cons_tels and h2 not in cons_tels):
+                if len(data['colors']) >= 2:
                     shared_G.add_edge(h1, h2)
             for comp in nx.weakly_connected_components(shared_G):
                 sub = nx.DiGraph(shared_G.subgraph(comp))
                 degs = {n: sub.in_degree(n)+sub.out_degree(n) for n in sub.nodes()}
                 if any(d > 2 for d in degs.values()):
-                    for path in self._extract_unitigs(sub, min_block_size):
+                    for path in self._extract_unitigs(sub, min_block_size,
+                                                      telomeres=cons_tels):
                         _add_block(path)
                     continue
-                # Linear component: walk from one endpoint
-                endpoints = [n for n in sub.nodes() if degs[n] == 1]
+                # Linear component: walk from one endpoint, stop at telomeres
+                endpoints = [n for n in sub.nodes() if degs[n] == 1
+                             and n not in cons_tels]
                 if not endpoints:
-                    endpoints = [list(comp)[0]]
+                    endpoints = [n for n in sub.nodes() if n not in cons_tels]
+                if not endpoints:
+                    continue
                 start = endpoints[0]
                 path = [start]
                 visited = {start}
                 curr, prev = start, None
                 while True:
                     neighbors = [n for n in (list(sub.predecessors(curr))+list(sub.successors(curr)))
-                                 if n != prev and n not in visited]
+                                 if n != prev and n not in visited
+                                 and n not in cons_tels]
                     if not neighbors:
                         break
                     nxt = neighbors[0]
@@ -1539,20 +1546,16 @@ class ColoredGraph(nx.DiGraph):
                 if len(path) >= min_block_size:
                     _add_block(path)
         else:
-            # 单孩子：全图（去端粒）_extract_unitigs 直接做 block
-            non_tel_G = nx.DiGraph()
+            # 单孩子：全图（端粒边保留）_extract_unitigs 直接做 block
+            full_G = nx.DiGraph()
             for h1, h2 in self.edges():
-                if h1 in hog_set and h2 in hog_set and h1 not in cons_tels and h2 not in cons_tels:
-                    non_tel_G.add_edge(h1, h2)
-            for path in self._extract_unitigs(non_tel_G, min_block_size):
+                if h1 in hog_set and h2 in hog_set:
+                    full_G.add_edge(h1, h2)
+            for path in self._extract_unitigs(full_G, min_block_size,
+                                              telomeres=cons_tels):
                 _add_block(path)
 
-        # 端粒 HOG → 1-HOG 块
-        for h in cons_tels:
-            if h not in hog_to_block and h in hog_set:
-                _add_block([h])
-
-        # 剩余孤立 HOG → 1-HOG 块
+        # 剩余孤立 HOG → 1-HOG 块（含端粒）
         for h in hog_set:
             if h not in hog_to_block:
                 _add_block([h])

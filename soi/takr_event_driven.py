@@ -87,7 +87,7 @@ def _log_child_events(events, phase_label, child_id=None):
         type_lens = defaultdict(list)
         for e in evts:
             type_counts[e.event_type] += 1
-            type_lens[e.event_type].append(len(e.genes_involved))
+            type_lens[e.event_type].append(e.support)
         parts = []
         for etype in sorted(type_counts.keys()):
             count = type_counts[etype]

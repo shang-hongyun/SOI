@@ -213,16 +213,11 @@ class ReconstructorV2:
         deduped_children = self._phase1_dedup_and_merge(
             G, mapped_children, child_source_ids, node_id)
 
-        # 4. Viz: raw graph
-        self._viz_raw_graph(G, node_id)
-        # 5. Viz: child paths
-        self._viz_child_paths(deduped_children, child_source_ids, node_id)
-
-        # 6. Outgroup info
+        # 4. Outgroup info
         outgroup_adjacency, outgroup_hogs = self._collect_outgroup_info(
             node_id, child_source_ids)
 
-        # 7. Event resolution
+        # 5. Event resolution
         G.resolve_all_events(
             outgroups=outgroup_hogs,
             outgroup_adjacency=outgroup_adjacency,
@@ -231,10 +226,7 @@ class ReconstructorV2:
             gfa_prefix=self._gfa_prefix(node_id),
         )
 
-        # 8. Viz: resolved graph
-        self._viz_resolved_graph(G, node_id)
-
-        # 9. Store ancestor
+        # 6. Store ancestor
         ancestor = G.to_ancestral_graph()
         self.akr.anc_graphs[node_id] = ancestor
         n_chrom = len(list(ancestor.chromosomes))
@@ -605,55 +597,6 @@ class ReconstructorV2:
             logger.info("  [gfa] child dedup %s -> %s", cid, path)
         except Exception as e:
             logger.exception("  [gfa] dedup child %s failed: %s", cid, e)
-
-    def _viz_child_paths(self, children, child_source_ids, node_id):
-        """Draw per-child block graphs before merging."""
-        from .takr_colored_graph import ColoredGraph
-        try:
-            for mc, cid in zip(children, child_source_ids):
-                outpath = f'{self._viz_prefix(node_id)}.child_{cid}.png'
-                try:
-                    tmp = ColoredGraph(hog_level=node_id)
-                    tmp.add_child(cid, mc)
-                    tmp._build_synteny_blocks()
-                    tmp._compress_to_block_level()
-                    tmp.draw_block_graph(
-                        outpath,
-                        title=f'Child {cid} ({node_id}): block graph')
-                except Exception as e:
-                    logger.debug("  [viz] child %s block graph failed: %s", cid, e)
-        except Exception as e:
-            logger.debug("  [viz] child paths skipped: %s", e)
-
-    def _viz_raw_graph(self, G, node_id):
-        """Draw raw merged block graph before event resolution."""
-        try:
-            G._build_synteny_blocks()
-            n_blocks = len(getattr(G, '_blocks', []))
-            if n_blocks <= 200:
-                G.draw_block_graph(
-                    f'{self._viz_prefix(node_id)}.raw_block_graph.png',
-                    title=f'Raw Block Graph: {node_id} (before resolution)')
-            else:
-                logger.info("  [viz] skipping raw graph: %d blocks (too many)", n_blocks)
-        except Exception as e:
-            logger.debug("  [viz] raw graph skipped: %s", e)
-
-    def _viz_resolved_graph(self, G, node_id):
-        """Draw resolved block graph + adjacency heatmap."""
-        try:
-            n_blocks = len(getattr(G, '_blocks', []))
-            if n_blocks <= 200:
-                G.draw_block_graph(
-                    f'{self._viz_prefix(node_id)}.block_graph.png',
-                    title=f'Block Graph: {node_id}')
-                G.draw_adjacency_heatmap(
-                    f'{self._viz_prefix(node_id)}.adj_heatmap.png',
-                    title=f'Adjacency Matrix: {node_id}')
-            else:
-                logger.info("  [viz] skipping resolved graph: %d blocks (too many)", n_blocks)
-        except Exception as e:
-            logger.debug("  [viz] skipped: %s", e)
 
 
 # =========================================================================

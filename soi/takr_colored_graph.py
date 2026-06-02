@@ -1451,14 +1451,15 @@ class ColoredGraph(nx.DiGraph):
             for (inn, out) in deg.values():
                 if inn != 1 or out != 1:
                     return False
-            # 多孩子时所有孩子必须同意同一个后继和同一个前驱
+            # 多孩子时所有孩子的邻居对（succ/pred 的集合）必须一致
+            # 允许双向边时角色互换：孩子 A 的 succ 可以是孩子 B 的 pred
             sources = G.nodes[node].get('sources', set())
             children = list(set(c for c, _ in sources))
             if len(children) <= 1:
                 return True
             succs = list(G.successors(node))
             preds = list(G.predecessors(node))
-            succ0 = pred0 = None
+            pair0 = None
             for i, cid in enumerate(children):
                 s = next((n for n in succs
                           if any(c == cid for c, _ in G[node][n].get('colors', set()))), None)
@@ -1466,9 +1467,10 @@ class ColoredGraph(nx.DiGraph):
                           if any(c == cid for c, _ in G[n][node].get('colors', set()))), None)
                 if s is None or p is None:
                     return False
+                pair = frozenset([s, p])
                 if i == 0:
-                    succ0, pred0 = s, p
-                elif s != succ0 or p != pred0:
+                    pair0 = pair
+                elif pair != pair0:
                     return False
             return True
 

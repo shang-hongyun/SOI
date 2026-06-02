@@ -1237,25 +1237,6 @@ class ColoredGraph(nx.DiGraph):
             graph = self
             block_graph = None
         _blocks = getattr(self, '_blocks', {})
-        _hog_to_block = getattr(self, '_hog_to_block', {})
-
-        # ── Block 级：从 HOG 聚合 sources + telomere ──
-        block_sources = {}   # block_id -> set of (child, chrom)
-        block_telomere = {}  # block_id -> set of child_ids
-        block_hog_count = {} # block_id -> int
-        if use_blocks:
-            for bid, hogs in _blocks.items():
-                sources_union = set()
-                tel_union = set()
-                for h in hogs:
-                    if self.has_node(h):
-                        sources_union.update(
-                            self.nodes[h].get('sources', set()))
-                        tel_union.update(
-                            self.nodes[h].get('telomere', set()))
-                block_sources[bid] = sources_union
-                block_telomere[bid] = tel_union
-                block_hog_count[bid] = len(hogs)
 
         # ── 收集节点 label 和计数 ──
         label_counts = defaultdict(int)
@@ -1263,12 +1244,8 @@ class ColoredGraph(nx.DiGraph):
         node_sources = {}   # LB 标签：完整来源信息
 
         for node in graph.nodes:
-            if use_blocks:
-                sources = block_sources.get(node, set())
-                is_tel = bool(block_telomere.get(node))
-            else:
-                sources = self.nodes[node].get('sources', set())
-                is_tel = bool(self.nodes[node].get('telomere'))
+            sources = graph.nodes[node].get('sources', set())
+            is_tel = bool(graph.nodes[node].get('telomere'))
 
             full_src = '+'.join(sorted(f'{cid}|{ch}' for cid, ch in sources)) if sources else ''
             node_sources[node] = full_src
@@ -1284,7 +1261,7 @@ class ColoredGraph(nx.DiGraph):
                 label = ''
             node_label[node] = label
             if label and not is_tel:
-                n_len = block_hog_count.get(node, 1) if use_blocks else 1
+                n_len = len(_blocks.get(node, [])) if use_blocks else 1
                 label_counts[label] += n_len
 
         # ── 色板 ──
@@ -1297,7 +1274,7 @@ class ColoredGraph(nx.DiGraph):
             if use_blocks:
                 # 端粒 block: 必须是单 HOG 且带 telomere 属性
                 is_tel = (len(_blocks.get(node, [])) == 1
-                          and bool(block_telomere.get(node)))
+                          and bool(graph.nodes[node].get('telomere')))
             else:
                 is_tel = bool(self.nodes[node].get('telomere'))
 
@@ -1314,7 +1291,7 @@ class ColoredGraph(nx.DiGraph):
             if lb:
                 line.append(f'LB:Z:{lb}')
             # Length: 端粒固定 50（显眼），否则 block 大小
-            n_len = 50 if is_tel else (block_hog_count.get(node, 1) if use_blocks else 1)
+            n_len = 50 if is_tel else (len(_blocks.get(node, [])) if use_blocks else 1)
             line.append(f'LN:i:{n_len}')
             fout.write('\t'.join(map(str, line)) + '\n')
 
@@ -1556,6 +1533,16 @@ class ColoredGraph(nx.DiGraph):
         block_cg = type(self)(hog_level=self.hog_level)
         for bid in self._blocks:
             block_cg.add_node(bid)
+            # 继承 HOG 节点属性：sources, telomere
+            hogs = self._blocks[bid]
+            src_union = set()
+            tel_union = set()
+            for h in hogs:
+                if self.has_node(h):
+                    src_union.update(self.nodes[h].get('sources', set()))
+                    tel_union.update(self.nodes[h].get('telomere', set()))
+            block_cg.nodes[bid]['sources'] = src_union
+            block_cg.nodes[bid]['telomere'] = tel_union
 
         for h1, h2, data in self.edges(data=True):
             b1 = self._hog_to_block.get(h1)
@@ -2877,41 +2864,28 @@ class ColoredGraph(nx.DiGraph):
             return 0
 
         events_found = 0
-        # 对每个孩子，检查其块序列中是否有大段缺失
+        bg = self._block_graph
+        if not bg:
+            return 0
+        # 对每个孩子，找该孩子 species 完全缺失的 block
         for cid in self.children():
-            child_blocks = set()
-            for bid, hogs in self._blocks.items():
-                for h in hogs:
-                    if h in self._child_hogs.get(cid, set()):
-                        child_blocks.add(bid)
-                        break
-
-            # 检查共享边路径中缺失的连续块
-            # 共享边路径 = 所有孩子共有的块序列
-            all_blocks = set(self._blocks.keys())
-            missing = all_blocks - child_blocks
+            missing = [bid for bid in bg.nodes
+                       if cid not in set(c for c, _ in bg.nodes[bid].get('sources', set()))]
             if not missing:
                 continue
-
-            # 检查缺失块是否形成连续路径
-            if len(missing) >= 1:
-                # 检查缺失块是否形成连续路径
-                bg = self._block_graph
-                missing_sub = bg.subgraph(missing) if missing else None
-                if missing_sub and nx.is_weakly_connected(missing_sub):
-                    involved_hogs = []
-                    for bid in missing:
-                        involved_hogs.extend(self._blocks.get(bid, []))
-
-                    etype = 'seg_deletion'
-                    self.events.append(TAKREvent(
-                        event_type=etype,
-                        branch=self.hog_level,
-                        genes_involved=involved_hogs,
-                        desc=f"seg_deletion: {len(missing)} blocks missing in {cid}",
-                        support=1,
-                    ))
-                    events_found += 1
+            # 每个缺失块连通分量 = 一个 seg_deletion 事件
+            for comp in nx.weakly_connected_components(bg.subgraph(missing)):
+                involved_hogs = []
+                for bid in comp:
+                    involved_hogs.extend(self._blocks.get(bid, []))
+                self.events.append(TAKREvent(
+                    event_type='seg_deletion',
+                    branch=self.hog_level,
+                    genes_involved=involved_hogs,
+                    desc=f"seg_deletion: {len(comp)} blocks missing in {cid}",
+                    support=len(comp),
+                ))
+                events_found += 1
 
         return events_found
 

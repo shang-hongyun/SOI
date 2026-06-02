@@ -1603,9 +1603,9 @@ class ColoredGraph(nx.DiGraph):
         internal = sum(len(hogs) - 1 for hogs in self._blocks.values())
         expected = blk_n + internal
         if hog_n == expected:
-            logger.info("  [blocks] not verified: %d = %d + %d ✓", hog_n, blk_n, internal)
+            logger.info("  [blocks] verified hog-blk: %d = %d + %d ✓", hog_n, blk_n, internal)
         else:
-            logger.info("  [blocks] verified hog-blk: %d != %d + %d (diff=%d)",
+            logger.info("  [blocks] not verified : hog %d !=  blk %d + %d (diff=%d)",
                         hog_n, blk_n, internal, hog_n - expected)
 
     def _detect_inversions(self) -> int:
@@ -2701,6 +2701,8 @@ class ColoredGraph(nx.DiGraph):
 
         # ====== Phase 2: 方向调和 ======
         self.harmonize_directions()
+        logger.info("  [colored] Phase 2 (harmonize): done, %d nodes, %d edges",
+                     self.node_count(), self.edge_count())
         _gfa_out("p2_harmonize")
 
         # ====== Phase 3: 共线性块压缩 ======

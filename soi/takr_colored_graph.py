@@ -2581,6 +2581,7 @@ class ColoredGraph(nx.DiGraph):
         # 按块分组生成事件（连续位置合并为一个事件）
         if hasattr(self, '_dedup_pending') and self._dedup_pending:
             from itertools import groupby
+            dedup_gene_count = 0
             # 按 (source_id, chrom_idx) 分组
             pending = sorted(self._dedup_pending,
                              key=lambda x: (x['source_id'], x['chrom_idx'], x['pos']))
@@ -2600,6 +2601,7 @@ class ColoredGraph(nx.DiGraph):
 
                 for block in blocks:
                     genes = [it['hog_obj'] for it in block]
+                    dedup_gene_count += len(genes)
                     if len(block) == 1:
                         event_type = 'dispersed_dup'
                     else:
@@ -2615,6 +2617,9 @@ class ColoredGraph(nx.DiGraph):
                     logger.debug("  [dedup] %s: %s block of %d genes at chrom%d pos%d-%d",
                                 sid, event_type, len(genes), ci,
                                 block[0]['pos'], block[-1]['pos'])
+            if dedup_gene_count != len(self._dedup_pending):
+                logger.warning("  [dedup] %s: removed %d positions but events cover %d genes",
+                               source_id, len(self._dedup_pending), dedup_gene_count)
             self._dedup_pending = []
 
         return new_graph

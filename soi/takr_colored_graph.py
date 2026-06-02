@@ -1445,13 +1445,11 @@ class ColoredGraph(nx.DiGraph):
         def _linear(node, direction):
             """所有孩子是否同意同一个 direction 方向上的邻居。
 
-            direction='succ': 所有孩子的后继是同一个节点 → fwd walk 可继续
-            direction='pred': 所有孩子的前驱是同一个节点 → bwd walk 可继续
+            direction='succ': fwd walk 可继续
+            direction='pred': bwd walk 可继续
 
-            不满足条件的情况：
-            - 端粒 / 跳过节点
-            - 任何孩子 indegree≠1 或 outdegree≠1
-            - 多孩子时指定方向的邻居不一致（分叉/汇合点）
+            定向不一致时回退到邻居对 frozenset 检查——
+            允许双向边（孩子 A 的 succ = 孩子 B 的 pred，pair 相同）。
             """
             if G.nodes[node].get('telomere') or node in skip:
                 return False
@@ -1465,6 +1463,7 @@ class ColoredGraph(nx.DiGraph):
             children = set(c for c, _ in sources)
             if len(children) <= 1:
                 return True
+            # 定向一致性检查
             neighbors = list(G.successors(node) if direction == 'succ'
                              else G.predecessors(node))
             agreed = None
@@ -1478,6 +1477,25 @@ class ColoredGraph(nx.DiGraph):
                 if agreed is None:
                     agreed = child_nbrs[0]
                 elif agreed != child_nbrs[0]:
+                    # 定向不一致 → 回退到 pair 检查（双向边）
+                    break
+            else:
+                return True  # 所有孩子定向一致
+            # 回退：邻居对 frozenset 一致（双向边兼容）
+            succs = list(G.successors(node))
+            preds = list(G.predecessors(node))
+            pair0 = None
+            for cid in children:
+                s = next((n for n in succs
+                          if any(c == cid for c, _ in G[node][n].get('colors', set()))), None)
+                p = next((n for n in preds
+                          if any(c == cid for c, _ in G[n][node].get('colors', set()))), None)
+                if s is None or p is None:
+                    return False
+                pair = frozenset([s, p])
+                if pair0 is None:
+                    pair0 = pair
+                elif pair != pair0:
                     return False
             return True
 

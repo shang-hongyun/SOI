@@ -1229,10 +1229,13 @@ class ColoredGraph(nx.DiGraph):
         # ── 确保 blocks 已构建 ──
         if use_blocks:
             self._ensure_blocks()
-        block_graph = getattr(self, '_block_graph', None)
-        use_blocks = (block_graph is not None
-                      and block_graph.number_of_nodes() > 0)
-        graph = block_graph if use_blocks else self
+        if use_blocks:
+            block_graph = getattr(self, '_block_graph', None)
+            graph = block_graph if (block_graph is not None
+                                    and block_graph.number_of_nodes() > 0) else self
+        else:
+            graph = self
+            block_graph = None
         _blocks = getattr(self, '_blocks', {})
         _hog_to_block = getattr(self, '_hog_to_block', {})
 

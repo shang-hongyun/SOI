@@ -1603,9 +1603,9 @@ class ColoredGraph(nx.DiGraph):
         internal = sum(len(hogs) - 1 for hogs in self._blocks.values())
         expected = blk_n + internal
         if hog_n == expected:
-            logger.info("  [blocks] %d = %d + %d ✓", hog_n, blk_n, internal)
+            logger.info("  [blocks] not verified: %d = %d + %d ✓", hog_n, blk_n, internal)
         else:
-            logger.info("  [blocks] %d != %d + %d (diff=%d)",
+            logger.info("  [blocks] verified hog-blk: %d != %d + %d (diff=%d)",
                         hog_n, blk_n, internal, hog_n - expected)
 
     def _detect_inversions(self) -> int:
@@ -2452,8 +2452,8 @@ class ColoredGraph(nx.DiGraph):
         import copy
         new_graph = copy.deepcopy(child_graph)
 
-        # 构建参照邻接集
-        ref_adjacencies = set()
+        # 构建参照图（无向）—— 支持最短路径距离查询
+        ref_graph = nx.Graph()
         if ref_graphs:
             for ref in ref_graphs:
                 ch_source = getattr(ref, 'chrom_hogs', None)
@@ -2461,14 +2461,14 @@ class ColoredGraph(nx.DiGraph):
                     for ci, hogs in ch_source.items():
                         gene_hogs = [n for n in hogs if n not in ref.telomeres]
                         for i in range(len(gene_hogs) - 1):
-                            a, b = gene_hogs[i], gene_hogs[i+1]
-                            ref_adjacencies.add((min(str(a), str(b)), max(str(a), str(b))))
+                            a, b = str(gene_hogs[i]), str(gene_hogs[i+1])
+                            ref_graph.add_edge(a, b)
                 else:
                     for chrom in ref.chromosomes:
                         gene_hogs = [n for n in chrom if n not in ref.telomeres]
                         for i in range(len(gene_hogs) - 1):
-                            a, b = gene_hogs[i], gene_hogs[i+1]
-                            ref_adjacencies.add((min(str(a), str(b)), max(str(a), str(b))))
+                            a, b = str(gene_hogs[i]), str(gene_hogs[i+1])
+                            ref_graph.add_edge(a, b)
 
         # 优先用 chrom_hogs（保留重复），回退到 chromosomes
         chrom_source = getattr(new_graph, 'chrom_hogs', None)
@@ -2492,27 +2492,42 @@ class ColoredGraph(nx.DiGraph):
             if len(occurrences) <= 1:
                 continue
 
-            # 用参照邻接判断哪个拷贝是祖先态
+            # 用参照图最短路径距离判断祖先拷贝
+            hog_in_ref = hog_str in ref_graph
             best = None
-            best_score = -1
+            best_score = float('inf')    # 越小越好
+            all_unreachable = True
             for chrom_idx, pos, hog_obj in occurrences:
                 hogs = chrom_hog_lists[chrom_idx]
                 score = 0
+                reachable = False
                 # 左邻居
                 if pos > 0:
-                    left = hogs[pos - 1]
-                    key = (min(str(left), hog_str), max(str(left), hog_str))
-                    if key in ref_adjacencies:
-                        score += 1
+                    left = str(hogs[pos - 1])
+                    if left in ref_graph and hog_str in ref_graph:
+                        try:
+                            score += nx.shortest_path_length(ref_graph, source=left, target=hog_str)
+                            reachable = True
+                        except nx.NetworkXNoPath:
+                            pass
                 # 右邻居
                 if pos < len(hogs) - 1:
-                    right = hogs[pos + 1]
-                    key = (min(hog_str, str(right)), max(hog_str, str(right)))
-                    if key in ref_adjacencies:
-                        score += 1
-                if score > best_score:
+                    right = str(hogs[pos + 1])
+                    if right in ref_graph and hog_str in ref_graph:
+                        try:
+                            score += nx.shortest_path_length(ref_graph, source=hog_str, target=right)
+                            reachable = True
+                        except nx.NetworkXNoPath:
+                            pass
+                if reachable:
+                    all_unreachable = False
+                if score < best_score:
                     best_score = score
                     best = (chrom_idx, pos, hog_obj)
+
+            if not hog_in_ref or all_unreachable:
+                logger.warning("  [dedup] %s: zero evidence for %s (in_ref=%s), deleting all %d copies",
+                               source_id, hog_str, hog_in_ref, len(occurrences))
 
             # 收集非祖先拷贝（基因级）
             for chrom_idx, pos, hog_obj in occurrences:
@@ -2532,7 +2547,7 @@ class ColoredGraph(nx.DiGraph):
                     'score': best_score,
                     'hog_str': hog_str,
                 })
-                logger.debug("  [dedup] %s chrom%d pos%d: %s (ancestral chrom%d pos%d, score=%d)",
+                logger.debug("  [dedup] %s chrom%d pos%d: %s (ancestral chrom%d pos%d, dist=%d)",
                              source_id, chrom_idx, pos, hog_str,
                              best[0], best[1], best_score)
 

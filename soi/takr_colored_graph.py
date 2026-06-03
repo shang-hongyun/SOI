@@ -2968,24 +2968,6 @@ class ColoredGraph(nx.DiGraph):
         logger.debug("  [bubble] %d single-species blocks → %d neighbor-pair groups",
                      sum(len(v) for v in groups.values()), n_groups)
 
-        # Debug: outgroup graph vs HOG graph node overlap
-        if outgroup_graph is not None:
-            og_nodes = set(str(n) for n in outgroup_graph.nodes())
-            hog_nodes = set(str(h) for h in list(self.nodes())[:50000])
-            overlap = og_nodes & hog_nodes
-            rate = len(overlap) / len(og_nodes) if og_nodes else 0
-            logger.info("  [bubble] outgroup graph: %d nodes, HOG graph: %d nodes sampled, "
-                        "overlap: %d (%.1f%%)",
-                        len(og_nodes), len(hog_nodes), len(overlap), rate * 100)
-            if rate < 0.5:
-                logger.warning("  [bubble] LOW OVERLAP (%.1f%%), scores may be unreliable",
-                               rate * 100)
-            if not overlap:
-                sample_og = sorted(og_nodes)[:3]
-                sample_hog = sorted(hog_nodes)[:3]
-                logger.warning("  [bubble] NO OVERLAP! og sample=%s, hog sample=%s",
-                               sample_og, sample_hog)
-
         for (n1, n2), items in groups.items():
             """
             对每对共享邻居 (n1, n2)，中间有 1~2 条候选路径（气泡结构）：

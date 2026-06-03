@@ -219,6 +219,7 @@ class ReconstructorV2:
         # 5. Event resolution
         G.resolve_all_events(
             outgroup_graph=outgroup_graph,
+            hog_parent=self.akr.hog_parent,
             min_hogs=self.min_hogs,
             gfa_debug=self.gfa_debug,
             gfa_prefix=self._gfa_prefix(node_id),
@@ -334,7 +335,7 @@ class ReconstructorV2:
         node = self.akr.tree.search_nodes(name=node_id)
         if not node or not node[0].up:
             return outgroup_graph
-        parent_hog_level = node_id
+        parent_hog_level = node[0].up.name
 
         logger.debug("  [outgroup] %s: sibling leaves %s -> mapping to %s",
                      node_id, og_leaves, parent_hog_level)

@@ -2899,6 +2899,7 @@ class ColoredGraph(nx.DiGraph):
         n_fallback = 0
         n_simple = 0
         n_reciprocal = 0
+        n_reciprocal_resolved = 0
         removed_blocks = set()
         warn_list = []
 
@@ -3078,6 +3079,7 @@ class ColoredGraph(nx.DiGraph):
                     support=len(self._blocks.get(l_bid, [])),
                 ))
                 n_reciprocal += 1
+                n_reciprocal_resolved += 1
 
         if n_fallback:
             logger.warning("  [seg] %d events with no outgroup:", n_fallback)
@@ -3100,9 +3102,10 @@ class ColoredGraph(nx.DiGraph):
         logger.info("  [seg] single-species blocks: %d total → %d resolved as indel"
                     " (%d simple + %d reciprocal%s)",
                     n_single_species,
-                    n_simple + n_reciprocal,
+                    n_simple + n_reciprocal_resolved,
                     n_simple, n_reciprocal,
-                    f", {n_fallback} fallback" if n_fallback else "")
+                    f", {n_reciprocal_resolved}/{n_reciprocal} resolved"
+                    if n_reciprocal else "")
 
         return n_blocks_removed + n_deletions
 

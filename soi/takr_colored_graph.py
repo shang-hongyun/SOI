@@ -2694,19 +2694,22 @@ class ColoredGraph(nx.DiGraph):
         # Phase 4a: seg_deletion / seg_insertion (所有大小的 indel)
         n_seg = self._resolve_seg_events(outgroup_graph=outgroup_graph)
         if n_seg:
-            seg_events = [e for e in self.events if e.event_type == 'seg_deletion']
             from collections import defaultdict
-            child_counts = defaultdict(int)
-            child_lens = defaultdict(list)
-            for e in seg_events:
-                cid = e.branch.split('-')[-1] if '-' in e.branch else e.branch
-                child_counts[cid] += 1
-                child_lens[cid].append(e.support)
-            for cid in sorted(child_counts):
-                lens = child_lens[cid]
-                len_str = f"len {min(lens)}-{max(lens)}" if len(lens) > 1 else f"len {lens[0]}"
-                logger.info("  [Phase 4a] %s events: %s=%d (%s)",
-                            cid, 'seg_deletion', child_counts[cid], len_str)
+            for etype in ('seg_deletion', 'seg_insertion'):
+                seg_events = [e for e in self.events if e.event_type == etype]
+                if not seg_events:
+                    continue
+                child_counts = defaultdict(int)
+                child_lens = defaultdict(list)
+                for e in seg_events:
+                    cid = e.branch.split('-')[-1] if '-' in e.branch else e.branch
+                    child_counts[cid] += 1
+                    child_lens[cid].append(e.support)
+                for cid in sorted(child_counts):
+                    lens = child_lens[cid]
+                    len_str = f"len {min(lens)}-{max(lens)}" if len(lens) > 1 else f"len {lens[0]}"
+                    logger.info("  [Phase 4a] %s events: %s=%d (%s)",
+                                cid, etype, child_counts[cid], len_str)
         else:
             logger.warning("  [colored] Phase 4a: 0 seg_deletion events — unexpected")
 
@@ -2874,16 +2877,19 @@ class ColoredGraph(nx.DiGraph):
                      len(orig_comp_has_telomere))
 
     def _resolve_seg_events(self, outgroup_graph=None) -> int:
-        """Phase 4a: 检测并解决 seg_deletion / seg_insertion。
+        """Phase 4a: 图结构驱动的 seg_deletion / seg_insertion。
 
-        对每个单物种块（source 只有一个孩子）：
-        - HOG 在 outgroup_graph 中 → 祖先有 → 对方孩子丢失（seg_deletion）
-          → 保留块，删除对方孩子的 shortcut 边
-        - HOG 不在 outgroup_graph 中（或无外群）→ 祖先无 → 拥有方插入（seg_insertion）
-          → 删除块及其边
-          → 无外群时额外汇总 warning
+        对单物种块 B（只有 child X），要求：
+        1. 前后邻居 N1、N2 存在且都是 shared 块（≥2 孩子）
+        2. N1↔N2 存在 shortcut 边（带 other child Y 的颜色）
+        → 否则跳过（不是 indel，是该孩子真正的独有区域）
 
-        日志输出：删除的块数和边数，按 event_type 分统计。
+        外群定极性（图级别）：
+        - outgroup_graph.has_edge(h1, h2) → N1↔N2 直连是祖先态
+          → B 是 X 的 insertion → 删块，给 shortcut 边加 X 颜色
+        - 无此边 / 无外群 → N1↔N2 shortcut 是衍生
+          → Y 丢失 B → seg_deletion → 删 shortcut 边的 Y 颜色
+        - 无外群 → seg_deletion（保块删边）+ warning
         """
         if not hasattr(self, '_blocks') or not self._blocks:
             return 0
@@ -2898,18 +2904,17 @@ class ColoredGraph(nx.DiGraph):
         n_deletions = 0
         n_fallback = 0
         removed_blocks = set()
-        shortcut_warnings = []
+        warn_list = []
 
         for bid in list(self._blocks.keys()):
             if bid in removed_blocks:
                 continue
             hogs = self._blocks[bid]
             sources = bg.nodes[bid].get('sources', set())
-            owning_children = set(c for c, _ in sources)
-            if len(owning_children) != 1:
-                continue  # 多孩子块，跳过
-
-            own_cid = next(iter(owning_children))
+            owner_set = set(c for c, _ in sources)
+            if len(owner_set) != 1:
+                continue
+            own_cid = next(iter(owner_set))
             other_cid = None
             for c in self.children():
                 if c != own_cid:
@@ -2918,13 +2923,7 @@ class ColoredGraph(nx.DiGraph):
             if other_cid is None:
                 continue
 
-            # 外群判极性：块内任意 HOG 在外群 graph 中存在？
-            has_og = outgroup_graph is not None
-            any_hog_in_og = False
-            if has_og:
-                any_hog_in_og = any(str(h) in outgroup_graph for h in hogs)
-
-            # 找邻居块：在块图中按 own_cid 方向找到前后邻居
+            # 找邻居：按 own_cid 方向
             preds = [p for p in bg.predecessors(bid)
                      if any(c == own_cid for c, _ in
                             self._block_edge_data(p, bid).get('colors', set()))]
@@ -2932,75 +2931,94 @@ class ColoredGraph(nx.DiGraph):
                      if any(c == own_cid for c, _ in
                             self._block_edge_data(bid, s).get('colors', set()))]
 
-            if has_og and any_hog_in_og:
-                # 祖先有此 HOG → 对方丢失 → seg_deletion
-                # 删除对方孩子在邻居块之间的 shortcut 边
-                for n1 in preds:
-                    for n2 in succs:
-                        if not bg.has_edge(n1, n2):
-                            continue
-                        data = self._block_edge_data(n1, n2)
-                        edge_colors = data.get('colors', set())
-                        remaining = {(c, ch) for c, ch in edge_colors
-                                     if c != other_cid}
-                        if remaining != edge_colors:
-                            data['colors'] = remaining
-                            n_edges_removed += len(edge_colors) - len(remaining)
-                n_deletions += 1
-                self.events.append(TAKREvent(
-                    event_type='seg_deletion',
-                    branch=f"{self.hog_level}-{other_cid}",
-                    genes_involved=list(hogs),
-                    desc=f"seg_deletion: {bid} ({len(hogs)} HOGs) absent in {other_cid}",
-                    support=len(hogs),
-                ))
-            else:
-                # 祖先无此 HOG（或无外群）→ 拥有方插入 → seg_insertion
-                # 删除块及其边
-                if not has_og:
-                    n_fallback += 1
-                    shortcut_warnings.append(
-                        f"no_outgroup: {bid} ({len(hogs)} HOGs) "
-                        f"in {own_cid}, treated as insertion"
-                    )
-                # 删除与该块相关的所有 own_cid 边
-                for p in list(bg.predecessors(bid)):
-                    data = self._block_edge_data(p, bid)
-                    edge_colors = data.get('colors', set())
-                    remaining = {(c, ch) for c, ch in edge_colors
-                                 if c != own_cid}
-                    if remaining != edge_colors:
-                        data['colors'] = remaining
-                        n_edges_removed += len(edge_colors) - len(remaining)
-                for s in list(bg.successors(bid)):
-                    data = self._block_edge_data(bid, s)
-                    edge_colors = data.get('colors', set())
-                    remaining = {(c, ch) for c, ch in edge_colors
-                                 if c != own_cid}
-                    if remaining != edge_colors:
-                        data['colors'] = remaining
-                        n_edges_removed += len(edge_colors) - len(remaining)
-                # 删除块
-                bg.remove_node(bid)
-                del self._blocks[bid]
-                removed_blocks.add(bid)
-                n_blocks_removed += 1
-                n_insertions += 1
-                self.events.append(TAKREvent(
-                    event_type='seg_insertion',
-                    branch=f"{self.hog_level}-{own_cid}",
-                    genes_involved=list(hogs),
-                    desc=f"seg_insertion: {bid} ({len(hogs)} HOGs) in {own_cid}",
-                    support=len(hogs),
-                ))
+            if not preds or not succs:
+                continue
+
+            for n1 in preds:
+                for n2 in succs:
+                    # === 图结构鉴定 ===
+                    # 邻居必须是 shared 块（≥2 孩子）
+                    n1_srcs = set(c for c, _ in bg.nodes[n1].get('sources', set()))
+                    n2_srcs = set(c for c, _ in bg.nodes[n2].get('sources', set()))
+                    if len(n1_srcs) < 2 or len(n2_srcs) < 2:
+                        continue
+
+                    # 邻居间必须有 shortcut 边（带 other child 颜色）
+                    if not bg.has_edge(n1, n2):
+                        continue
+                    sc_data = self._block_edge_data(n1, n2)
+                    sc_colors = sc_data.get('colors', set())
+                    has_sc = any(c == other_cid for c, _ in sc_colors)
+                    if not has_sc:
+                        continue
+
+                    # === 外群定极性（图级别） ===
+                    has_og = outgroup_graph is not None
+                    og_has_edge = False
+                    if has_og:
+                        og_has_edge = any(
+                            outgroup_graph.has_edge(str(h1), str(h2))
+                            for h1 in self._blocks.get(n1, [])
+                            for h2 in self._blocks.get(n2, [])
+                        )
+
+                    if has_og and og_has_edge:
+                        # 祖先有 N1↔N2 → insertion
+                        etype = 'seg_insertion'
+                        target = own_cid
+                        # 删块间边 own_cid 颜色
+                        for (u, v) in [(n1, bid), (bid, n2)]:
+                            if not bg.has_edge(u, v):
+                                continue
+                            d = self._block_edge_data(u, v)
+                            old = d.get('colors', set())
+                            new = {(c, ch) for c, ch in old if c != own_cid}
+                            d['colors'] = new
+                            n_edges_removed += len(old) - len(new)
+                        # 给 shortcut 边加 own_cid 颜色
+                        ch1 = next((ch for c, ch in n1_srcs if c == own_cid), 0)
+                        sc_colors.add((own_cid, ch1))
+                        sc_data['colors'] = sc_colors
+                        # 删块
+                        bg.remove_node(bid)
+                        del self._blocks[bid]
+                        removed_blocks.add(bid)
+                        n_blocks_removed += 1
+                        n_insertions += 1
+                    else:
+                        # 祖先无（或无外群）→ deletion
+                        etype = 'seg_deletion'
+                        target = other_cid
+                        # 删 shortcut 边的 other_cid 颜色
+                        old = set(sc_colors)
+                        new = {(c, ch) for c, ch in sc_colors if c != other_cid}
+                        sc_data['colors'] = new
+                        n_edges_removed += len(old) - len(new)
+                        n_deletions += 1
+                        if not has_og:
+                            n_fallback += 1
+                            warn_list.append(
+                                f"no_outgroup: {bid} {own_cid}→{other_cid} ({len(hogs)} HOGs)")
+
+                    self.events.append(TAKREvent(
+                        event_type=etype,
+                        branch=f"{self.hog_level}-{target}",
+                        genes_involved=list(hogs),
+                        desc=f"{etype}: {bid} ({len(hogs)} HOGs) "
+                             f"{n1}↔{n2} in {target}",
+                        support=len(hogs),
+                    ))
+                    break  # 一块只处理一对邻居
+                if bid in removed_blocks:
+                    break
 
         if n_fallback:
-            logger.warning("  [seg] %d blocks resolved without outgroup (fallback=insertion):",
+            logger.warning("  [seg] %d events with no outgroup (fallback=deletion):",
                            n_fallback)
-            for w in shortcut_warnings[:5]:
+            for w in warn_list[:5]:
                 logger.warning("    %s", w)
-            if len(shortcut_warnings) > 5:
-                logger.warning("    ... and %d more", len(shortcut_warnings) - 5)
+            if len(warn_list) > 5:
+                logger.warning("    ... and %d more", len(warn_list) - 5)
 
         if n_blocks_removed or n_edges_removed:
             logger.info("  [seg] removed: %d blocks, %d edges "

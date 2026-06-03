@@ -359,7 +359,7 @@ class ReconstructorV2:
             except Exception as e:
                 logger.debug("  [outgroup]   %s: skip (%s)", leaf_name, e)
 
-        if mapped_og_graphs and n_og_leaves >= 2:
+        if mapped_og_graphs and n_og_leaves >= 1:
             from .takr_colored_graph import ColoredGraph as CG
             outgroup_graph = CG._build_ref_graph(mapped_og_graphs)
             logger.info("  [outgroup] %s: graph with %d nodes, %d edges from %d leaves at %s level",

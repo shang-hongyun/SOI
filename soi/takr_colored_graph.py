@@ -2980,17 +2980,12 @@ class ColoredGraph(nx.DiGraph):
                         # 祖先有 N1↔N2 → insertion
                         etype = 'seg_insertion'
                         target = own_cid
-                        # 删块间边 own_cid 颜色
-                        for (u, v) in [(n1, bid), (bid, n2)]:
-                            if not bg.has_edge(u, v):
-                                continue
-                            if _strip_color(u, v, own_cid):
-                                n_edges_removed += 1
-                        # 给 shortcut 边加 own_cid 颜色
+                        # 给 shortcut 边加 own_cid 颜色（祖先邻接）
                         ch1 = next((ch for c, ch in n1_srcs if c == own_cid), 0)
                         sc_colors.add((own_cid, ch1))
                         sc_data['colors'] = sc_colors
-                        # 删块
+                        # 删块（remove_node 自动清理所有邻接边）
+                        n_edges_removed += bg.degree(bid)
                         bg.remove_node(bid)
                         del self._blocks[bid]
                         removed_blocks.add(bid)

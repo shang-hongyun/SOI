@@ -2974,16 +2974,18 @@ class ColoredGraph(nx.DiGraph):
         logger.debug("  [bubble] %d single-species blocks → %d neighbor-pair groups",
                      sum(len(v) for v in groups.values()), n_groups)
 
-        # Debug: sample block HOGs vs outgroup graph keys
-        if outgroup_graph is not None and groups:
-            sample_bids = list(groups.values())[0]
-            if sample_bids:
-                _, _, sample_hogs = sample_bids[0]
-                sample_block_hog = str(sample_hogs[0]) if sample_hogs else 'N/A'
-                sample_og_nodes = list(outgroup_graph.nodes())[:3]
-                sample_og_edges = list(outgroup_graph.edges())[:3]
-                logger.info("  [bubble] debug outgroup: block_hog=%s,  og_nodes=%s, og_edges=%s",
-                             sample_block_hog, sample_og_nodes, sample_og_edges)
+        # Debug: outgroup graph vs HOG graph node overlap
+        if outgroup_graph is not None:
+            og_nodes = set(str(n) for n in outgroup_graph.nodes())
+            hog_nodes = set(str(h) for h in list(self.nodes())[:50000])
+            overlap = og_nodes & hog_nodes
+            logger.info("  [bubble] outgroup graph: %d nodes, HOG graph: %d nodes sampled, "
+                        "overlap: %d", len(og_nodes), len(hog_nodes), len(overlap))
+            if not overlap:
+                sample_og = sorted(og_nodes)[:3]
+                sample_hog = sorted(hog_nodes)[:3]
+                logger.info("  [bubble] NO OVERLAP! og sample=%s, hog sample=%s",
+                            sample_og, sample_hog)
 
         for (n1, n2), items in groups.items():
             n_items = len(items)

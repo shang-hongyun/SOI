@@ -214,13 +214,11 @@ class ReconstructorV2:
             G, mapped_children, child_source_ids, node_id)
 
         # 4. Outgroup info
-        outgroup_adjacency, outgroup_hogs = self._collect_outgroup_info(
-            node_id, child_source_ids)
+        outgroup_graph = self._collect_outgroup_info(node_id, child_source_ids)
 
         # 5. Event resolution
         G.resolve_all_events(
-            outgroups=outgroup_hogs,
-            outgroup_adjacency=outgroup_adjacency,
+            outgroup_graph=outgroup_graph,
             min_hogs=self.min_hogs,
             gfa_debug=self.gfa_debug,
             gfa_prefix=self._gfa_prefix(node_id),
@@ -322,26 +320,27 @@ class ReconstructorV2:
     # ── Outgroup info ────────────────────────────────────────────────
 
     def _collect_outgroup_info(self, node_id, child_source_ids):
-        """Collect outgroup adjacency and HOG info for event polarity."""
-        outgroup_adjacency = None
-        outgroup_hogs = {}
+        """Collect outgroup as a graph (nodes + edges) for event polarity.
+
+        Maps all outgroup (sibling subtree) leaves to parent HOG level,
+        then builds an nx.Graph via ColoredGraph._build_ref_graph.
+        """
+        outgroup_graph = None
 
         if node_id not in self.outgroup_leaves_map:
-            return outgroup_adjacency, outgroup_hogs
+            return outgroup_graph
 
         og_leaves = self.outgroup_leaves_map[node_id]
-        # Find parent HOG level
         node = self.akr.tree.search_nodes(name=node_id)
         if not node or not node[0].up:
-            return outgroup_adjacency, outgroup_hogs
+            return outgroup_graph
         parent_hog_level = node[0].up.name
 
-        # Collect outgroup adjacencies
-        og_adj_counts = defaultdict(int)
-        n_og_leaves = 0
         logger.debug("  [outgroup] %s: sibling leaves %s -> mapping to %s",
                      node_id, og_leaves, parent_hog_level)
 
+        mapped_og_graphs = []
+        n_og_leaves = 0
         for leaf_name in og_leaves:
             if leaf_name not in self.akr.leaf_graphs:
                 continue
@@ -350,28 +349,24 @@ class ReconstructorV2:
                     parent_hog_level,
                     self.akr.leaf_graphs[leaf_name],
                     source_id=leaf_name)
+                mapped_og_graphs.append(mapped)
                 n_og_leaves += 1
-                leaf_adj = set()
-                for h1, h2 in mapped.get_adjacencies(include_telomere=False):
-                    h1_id = h1.hog_id if hasattr(h1, 'hog_id') else str(h1)
-                    h2_id = h2.hog_id if hasattr(h2, 'hog_id') else str(h2)
-                    key = (h1_id, h2_id) if h1_id < h2_id else (h2_id, h1_id)
-                    leaf_adj.add(key)
-                for key in leaf_adj:
-                    og_adj_counts[key] += 1
                 logger.debug("  [outgroup]   %s: %d adjacencies at %s level",
-                             leaf_name, len(leaf_adj), parent_hog_level)
+                             leaf_name,
+                             sum(len(h) - 1 for h in getattr(mapped, 'chrom_hogs', {}).values()
+                                 if len(h) > 1),
+                             parent_hog_level)
             except Exception as e:
                 logger.debug("  [outgroup]   %s: skip (%s)", leaf_name, e)
 
-        if og_adj_counts and n_og_leaves >= 2:
-            outgroup_adjacency = {k for k, cnt in og_adj_counts.items()
-                                  if cnt >= n_og_leaves}
-            logger.info("  [outgroup] %s: %d/%d adjacencies conserved in all %d leaves at %s level",
-                        node_id, len(outgroup_adjacency), len(og_adj_counts),
-                        n_og_leaves, parent_hog_level)
+        if mapped_og_graphs and n_og_leaves >= 2:
+            from .takr_colored_graph import ColoredGraph as CG
+            outgroup_graph = CG._build_ref_graph(mapped_og_graphs)
+            logger.info("  [outgroup] %s: graph with %d nodes, %d edges from %d leaves at %s level",
+                        node_id, outgroup_graph.number_of_nodes(),
+                        outgroup_graph.number_of_edges(), n_og_leaves, parent_hog_level)
 
-        return outgroup_adjacency, outgroup_hogs
+        return outgroup_graph
 
     # ── WGD collapse ─────────────────────────────────────────────────
 

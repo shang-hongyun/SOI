@@ -548,113 +548,6 @@ class ColoredGraph(nx.DiGraph):
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return None
 
-    def resolve_indels(self, outgroups: Dict = None):
-        """检测并解决 indel/loss 冲突。移除所有 indel shortcuts，记录 events。
-
-        使用方向感知: 只移除无方向冲突的跨越边 (indel shortcuts)。
-        有方向冲突的跨越边 (inversion) 留给 Phase 4 处理。
-        """
-        while True:
-            shortcuts = self.find_indel_shortcuts()
-            if not shortcuts:
-                break
-            for h1, h2, child_id, spanned_hogs in shortcuts:
-                # 确定极性
-                if outgroups and child_id in outgroups:
-                    og_hogs = outgroups[child_id]
-                    # 检查外类群是否包含跨越边覆盖的 HOG
-                    any_in_og = any(h in og_hogs for h in spanned_hogs)
-                    if any_in_og:
-                        # 外类群有这些 HOG → 祖先有 → 当前孩子丢失
-                        event_type = 'gene_loss'
-                        # 移除跨越边（它是衍生边）
-                        color = next(iter(self.get_colors(h1, h2)))
-                        self.remove_edge_color(h1, h2, color)
-                        logger.debug("  [indel] loss: remove spanning %s-%s (%s)",
-                                     h1, h2, child_id)
-                    else:
-                        # 外类群无这些 HOG → 祖先无 → 当前孩子获得
-                        event_type = 'gene_gain'
-                        # 移除路径边（它们由插入产生）
-                        for ch in spanned_hogs:
-                            for u, v in list(self.edges(ch)):
-                                colors = self.get_colors(u, v)
-                                if any(cid == child_id for cid, _ in colors):
-                                    for c in list(colors):
-                                        if c[0] == child_id:
-                                            self.remove_edge_color(u, v, c)
-                        logger.debug("  [indel] gain: remove path edges for %s (%s)",
-                                     spanned_hogs, child_id)
-                else:
-                    event_type = 'gene_indel'
-                    # 无外类群 => 移除跨越边（简单方案）
-                    color = next(iter(self.get_colors(h1, h2)))
-                    self.remove_edge_color(h1, h2, color)
-
-                # 记录事件
-                self.events.append(TAKREvent(
-                    event_type=event_type,
-                    branch=f"{self.hog_level}-{child_id}",
-                    genes_involved=list(spanned_hogs),
-                    desc=f"{event_type}: {len(spanned_hogs)} HOGs in {child_id}",
-                    support=len(spanned_hogs),
-                ))
-
-        # 插入节点检测: 度=2 且所有边都是 unique 的节点
-        # 模式: h4--[unique]--h5--[unique]--h6, 且 h4-h6 有 shared 边
-        # → h5 是插入产物，删除 h5 恢复祖先 h4-h6
-        self._resolve_inserted_nodes(outgroups)
-
-    def _resolve_inserted_nodes(self, outgroups: Dict = None):
-        """检测并删除插入节点。
-
-        插入节点: 度=2，两条边都是 unique (单孩子)，且两个邻居有 shared 边。
-        祖先态: 邻居直接相邻 (shared 边)
-        衍生态: 插入了中间节点 (unique 边)
-        → 删除插入节点及其边，恢复祖先邻接。
-        """
-        removed = set()
-        hog_set = self.all_hogs()  # compute once, not per iteration
-        for h in list(self.nodes()):
-            if h in removed:
-                continue
-            if h not in hog_set:
-                continue
-            deg = self._degree(h)
-            if deg != 2:
-                continue
-
-            # 检查两条边是否都是 unique
-            neighbors = list(self._neighbors(h))
-            if len(neighbors) != 2:
-                continue
-            n1, n2 = neighbors
-            c1 = self.get_colors(h, n1)
-            c2 = self.get_colors(h, n2)
-            if len(c1) != 1 or len(c2) != 1:
-                continue  # 有 shared 边，不是插入节点
-
-            # 检查两个邻居之间是否有 shared 边
-            if not self.has_edge(n1, n2):
-                continue
-            shared_colors = self.get_colors(n1, n2)
-            if len(shared_colors) < 2:
-                continue  # 邻居之间也是 unique，不是简单的插入
-
-            # 确认是插入节点: 删除 h 及其边
-            child_id = next(iter(c1))[0]
-            self.remove_node(h)
-            removed.add(h)
-            logger.debug("  [indel] inserted node: remove %s between %s-%s (%s)",
-                         h, n1, n2, child_id)
-            self.events.append(TAKREvent(
-                event_type='gene_gain',
-                branch=f"{self.hog_level}-{child_id}",
-                genes_involved=[h],
-                desc=f"gene_gain: {h} inserted between {n1}-{n2} in {child_id}",
-                support=1,
-            ))
-
     # ==================== 环检测 + 事件分类 ====================
 
     def find_cycles(self) -> List[List]:
@@ -2725,8 +2618,7 @@ class ColoredGraph(nx.DiGraph):
                         dedup_gene_count, tandem_blocks)
         self._dedup_pending = []
 
-    def resolve_all_events(self, outgroups: Dict = None,
-                           outgroup_adjacency: Set = None,
+    def resolve_all_events(self, outgroup_graph = None,
                            min_hogs: int = 3,
                            gfa_debug: bool = False,
                            gfa_prefix: str = None) -> List[TAKREvent]:
@@ -2765,6 +2657,11 @@ class ColoredGraph(nx.DiGraph):
 
         n_events_before = len(self.events)
 
+        # Legacy: existing sub-methods use outgroup_adjacency/outgroups dicts.
+        # Not updated yet — set to None (they fall back to no-outgroup).
+        outgroup_adjacency = None
+        outgroups = None
+
         # Phase 1 dedup 在 orchestrator 中 add_child 前完成
 
         _gfa_out("p1_merged", use_blocks=False)  # HOG 级
@@ -2795,7 +2692,7 @@ class ColoredGraph(nx.DiGraph):
         # ====== Phase 4: 块级事件 (按复杂度递增) ======
 
         # Phase 4a: seg_deletion / seg_insertion (所有大小的 indel)
-        n_seg = self._resolve_seg_events(outgroup_adjacency=outgroup_adjacency)
+        n_seg = self._resolve_seg_events(outgroup_graph=outgroup_graph)
         if n_seg:
             seg_events = [e for e in self.events if e.event_type == 'seg_deletion']
             from collections import defaultdict
@@ -2976,40 +2873,143 @@ class ColoredGraph(nx.DiGraph):
                      len(self._original_shared_components),
                      len(orig_comp_has_telomere))
 
-    def _resolve_seg_events(self, outgroup_adjacency: Set = None) -> int:
-        """Phase 4a: 检测 seg_deletion / seg_insertion。
+    def _resolve_seg_events(self, outgroup_graph=None) -> int:
+        """Phase 4a: 检测并解决 seg_deletion / seg_insertion。
 
-        模式: 一个孩子有连续 N 个块 (N>=3)，另一个孩子完全缺失。
-        在块级图中检测: 共享边路径中，某个孩子缺失一段连续块。
+        对每个单物种块（source 只有一个孩子）：
+        - HOG 在 outgroup_graph 中 → 祖先有 → 对方孩子丢失（seg_deletion）
+          → 保留块，删除对方孩子的 shortcut 边
+        - HOG 不在 outgroup_graph 中（或无外群）→ 祖先无 → 拥有方插入（seg_insertion）
+          → 删除块及其边
+          → 无外群时额外汇总 warning
+
+        日志输出：删除的块数和边数，按 event_type 分统计。
         """
-        if not hasattr(self, '_blocks'):
+        if not hasattr(self, '_blocks') or not self._blocks:
             return 0
 
-        events_found = 0
         bg = self._block_graph
         if not bg:
             return 0
-        # 对每个孩子，找该孩子 species 完全缺失的 block
-        for cid in self.children():
-            missing = [bid for bid in bg.nodes
-                       if cid not in set(c for c, _ in bg.nodes[bid].get('sources', set()))]
-            if not missing:
+
+        n_blocks_removed = 0
+        n_edges_removed = 0
+        n_insertions = 0
+        n_deletions = 0
+        n_fallback = 0
+        removed_blocks = set()
+        shortcut_warnings = []
+
+        for bid in list(self._blocks.keys()):
+            if bid in removed_blocks:
                 continue
-            # 每个缺失块连通分量 = 一个 seg_deletion 事件
-            for comp in nx.weakly_connected_components(bg.subgraph(missing)):
-                involved_hogs = []
-                for bid in comp:
-                    involved_hogs.extend(self._blocks.get(bid, []))
+            hogs = self._blocks[bid]
+            sources = bg.nodes[bid].get('sources', set())
+            owning_children = set(c for c, _ in sources)
+            if len(owning_children) != 1:
+                continue  # 多孩子块，跳过
+
+            own_cid = next(iter(owning_children))
+            other_cid = None
+            for c in self.children():
+                if c != own_cid:
+                    other_cid = c
+                    break
+            if other_cid is None:
+                continue
+
+            # 外群判极性：块内任意 HOG 在外群 graph 中存在？
+            has_og = outgroup_graph is not None
+            any_hog_in_og = False
+            if has_og:
+                any_hog_in_og = any(str(h) in outgroup_graph for h in hogs)
+
+            # 找邻居块：在块图中按 own_cid 方向找到前后邻居
+            preds = [p for p in bg.predecessors(bid)
+                     if any(c == own_cid for c, _ in
+                            self._block_edge_data(p, bid).get('colors', set()))]
+            succs = [s for s in bg.successors(bid)
+                     if any(c == own_cid for c, _ in
+                            self._block_edge_data(bid, s).get('colors', set()))]
+
+            if has_og and any_hog_in_og:
+                # 祖先有此 HOG → 对方丢失 → seg_deletion
+                # 删除对方孩子在邻居块之间的 shortcut 边
+                for n1 in preds:
+                    for n2 in succs:
+                        if not bg.has_edge(n1, n2):
+                            continue
+                        data = self._block_edge_data(n1, n2)
+                        edge_colors = data.get('colors', set())
+                        remaining = {(c, ch) for c, ch in edge_colors
+                                     if c != other_cid}
+                        if remaining != edge_colors:
+                            data['colors'] = remaining
+                            n_edges_removed += len(edge_colors) - len(remaining)
+                n_deletions += 1
                 self.events.append(TAKREvent(
                     event_type='seg_deletion',
-                    branch=f"{self.hog_level}-{cid}",
-                    genes_involved=involved_hogs,
-                    desc=f"seg_deletion: {len(comp)} blocks missing in {cid}",
-                    support=len(comp),
+                    branch=f"{self.hog_level}-{other_cid}",
+                    genes_involved=list(hogs),
+                    desc=f"seg_deletion: {bid} ({len(hogs)} HOGs) absent in {other_cid}",
+                    support=len(hogs),
                 ))
-                events_found += 1
+            else:
+                # 祖先无此 HOG（或无外群）→ 拥有方插入 → seg_insertion
+                # 删除块及其边
+                if not has_og:
+                    n_fallback += 1
+                    shortcut_warnings.append(
+                        f"no_outgroup: {bid} ({len(hogs)} HOGs) "
+                        f"in {own_cid}, treated as insertion"
+                    )
+                # 删除与该块相关的所有 own_cid 边
+                for p in list(bg.predecessors(bid)):
+                    data = self._block_edge_data(p, bid)
+                    edge_colors = data.get('colors', set())
+                    remaining = {(c, ch) for c, ch in edge_colors
+                                 if c != own_cid}
+                    if remaining != edge_colors:
+                        data['colors'] = remaining
+                        n_edges_removed += len(edge_colors) - len(remaining)
+                for s in list(bg.successors(bid)):
+                    data = self._block_edge_data(bid, s)
+                    edge_colors = data.get('colors', set())
+                    remaining = {(c, ch) for c, ch in edge_colors
+                                 if c != own_cid}
+                    if remaining != edge_colors:
+                        data['colors'] = remaining
+                        n_edges_removed += len(edge_colors) - len(remaining)
+                # 删除块
+                bg.remove_node(bid)
+                del self._blocks[bid]
+                removed_blocks.add(bid)
+                n_blocks_removed += 1
+                n_insertions += 1
+                self.events.append(TAKREvent(
+                    event_type='seg_insertion',
+                    branch=f"{self.hog_level}-{own_cid}",
+                    genes_involved=list(hogs),
+                    desc=f"seg_insertion: {bid} ({len(hogs)} HOGs) in {own_cid}",
+                    support=len(hogs),
+                ))
 
-        return events_found
+        if n_fallback:
+            logger.warning("  [seg] %d blocks resolved without outgroup (fallback=insertion):",
+                           n_fallback)
+            for w in shortcut_warnings[:5]:
+                logger.warning("    %s", w)
+            if len(shortcut_warnings) > 5:
+                logger.warning("    ... and %d more", len(shortcut_warnings) - 5)
+
+        if n_blocks_removed or n_edges_removed:
+            logger.info("  [seg] removed: %d blocks, %d edges "
+                        "(%d insertions, %d deletions%s)",
+                        n_blocks_removed, n_edges_removed,
+                        n_insertions, n_deletions,
+                        f", {n_fallback} fallback-warned" if n_fallback else "")
+
+        return n_blocks_removed + n_deletions
 
     def _resolve_unidir_trans(self, outgroup_adjacency: Set = None) -> int:
         """Phase 4b: 检测 unidirectional translocation。

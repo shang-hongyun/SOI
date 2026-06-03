@@ -2632,7 +2632,7 @@ class ColoredGraph(nx.DiGraph):
            Postcondition: 无跨越边, 无环, 无分支
         3. 共线性块压缩
            Postcondition: 所有 HOG 已分配到块
-        4a. seg_deletion / seg_insertion (多基因 indel)
+        4a. deletion / insertion (单基因+多基因 indel)
            Postcondition: 无大段不对称
         4b. inversion (方向冲突)
         4c. unidir_trans (单向转移)
@@ -2691,11 +2691,11 @@ class ColoredGraph(nx.DiGraph):
 
         # ====== Phase 4: 块级事件 (按复杂度递增) ======
 
-        # Phase 4a: seg_deletion / seg_insertion (所有大小的 indel)
+        # Phase 4a: deletion / insertion (单基因+多基因 indel)
         n_seg = self._resolve_seg_events(outgroup_graph=outgroup_graph)
         if n_seg:
             from collections import defaultdict
-            for etype in ('seg_deletion', 'seg_insertion'):
+            for etype in ('deletion', 'insertion'):
                 seg_events = [e for e in self.events if e.event_type == etype]
                 if not seg_events:
                     continue
@@ -2711,7 +2711,7 @@ class ColoredGraph(nx.DiGraph):
                     logger.info("  [Phase 4a] %s events: %s=%d (%s)",
                                 cid, etype, child_counts[cid], len_str)
         else:
-            logger.warning("  [colored] Phase 4a: 0 seg_deletion events — unexpected")
+            logger.warning("  [colored] Phase 4a: 0 deletion events — unexpected")
 
         _gfa_out("p4a_seg")
 
@@ -2877,7 +2877,7 @@ class ColoredGraph(nx.DiGraph):
                      len(orig_comp_has_telomere))
 
     def _resolve_seg_events(self, outgroup_graph=None) -> int:
-        """Phase 4a: 图结构驱动的 seg_deletion / seg_insertion。
+        """Phase 4a: 图结构驱动的 deletion / insertion。
 
         对单物种块 B（只有 child X），要求：
         1. 前后邻居 N1、N2 存在且都是 shared 块（≥2 孩子）
@@ -2888,8 +2888,8 @@ class ColoredGraph(nx.DiGraph):
         - outgroup_graph.has_edge(h1, h2) → N1↔N2 直连是祖先态
           → B 是 X 的 insertion → 删块，给 shortcut 边加 X 颜色
         - 无此边 / 无外群 → N1↔N2 shortcut 是衍生
-          → Y 丢失 B → seg_deletion → 删 shortcut 边的 Y 颜色
-        - 无外群 → seg_deletion（保块删边）+ warning
+          → Y 丢失 B → deletion → 删 shortcut 边的 Y 颜色
+        - 无外群 → deletion（保块删边）+ warning
         """
         if not hasattr(self, '_blocks') or not self._blocks:
             return 0
@@ -2908,6 +2908,12 @@ class ColoredGraph(nx.DiGraph):
 
         pre_nodes = bg.number_of_nodes()
         pre_edges = bg.number_of_edges()
+
+        # 统计单物种块总数
+        n_single_species = sum(
+            1 for bid in self._blocks
+            if len(set(c for c, _ in bg.nodes[bid].get('sources', set()))) == 1
+        )
 
         def _strip_color(u, v, cid):
             """删边 (u,v) 中 cid 的颜色；颜色全空则删边。返回是否删了边。"""
@@ -2978,7 +2984,7 @@ class ColoredGraph(nx.DiGraph):
 
                     if has_og and og_has_edge:
                         # 祖先有 N1↔N2 → insertion
-                        etype = 'seg_insertion'
+                        etype = 'insertion'
                         target = own_cid
                         # 给 shortcut 边加 own_cid 颜色（祖先邻接）
                         ch1 = next((ch for c, ch in n1_srcs if c == own_cid), 0)
@@ -2993,7 +2999,7 @@ class ColoredGraph(nx.DiGraph):
                         n_insertions += 1
                     else:
                         # 祖先无（或无外群）→ deletion
-                        etype = 'seg_deletion'
+                        etype = 'deletion'
                         target = other_cid
                         if _strip_color(n1, n2, other_cid):
                             n_edges_removed += 1
@@ -3034,6 +3040,8 @@ class ColoredGraph(nx.DiGraph):
             logger.info("  [seg] graph: %d→%d nodes, %d→%d edges (Δn=%+d, Δe=%+d)",
                         pre_nodes, post_nodes, pre_edges, post_edges,
                         post_nodes - pre_nodes, post_edges - pre_edges)
+        logger.info("  [seg] single-species blocks: %d total → %d resolved as indel",
+                    n_single_species, n_insertions + n_deletions)
 
         return n_blocks_removed + n_deletions
 

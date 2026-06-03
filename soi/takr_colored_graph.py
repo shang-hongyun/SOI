@@ -2619,6 +2619,7 @@ class ColoredGraph(nx.DiGraph):
         self._dedup_pending = []
 
     def resolve_all_events(self, outgroup_graph = None,
+                           hog_parent = None,
                            min_hogs: int = 3,
                            gfa_debug: bool = False,
                            gfa_prefix: str = None) -> List[TAKREvent]:
@@ -2692,7 +2693,8 @@ class ColoredGraph(nx.DiGraph):
         # ====== Phase 4: 块级事件 (按复杂度递增) ======
 
         # Phase 4a: deletion / insertion (单基因+多基因 indel)
-        n_seg = self._resolve_seg_events(outgroup_graph=outgroup_graph)
+        n_seg = self._resolve_seg_events(outgroup_graph=outgroup_graph,
+                                           hog_parent=hog_parent)
         if n_seg:
             from collections import defaultdict
             for etype in ('deletion', 'insertion', 'reciprocal_indel'):
@@ -2876,25 +2878,32 @@ class ColoredGraph(nx.DiGraph):
                      len(self._original_shared_components),
                      len(orig_comp_has_telomere))
 
-    def _score_block_edge(self, outgroup_graph, ga, gb):
-        """ga 尾部 HOG 与 gb 首部 HOG 在外群图中是否存在边。返回 1 或 0。"""
+    def _score_block_edge(self, outgroup_graph, ga, gb, hog_parent=None):
+        """ga 尾部 HOG 与 gb 首部 HOG 在外群图中是否存在边。
+        
+        通过 hog_parent 将 HOG 映射到外群图同层级再查边。
+        """
         if outgroup_graph is None or not hasattr(self, '_blocks'):
             return 0
         ha_list = self._blocks.get(ga, [])
         hb_list = self._blocks.get(gb, [])
         if not ha_list or not hb_list:
             return 0
-        ha, hb = ha_list[-1], hb_list[0]
-        return 1 if outgroup_graph.has_edge(str(ha), str(hb)) else 0
+        ha = str(ha_list[-1])
+        hb = str(hb_list[0])
+        if hog_parent:
+            ha = hog_parent.get(ha, ha)
+            hb = hog_parent.get(hb, hb)
+        return 1 if outgroup_graph.has_edge(ha, hb) else 0
 
-    def _score_block_path(self, outgroup_graph, block_ids):
+    def _score_block_path(self, outgroup_graph, block_ids, hog_parent=None):
         """路径中相邻块之间在外群图中存在的边数。遍历 zip 逐对调用 _score_block_edge。"""
         if outgroup_graph is None or len(block_ids) < 2:
             return 0
-        return sum(self._score_block_edge(outgroup_graph, a, b)
+        return sum(self._score_block_edge(outgroup_graph, a, b, hog_parent)
                    for a, b in zip(block_ids, block_ids[1:]))
 
-    def _resolve_seg_events(self, outgroup_graph=None) -> int:
+    def _resolve_seg_events(self, outgroup_graph=None, hog_parent=None) -> int:
         """Phase 4a: 气泡结构驱动的 deletion / insertion / reciprocal_indel。
 
         按 (N1, N2) 邻居对分组单物种块：
@@ -2979,13 +2988,18 @@ class ColoredGraph(nx.DiGraph):
             og_nodes = set(str(n) for n in outgroup_graph.nodes())
             hog_nodes = set(str(h) for h in list(self.nodes())[:50000])
             overlap = og_nodes & hog_nodes
+            rate = len(overlap) / len(og_nodes) if og_nodes else 0
             logger.info("  [bubble] outgroup graph: %d nodes, HOG graph: %d nodes sampled, "
-                        "overlap: %d", len(og_nodes), len(hog_nodes), len(overlap))
+                        "overlap: %d (%.1f%%)",
+                        len(og_nodes), len(hog_nodes), len(overlap), rate * 100)
+            if rate < 0.5:
+                logger.warning("  [bubble] LOW OVERLAP (%.1f%%), scores may be unreliable",
+                               rate * 100)
             if not overlap:
                 sample_og = sorted(og_nodes)[:3]
                 sample_hog = sorted(hog_nodes)[:3]
-                logger.info("  [bubble] NO OVERLAP! og sample=%s, hog sample=%s",
-                            sample_og, sample_hog)
+                logger.warning("  [bubble] NO OVERLAP! og sample=%s, hog sample=%s",
+                               sample_og, sample_hog)
 
         for (n1, n2), items in groups.items():
             n_items = len(items)
@@ -3009,8 +3023,8 @@ class ColoredGraph(nx.DiGraph):
                     continue
 
                 # 打分：路径 B vs shortcut
-                score_path = self._score_block_path(outgroup_graph, [n1, bid, n2])
-                score_sc = self._score_block_edge(outgroup_graph, n1, n2)
+                score_path = self._score_block_path(outgroup_graph, [n1, bid, n2], hog_parent)
+                score_sc = self._score_block_edge(outgroup_graph, n1, n2, hog_parent)
                 key = (score_path, score_sc)
                 simple_dist[key] = simple_dist.get(key, 0) + 1
 
@@ -3066,8 +3080,8 @@ class ColoredGraph(nx.DiGraph):
                 if c1 == c2:
                     continue
 
-                score1 = self._score_block_path(outgroup_graph, [n1, b1, n2])
-                score2 = self._score_block_path(outgroup_graph, [n1, b2, n2])
+                score1 = self._score_block_path(outgroup_graph, [n1, b1, n2], hog_parent)
+                score2 = self._score_block_path(outgroup_graph, [n1, b2, n2], hog_parent)
                 key = (score1, score2)
                 score_dist[key] = score_dist.get(key, 0) + 1
                 has_og = outgroup_graph is not None

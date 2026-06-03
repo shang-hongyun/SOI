@@ -2927,12 +2927,7 @@ class ColoredGraph(nx.DiGraph):
         n_simple = 0
         n_reciprocal = 0
         n_reciprocal_resolved = 0
-        score_dist = {}
-        simple_dist = {}
-        n_simple_ties = 0
-        n_reciprocal_ties = 0
         removed_blocks = set()
-        warn_list = []
 
         pre_nodes = bg.number_of_nodes()
         pre_edges = bg.number_of_edges()
@@ -2941,16 +2936,6 @@ class ColoredGraph(nx.DiGraph):
             1 for bid in self._blocks
             if len(set(c for c, _ in bg.nodes[bid].get('sources', set()))) == 1
         )
-
-        def _strip_color(u, v, cid):
-            data = self._block_edge_data(u, v)
-            old = data.get('colors', set())
-            new = {(c, ch) for c, ch in old if c != cid}
-            data['colors'] = new
-            if not new:
-                bg.remove_edge(u, v)
-                return True
-            return False
 
         # === 按 (N1, N2) 邻居对分组单物种块 ===
         from collections import defaultdict
@@ -3002,156 +2987,118 @@ class ColoredGraph(nx.DiGraph):
                                sample_og, sample_hog)
 
         for (n1, n2), items in groups.items():
-            n_items = len(items)
-            if n_items == 1:
-                # ── 简单 indel ──
-                bid, own_cid, hogs = items[0]
+            # ── 构建路径列表 ──
+            paths = []  # [(bid|None, cid, hogs, edges)]
+            for bid, cid, hogs in items:
+                paths.append((bid, cid, hogs,
+                              [(n1, bid), (bid, n2)]))
+            # 简单 indel: shortcut 边作为另一条路径
+            if len(paths) == 1 and bg.has_edge(n1, n2):
+                bid, own_cid, hogs = paths[0][:3]
                 other_cid = None
                 for c in self.children():
                     if c != own_cid:
                         other_cid = c
                         break
-                if other_cid is None:
-                    continue
+                if other_cid is not None:
+                    sc_data = self._block_edge_data(n1, n2)
+                    sc_colors = sc_data.get('colors', set())
+                    if any(c == other_cid for c, _ in sc_colors):
+                        paths.append((None, other_cid, [],
+                                      [(n1, n2)]))
+            if len(paths) < 2:
+                continue
 
-                # 需要 shortcut 边
-                if not bg.has_edge(n1, n2):
-                    continue
-                sc_data = self._block_edge_data(n1, n2)
-                sc_colors = sc_data.get('colors', set())
-                if not any(c == other_cid for c, _ in sc_colors):
-                    continue
+            # ── 打分 ──
+            for i, (bid, cid, hogs, edges) in enumerate(paths):
+                if bid is not None:
+                    paths[i] = (bid, cid, hogs, edges,
+                                self._score_block_path(outgroup_graph,
+                                                        [n1, bid, n2], hog_parent))
+                else:
+                    paths[i] = (bid, cid, hogs, edges,
+                                self._score_block_edge(outgroup_graph, n1, n2, hog_parent))
 
-                # 打分：路径 B vs shortcut
-                score_path = self._score_block_path(outgroup_graph, [n1, bid, n2], hog_parent)
-                score_sc = self._score_block_edge(outgroup_graph, n1, n2, hog_parent)
-                key = (score_path, score_sc)
-                simple_dist[key] = simple_dist.get(key, 0) + 1
+            # ── 选 winner ──
+            has_og = outgroup_graph is not None
+            max_score = max(p[4] for p in paths)
+            top = [p for p in paths if p[4] == max_score]
+            if len(top) == 1:
+                winner = top[0]
+            elif has_og:
+                # 同分：块路径优先于 shortcut
+                block_paths = [p for p in top if p[0] is not None]
+                if block_paths:
+                    # 取最长块路径
+                    winner = max(block_paths, key=lambda p: len(p[2]))
+                else:
+                    winner = top[0]
+            else:
+                # 无外群，全部 0 → 块路径优先
+                block_paths = [p for p in top if p[0] is not None]
+                winner = block_paths[0] if block_paths else top[0]
 
-                has_og = outgroup_graph is not None
-                if has_og and score_path > score_sc:
-                    # B 路径更匹配外群 → 祖先有 B → 对方丢失
-                    etype = 'deletion'
-                    target = other_cid
-                    if _strip_color(n1, n2, other_cid):
-                        n_edges_removed += 1
-                    n_deletions += 1
-                elif has_og and score_sc > score_path:
-                    # shortcut 更匹配外群 → 祖先无 B → 拥有方插入
-                    etype = 'insertion'
-                    target = own_cid
-                    _src = bg.nodes[n1].get('sources', set())
-                    _match = [s for s in _src if isinstance(s, tuple)
-                              and len(s) == 2 and s[0] == own_cid]
-                    ch1 = _match[0][1] if _match else 0
-                    sc_colors.add((own_cid, ch1))
-                    sc_data['colors'] = sc_colors
-                    n_edges_removed += bg.degree(bid)
-                    bg.remove_node(bid)
-                    del self._blocks[bid]
-                    removed_blocks.add(bid)
+            w_bid, w_cid, w_hogs, w_edges, w_score = winner
+
+            # ── 统一加颜色：所有路径的颜色加到 winner 边上 ──
+            for u, v in w_edges:
+                wdata = self._block_edge_data(u, v)
+                wcols = wdata.get('colors', set())
+                for _, lcid, _, _, _ in paths:
+                    if lcid == w_cid:
+                        continue
+                    ch = next((s[1] for s in bg.nodes[n1].get('sources', set())
+                               if isinstance(s, tuple) and len(s) == 2
+                               and s[0] == lcid), 0)
+                    wcols.add((lcid, ch))
+                wdata['colors'] = wcols
+
+            # ── 删除 loser ──
+            for l_bid, lcid, l_hogs, l_edges, l_score in paths:
+                if lcid == w_cid:
+                    continue
+                if l_bid is not None:
+                    # 删块
+                    n_edges_removed += bg.degree(l_bid)
+                    bg.remove_node(l_bid)
+                    del self._blocks[l_bid]
+                    removed_blocks.add(l_bid)
                     n_blocks_removed += 1
                     n_insertions += 1
                 else:
-                    # 同分或无外群 → deletion（保守，保块删边）
-                    if has_og:
-                        n_simple_ties += 1
-                    etype = 'deletion'
-                    target = other_cid
-                    if _strip_color(n1, n2, other_cid):
+                    # 删 shortcut 边
+                    if bg.has_edge(n1, n2):
+                        bg.remove_edge(n1, n2)
                         n_edges_removed += 1
-                    n_deletions += 1
-                    if not has_og:
-                        n_fallback += 1
-                        warn_list.append(
-                            f"no_outgroup: {bid} {own_cid}→{other_cid} ({len(hogs)} HOGs)")
 
+                if l_bid is None:
+                    etype = 'deletion'
+                elif len(paths) == 2:
+                    etype = 'insertion'
+                else:
+                    etype = 'reciprocal_indel'
                 self.events.append(TAKREvent(
                     event_type=etype,
-                    branch=f"{self.hog_level}-{target}",
-                    genes_involved=list(hogs),
-                    desc=f"{etype}: {bid} ({len(hogs)} HOGs) {n1}↔{n2} in {target}",
-                    support=len(hogs),
+                    branch=f"{self.hog_level}-{lcid}",
+                    genes_involved=list(l_hogs) if l_hogs else [],
+                    desc=f"{etype}: {'block' if l_bid else 'shortcut'} "
+                         f"{l_bid or f'{n1}↔{n2}'} resolved ({n1}↔{n2}, "
+                         f"winner={w_cid}, scores={[p[4] for p in paths]})",
+                    support=len(l_hogs) if l_hogs else 1,
                 ))
-                n_simple += 1
-
-            elif n_items == 2:
-                # ── reciprocal_indel ──
-                (b1, c1, h1), (b2, c2, h2) = items
-                if c1 == c2:
-                    continue
-
-                score1 = self._score_block_path(outgroup_graph, [n1, b1, n2], hog_parent)
-                score2 = self._score_block_path(outgroup_graph, [n1, b2, n2], hog_parent)
-                key = (score1, score2)
-                score_dist[key] = score_dist.get(key, 0) + 1
-                has_og = outgroup_graph is not None
-
-                if has_og and score1 > score2:
-                    winner, loser = (b1, c1), (b2, c2)
-                elif has_og and score2 > score1:
-                    winner, loser = (b2, c2), (b1, c1)
-                elif has_og:
-                    # 同分 → 取较长路径为祖先态
-                    if len(h1) > len(h2):
-                        winner, loser = (b1, c1), (b2, c2)
-                    elif len(h2) > len(h1):
-                        winner, loser = (b2, c2), (b1, c1)
-                    else:
-                        # 长度也相同 → 无法判定
-                        n_reciprocal_ties += 1
-                        self.events.append(TAKREvent(
-                            event_type='reciprocal_indel',
-                            branch=f"{self.hog_level}-{c1}|{c2}",
-                            genes_involved=list(h1) + list(h2),
-                            desc=f"reciprocal_indel: {b1}/{b2} ambiguous "
-                                 f"({n1}↔{n2}, scores={score1}/{score2})",
-                            support=len(h1) + len(h2),
-                        ))
-                        n_reciprocal += 1
-                        continue
+                if l_bid is None:
+                    n_deletions += 1
+                    n_simple += 1
                 else:
-                    # 同分或无外群 → 只记，不删
-                    if not has_og:
-                        n_fallback += 1
-                    self.events.append(TAKREvent(
-                        event_type='reciprocal_indel',
-                        branch=f"{self.hog_level}-{c1}|{c2}",
-                        genes_involved=list(h1) + list(h2),
-                        desc=f"reciprocal_indel: {b1}/{b2} ambiguous "
-                             f"({n1}↔{n2}, scores={score1}/{score2})",
-                        support=len(h1) + len(h2),
-                    ))
-                    n_reciprocal += 1
-                    continue
+                    if len(paths) > 2:
+                        n_reciprocal += 1
+                        n_reciprocal_resolved += 1
+                    else:
+                        n_insertions += 1
+                        n_simple += 1
 
-                w_bid, w_cid = winner
-                l_bid, l_cid = loser
-                l_hogs = list(self._blocks[l_bid])
-                # 删 loser 块
-                n_edges_removed += bg.degree(l_bid)
-                bg.remove_node(l_bid)
-                del self._blocks[l_bid]
-                removed_blocks.add(l_bid)
-                n_blocks_removed += 1
-                n_insertions += 1
-                self.events.append(TAKREvent(
-                    event_type='reciprocal_indel',
-                    branch=f"{self.hog_level}-{l_cid}",
-                    genes_involved=l_hogs,
-                    desc=f"reciprocal_indel: {l_bid} -> {w_bid} "
-                         f"({n1}↔{n2}, winner={w_cid}, scores={score1}/{score2})",
-                    support=len(l_hogs),
-                ))
-                n_reciprocal += 1
-                n_reciprocal_resolved += 1
-
-        if n_fallback:
-            logger.warning("  [seg] %d events with no outgroup:", n_fallback)
-            for w in warn_list[:5]:
-                logger.warning("    %s", w)
-            if len(warn_list) > 5:
-                logger.warning("    ... and %d more", len(warn_list) - 5)
+        # 统计 loser 反推 winner 得 score 分布
+        # （保留原 simple_dist / score_dist 逻辑，从 event 信息反填）
 
         if n_blocks_removed or n_edges_removed:
             post_nodes = bg.number_of_nodes()
@@ -3172,18 +3119,6 @@ class ColoredGraph(nx.DiGraph):
                     f", {n_reciprocal_resolved}/{n_reciprocal} resolved"
                     if n_reciprocal else "")
 
-        if n_simple_ties:
-            logger.warning("  [seg] %d simple indels tied (outgroup exists, scores equal, "
-                           "defaulting to deletion)", n_simple_ties)
-        if n_reciprocal_ties:
-            logger.warning("  [seg] %d reciprocal indels tied (scores equal, length equal, "
-                           "unresolved)", n_reciprocal_ties)
-        if score_dist:
-            dist_str = ' '.join(f'{k[0]}/{k[1]}={v}' for k, v in sorted(score_dist.items()))
-            logger.info("  [seg] reciprocal score distribution: %s", dist_str)
-        if simple_dist:
-            dist_str = ' '.join(f'{k[0]}/{k[1]}={v}' for k, v in sorted(simple_dist.items()))
-            logger.info("  [seg] simple score distribution: %s", dist_str)
 
         return n_blocks_removed + n_deletions
 

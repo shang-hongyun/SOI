@@ -2695,7 +2695,7 @@ class ColoredGraph(nx.DiGraph):
         n_seg = self._resolve_seg_events(outgroup_graph=outgroup_graph)
         if n_seg:
             from collections import defaultdict
-            for etype in ('deletion', 'insertion'):
+            for etype in ('deletion', 'insertion', 'reciprocal_indel'):
                 seg_events = [e for e in self.events if e.event_type == etype]
                 if not seg_events:
                     continue
@@ -3021,6 +3021,16 @@ class ColoredGraph(nx.DiGraph):
                 if bid in removed_blocks:
                     break
 
+        # reciprocal_indel: 两个孩子的平行路径（气泡）
+        nr, er, nr_insertions, nr_deletions, nr_fallback = \
+            self._resolve_reciprocal_indels(outgroup_graph, bg,
+                                            n_edges_removed, removed_blocks)
+        n_blocks_removed += nr
+        n_edges_removed += er
+        n_insertions += nr_insertions
+        n_deletions += nr_deletions
+        n_fallback += nr_fallback
+
         if n_fallback:
             logger.warning("  [seg] %d events with no outgroup (fallback=deletion):",
                            n_fallback)
@@ -3044,6 +3054,112 @@ class ColoredGraph(nx.DiGraph):
                     n_single_species, n_insertions + n_deletions)
 
         return n_blocks_removed + n_deletions
+
+    def _resolve_reciprocal_indels(self, outgroup_graph, bg,
+                                    n_edges_removed, removed_blocks):
+        """检测并解决 reciprocal_indel（气泡结构）。
+
+        两个孩子在同一对 shared 邻居 N1↔N2 之间各有独立单物种路径，
+        且路径的 HOG 属于同一 orthogroup（不同拷贝）。无 shortcut 边。
+
+        外群判极性：outgroup_graph 中有哪个拷贝 → 该路径祖先态，删另一条。
+        无外群 → 记录事件，不动图。
+        返回 (blocks_removed, edges_removed, insertions, deletions, fallbacks)
+        """
+        n_blk = 0
+        n_edg = 0
+        n_ins = 0
+        n_del = 0
+        n_fb = 0
+
+        # 按邻居对分组单物种块: (n1, n2) → [(bid, cid, hogs)]
+        from collections import defaultdict
+        bubble_groups = defaultdict(list)
+
+        for bid in self._blocks:
+            if bid in removed_blocks:
+                continue
+            sources = bg.nodes[bid].get('sources', set())
+            owner_set = set(c for c, _ in sources)
+            if len(owner_set) != 1:
+                continue
+            own_cid = next(iter(owner_set))
+
+            preds = [p for p in bg.predecessors(bid)
+                     if any(c == own_cid for c, _ in
+                            self._block_edge_data(p, bid).get('colors', set()))]
+            succs = [s for s in bg.successors(bid)
+                     if any(c == own_cid for c, _ in
+                            self._block_edge_data(bid, s).get('colors', set()))]
+            if len(preds) != 1 or len(succs) != 1:
+                continue
+            n1, n2 = preds[0], succs[0]
+
+            # 邻居必须是 shared 块，且无 shortcut 边
+            n1_srcs = set(c for c, _ in bg.nodes[n1].get('sources', set()))
+            n2_srcs = set(c for c, _ in bg.nodes[n2].get('sources', set()))
+            if len(n1_srcs) < 2 or len(n2_srcs) < 2:
+                continue
+            if bg.has_edge(n1, n2):
+                continue  # 有 shortcut 边 → 简单 indel 已处理
+
+            bubble_groups[(n1, n2)].append((bid, own_cid, self._blocks[bid]))
+
+        for (n1, n2), blocks in bubble_groups.items():
+            if len(blocks) != 2:
+                continue  # 需要恰好两个单物种块
+            (b1, c1, h1), (b2, c2, h2) = blocks
+            if c1 == c2:
+                continue  # 同一孩子，不是跨孩子的
+
+            # 检查是否同一 orthogroup 不同拷贝
+            h1_prefixes = set(str(h).rsplit('.', 1)[0] for h in h1)
+            h2_prefixes = set(str(h).rsplit('.', 1)[0] for h in h2)
+            if not (h1_prefixes & h2_prefixes):
+                continue
+
+            # 外群定极性
+            has_og = outgroup_graph is not None
+            ancestral = None
+            derived = None
+            if has_og:
+                if any(str(h) in outgroup_graph for h in h1):
+                    ancestral, derived = (b1, c1), (b2, c2)
+                elif any(str(h) in outgroup_graph for h in h2):
+                    ancestral, derived = (b2, c2), (b1, c1)
+
+            if ancestral:
+                # 保留祖先块，合并衍生孩子路径
+                a_bid, a_cid = ancestral
+                d_bid, d_cid = derived
+                # 删衍生块及其边
+                n_edg += bg.degree(d_bid)
+                bg.remove_node(d_bid)
+                del self._blocks[d_bid]
+                removed_blocks.add(d_bid)
+                n_blk += 1
+                n_ins += 1
+                self.events.append(TAKREvent(
+                    event_type='reciprocal_indel',
+                    branch=f"{self.hog_level}-{d_cid}",
+                    genes_involved=list(self._blocks.get(d_bid, [])),
+                    desc=f"reciprocal_indel: {d_bid} -> {a_bid} "
+                         f"({n1}↔{n2}, ancestral={a_cid})",
+                    support=len(self._blocks.get(d_bid, [])),
+                ))
+            else:
+                # 无外群 → 记录，不修改图
+                n_fb += 1
+                self.events.append(TAKREvent(
+                    event_type='reciprocal_indel',
+                    branch=f"{self.hog_level}-{c1}|{c2}",
+                    genes_involved=list(h1) + list(h2),
+                    desc=f"reciprocal_indel: {b1}/{b2} ambiguous "
+                         f"({n1}↔{n2}, no outgroup)",
+                    support=len(h1) + len(h2),
+                ))
+
+        return n_blk, n_edg, n_ins, n_del, n_fb
 
     def _resolve_unidir_trans(self, outgroup_adjacency: Set = None) -> int:
         """Phase 4b: 检测 unidirectional translocation。

@@ -3112,12 +3112,6 @@ class ColoredGraph(nx.DiGraph):
             if c1 == c2:
                 continue  # 同一孩子，不是跨孩子的
 
-            # 检查是否同一 orthogroup 不同拷贝
-            h1_prefixes = set(str(h).rsplit('.', 1)[0] for h in h1)
-            h2_prefixes = set(str(h).rsplit('.', 1)[0] for h in h2)
-            if not (h1_prefixes & h2_prefixes):
-                continue
-
             # 外群定极性
             has_og = outgroup_graph is not None
             ancestral = None

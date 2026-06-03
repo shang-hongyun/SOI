@@ -2919,6 +2919,7 @@ class ColoredGraph(nx.DiGraph):
         n_reciprocal = 0
         n_reciprocal_resolved = 0
         score_dist = {}
+        simple_dist = {}
         removed_blocks = set()
         warn_list = []
 
@@ -2995,6 +2996,8 @@ class ColoredGraph(nx.DiGraph):
                 # 打分：路径 B vs shortcut
                 score_path = self._score_block_path(outgroup_graph, [n1, bid, n2])
                 score_sc = self._score_block_edge(outgroup_graph, n1, n2)
+                key = (score_path, score_sc)
+                simple_dist[key] = simple_dist.get(key, 0) + 1
 
                 has_og = outgroup_graph is not None
                 if has_og and score_path > score_sc:
@@ -3120,6 +3123,9 @@ class ColoredGraph(nx.DiGraph):
         if score_dist:
             dist_str = ' '.join(f'{k[0]}/{k[1]}={v}' for k, v in sorted(score_dist.items()))
             logger.info("  [seg] reciprocal score distribution: %s", dist_str)
+        if simple_dist:
+            dist_str = ' '.join(f'{k[0]}/{k[1]}={v}' for k, v in sorted(simple_dist.items()))
+            logger.info("  [seg] simple score distribution: %s", dist_str)
 
         return n_blocks_removed + n_deletions
 

@@ -2906,6 +2906,9 @@ class ColoredGraph(nx.DiGraph):
         removed_blocks = set()
         warn_list = []
 
+        pre_nodes = bg.number_of_nodes()
+        pre_edges = bg.number_of_edges()
+
         for bid in list(self._blocks.keys()):
             if bid in removed_blocks:
                 continue
@@ -2974,7 +2977,9 @@ class ColoredGraph(nx.DiGraph):
                             old = d.get('colors', set())
                             new = {(c, ch) for c, ch in old if c != own_cid}
                             d['colors'] = new
-                            n_edges_removed += len(old) - len(new)
+                            if not new:
+                                bg.remove_edge(u, v)
+                                n_edges_removed += 1
                         # 给 shortcut 边加 own_cid 颜色
                         ch1 = next((ch for c, ch in n1_srcs if c == own_cid), 0)
                         sc_colors.add((own_cid, ch1))
@@ -2990,10 +2995,11 @@ class ColoredGraph(nx.DiGraph):
                         etype = 'seg_deletion'
                         target = other_cid
                         # 删 shortcut 边的 other_cid 颜色
-                        old = set(sc_colors)
-                        new = {(c, ch) for c, ch in sc_colors if c != other_cid}
-                        sc_data['colors'] = new
-                        n_edges_removed += len(old) - len(new)
+                        new_colors = {(c, ch) for c, ch in sc_colors if c != other_cid}
+                        sc_data['colors'] = new_colors
+                        if not new_colors:
+                            bg.remove_edge(n1, n2)
+                            n_edges_removed += 1
                         n_deletions += 1
                         if not has_og:
                             n_fallback += 1
@@ -3021,11 +3027,16 @@ class ColoredGraph(nx.DiGraph):
                 logger.warning("    ... and %d more", len(warn_list) - 5)
 
         if n_blocks_removed or n_edges_removed:
+            post_nodes = bg.number_of_nodes()
+            post_edges = bg.number_of_edges()
             logger.info("  [seg] removed: %d blocks, %d edges "
                         "(%d insertions, %d deletions%s)",
                         n_blocks_removed, n_edges_removed,
                         n_insertions, n_deletions,
                         f", {n_fallback} fallback-warned" if n_fallback else "")
+            logger.info("  [seg] graph: %d→%d nodes, %d→%d edges (Δn=%+d, Δe=%+d)",
+                        pre_nodes, post_nodes, pre_edges, post_edges,
+                        post_nodes - pre_nodes, post_edges - pre_edges)
 
         return n_blocks_removed + n_deletions
 

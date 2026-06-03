@@ -21,6 +21,10 @@ def number_nodes(sptreefile):
 		name = 'N{}'.format(i)
 		node.name = name
 		i += 1
+	# 压缩单子节点：删掉只有一个孩子的内部节点，祖孙直连
+	for node in list(tree.traverse()):
+		if not node.is_leaf() and not node.is_root() and len(node.children) == 1:
+			node.delete(prevent_nondicotomic=False)
 	tree.write(outfile=sptreefile + ".labeled.nwk", format=1)
 	return tree 
 
@@ -82,5 +86,3 @@ def convertNHX(inNwk, ):
     for line in open(inNwk):
         nwk += [convert_newick(line)]
     return ''.join(nwk)
-
-

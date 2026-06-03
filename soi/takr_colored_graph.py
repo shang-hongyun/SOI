@@ -2982,7 +2982,7 @@ class ColoredGraph(nx.DiGraph):
                 sample_block_hog = str(sample_hogs[0]) if sample_hogs else 'N/A'
                 sample_og_nodes = list(outgroup_graph.nodes())[:3]
                 sample_og_edges = list(outgroup_graph.edges())[:3]
-                logger.debug("  [bubble] debug outgroup: block_hog=%s,  og_nodes=%s, og_edges=%s",
+                logger.info("  [bubble] debug outgroup: block_hog=%s,  og_nodes=%s, og_edges=%s",
                              sample_block_hog, sample_og_nodes, sample_og_edges)
 
         for (n1, n2), items in groups.items():

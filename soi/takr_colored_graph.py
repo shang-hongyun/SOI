@@ -2974,6 +2974,17 @@ class ColoredGraph(nx.DiGraph):
         logger.debug("  [bubble] %d single-species blocks → %d neighbor-pair groups",
                      sum(len(v) for v in groups.values()), n_groups)
 
+        # Debug: sample block HOGs vs outgroup graph keys
+        if outgroup_graph is not None and groups:
+            sample_bids = list(groups.values())[0]
+            if sample_bids:
+                _, _, sample_hogs = sample_bids[0]
+                sample_block_hog = str(sample_hogs[0]) if sample_hogs else 'N/A'
+                sample_og_nodes = list(outgroup_graph.nodes())[:3]
+                sample_og_edges = list(outgroup_graph.edges())[:3]
+                logger.debug("  [bubble] debug outgroup: block_hog=%s,  og_nodes=%s, og_edges=%s",
+                             sample_block_hog, sample_og_nodes, sample_og_edges)
+
         for (n1, n2), items in groups.items():
             n_items = len(items)
             if n_items == 1:

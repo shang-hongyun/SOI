@@ -3099,6 +3099,7 @@ class ColoredGraph(nx.DiGraph):
 
                 w_bid, w_cid = winner
                 l_bid, l_cid = loser
+                l_hogs = list(self._blocks[l_bid])
                 # 删 loser 块
                 n_edges_removed += bg.degree(l_bid)
                 bg.remove_node(l_bid)
@@ -3109,10 +3110,10 @@ class ColoredGraph(nx.DiGraph):
                 self.events.append(TAKREvent(
                     event_type='reciprocal_indel',
                     branch=f"{self.hog_level}-{l_cid}",
-                    genes_involved=list(self._blocks.get(l_bid, [])),
+                    genes_involved=l_hogs,
                     desc=f"reciprocal_indel: {l_bid} -> {w_bid} "
                          f"({n1}↔{n2}, winner={w_cid}, scores={score1}/{score2})",
-                    support=len(self._blocks.get(l_bid, [])),
+                    support=len(l_hogs),
                 ))
                 n_reciprocal += 1
                 n_reciprocal_resolved += 1

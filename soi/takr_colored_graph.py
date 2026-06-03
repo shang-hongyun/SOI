@@ -3050,8 +3050,13 @@ class ColoredGraph(nx.DiGraph):
             logger.info("  [seg] graph: %d→%d nodes, %d→%d edges (Δn=%+d, Δe=%+d)",
                         pre_nodes, post_nodes, pre_edges, post_edges,
                         post_nodes - pre_nodes, post_edges - pre_edges)
-        logger.info("  [seg] single-species blocks: %d total → %d resolved as indel",
-                    n_single_species, n_insertions + n_deletions)
+        logger.info("  [seg] single-species blocks: %d total → %d resolved as indel"
+                    " (%d simple + %d reciprocal%s)",
+                    n_single_species,
+                    n_insertions + n_deletions + nr_fallback,
+                    n_insertions + n_deletions - nr_insertions - nr_deletions,
+                    nr_insertions + nr_deletions + nr_fallback,
+                    f", {nr_fallback} fallback" if nr_fallback else "")
 
         return n_blocks_removed + n_deletions
 

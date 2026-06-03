@@ -2920,6 +2920,8 @@ class ColoredGraph(nx.DiGraph):
         n_reciprocal_resolved = 0
         score_dist = {}
         simple_dist = {}
+        n_simple_ties = 0
+        n_reciprocal_ties = 0
         removed_blocks = set()
         warn_list = []
 
@@ -3024,6 +3026,8 @@ class ColoredGraph(nx.DiGraph):
                     n_insertions += 1
                 else:
                     # 同分或无外群 → deletion（保守，保块删边）
+                    if has_og:
+                        n_simple_ties += 1
                     etype = 'deletion'
                     target = other_cid
                     if _strip_color(n1, n2, other_cid):
@@ -3059,6 +3063,25 @@ class ColoredGraph(nx.DiGraph):
                     winner, loser = (b1, c1), (b2, c2)
                 elif has_og and score2 > score1:
                     winner, loser = (b2, c2), (b1, c1)
+                elif has_og:
+                    # 同分 → 取较长路径为祖先态
+                    if len(h1) > len(h2):
+                        winner, loser = (b1, c1), (b2, c2)
+                    elif len(h2) > len(h1):
+                        winner, loser = (b2, c2), (b1, c1)
+                    else:
+                        # 长度也相同 → 无法判定
+                        n_reciprocal_ties += 1
+                        self.events.append(TAKREvent(
+                            event_type='reciprocal_indel',
+                            branch=f"{self.hog_level}-{c1}|{c2}",
+                            genes_involved=list(h1) + list(h2),
+                            desc=f"reciprocal_indel: {b1}/{b2} ambiguous "
+                                 f"({n1}↔{n2}, scores={score1}/{score2})",
+                            support=len(h1) + len(h2),
+                        ))
+                        n_reciprocal += 1
+                        continue
                 else:
                     # 同分或无外群 → 只记，不删
                     if not has_og:
@@ -3120,6 +3143,12 @@ class ColoredGraph(nx.DiGraph):
                     f", {n_reciprocal_resolved}/{n_reciprocal} resolved"
                     if n_reciprocal else "")
 
+        if n_simple_ties:
+            logger.warning("  [seg] %d simple indels tied (outgroup exists, scores equal, "
+                           "defaulting to deletion)", n_simple_ties)
+        if n_reciprocal_ties:
+            logger.warning("  [seg] %d reciprocal indels tied (scores equal, length equal, "
+                           "unresolved)", n_reciprocal_ties)
         if score_dist:
             dist_str = ' '.join(f'{k[0]}/{k[1]}={v}' for k, v in sorted(score_dist.items()))
             logger.info("  [seg] reciprocal score distribution: %s", dist_str)

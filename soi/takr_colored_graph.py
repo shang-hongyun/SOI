@@ -3040,9 +3040,8 @@ class ColoredGraph(nx.DiGraph):
                     # shortcut 更匹配外群 → 祖先无 B → 拥有方插入
                     etype = 'insertion'
                     target = own_cid
-                    ch1 = next((ch for c, ch in
-                                set(c for c, _ in bg.nodes[n1].get('sources', set()))
-                                if c == own_cid), 0)
+                    ch1 = next((ch for c, ch in bg.nodes[n1].get('sources', set())
+                                if c == own_cid), (own_cid, 0))[1]
                     sc_colors.add((own_cid, ch1))
                     sc_data['colors'] = sc_colors
                     n_edges_removed += bg.degree(bid)

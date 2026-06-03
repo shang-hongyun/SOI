@@ -2987,115 +2987,171 @@ class ColoredGraph(nx.DiGraph):
                                sample_og, sample_hog)
 
         for (n1, n2), items in groups.items():
-            # ── 构建路径列表 ──
-            paths = []  # [(bid|None, cid, hogs, edges)]
-            for bid, cid, hogs in items:
-                paths.append((bid, cid, hogs,
-                              [(n1, bid), (bid, n2)]))
-            # 简单 indel: shortcut 边作为另一条路径
-            if len(paths) == 1 and bg.has_edge(n1, n2):
-                bid, own_cid, hogs = paths[0][:3]
+            """
+            对每对共享邻居 (n1, n2)，中间有 1~2 条候选路径（气泡结构）：
+            
+            简单 indel（1 个单物种块 B）:
+              path1 = N1→B→N2  (own_cid 的块路径)
+              path2 = N1→N2    (other_cid 的 shortcut 边，如果存在)
+            
+            reciprocal_indel（2 个单物种块）:
+              path1 = N1→B1→N2 (c1 的块路径)
+              path2 = N1→B2→N2 (c2 的块路径)
+
+            处理流程:
+              1. 显式构造 path1, path2（含块/边、孩子、HOG 列表）
+              2. 打分：_score_block_path / _score_block_edge
+              3. 选 winner：高分胜出；同分取块路径优先、更长的优先
+              4. 加颜色：winner 边加上 loser 的孩子颜色（统一为共享边）
+              5. 删 loser：块→remove_node；shortcut 边→remove_edge
+            """
+
+            # ── Step 1: 构造 path1 ──
+            bid, cid, hogs = items[0]
+            path1_bid = bid
+            path1_cid = cid
+            path1_hogs = hogs
+            path1_edges = [(n1, bid), (bid, n2)]
+
+            # ── Step 2: 构造 path2 ──
+            # 情况 A: reciprocal_indel，第二个块
+            # 情况 B: 简单 indel，shortcut 边作为 path2
+            path2_bid = None
+            path2_cid = None
+            path2_hogs = []
+            path2_edges = []
+
+            if len(items) == 2:
+                # reciprocal: 两个孩子各有一个平行块
+                p2_bid, p2_cid, p2_hogs = items[1]
+                if p2_cid == cid:
+                    continue  # 同一孩子，跳过
+                path2_bid = p2_bid
+                path2_cid = p2_cid
+                path2_hogs = p2_hogs
+                path2_edges = [(n1, p2_bid), (p2_bid, n2)]
+                is_simple = False
+            elif bg.has_edge(n1, n2):
+                # 简单 indel: shortcut 边作为 path2
                 other_cid = None
                 for c in self.children():
-                    if c != own_cid:
+                    if c != cid:
                         other_cid = c
                         break
-                if other_cid is not None:
-                    sc_data = self._block_edge_data(n1, n2)
-                    sc_colors = sc_data.get('colors', set())
-                    if any(c == other_cid for c, _ in sc_colors):
-                        paths.append((None, other_cid, [],
-                                      [(n1, n2)]))
-            if len(paths) < 2:
+                if other_cid is None:
+                    continue
+                # 确认 shortcut 带 other_cid 颜色
+                sc_colors = self._block_edge_data(n1, n2).get('colors', set())
+                if not any(c == other_cid for c, _ in sc_colors):
+                    continue
+                path2_cid = other_cid
+                path2_edges = [(n1, n2)]
+                is_simple = True
+            else:
                 continue
 
-            # ── 打分 ──
-            for i, (bid, cid, hogs, edges) in enumerate(paths):
-                if bid is not None:
-                    paths[i] = (bid, cid, hogs, edges,
-                                self._score_block_path(outgroup_graph,
-                                                        [n1, bid, n2], hog_parent))
-                else:
-                    paths[i] = (bid, cid, hogs, edges,
-                                self._score_block_edge(outgroup_graph, n1, n2, hog_parent))
-
-            # ── 选 winner ──
-            has_og = outgroup_graph is not None
-            max_score = max(p[4] for p in paths)
-            top = [p for p in paths if p[4] == max_score]
-            if len(top) == 1:
-                winner = top[0]
-            elif has_og:
-                # 同分：块路径优先于 shortcut
-                block_paths = [p for p in top if p[0] is not None]
-                if block_paths:
-                    # 取最长块路径
-                    winner = max(block_paths, key=lambda p: len(p[2]))
-                else:
-                    winner = top[0]
+            # ── Step 3: 打分 ──
+            # 块路径用 _score_block_path(块序列)，shortcut 用 _score_block_edge(单边)
+            score1 = self._score_block_path(outgroup_graph,
+                                            [n1, path1_bid, n2], hog_parent)
+            if path2_bid is not None:
+                score2 = self._score_block_path(outgroup_graph,
+                                                [n1, path2_bid, n2], hog_parent)
             else:
-                # 无外群，全部 0 → 块路径优先
-                block_paths = [p for p in top if p[0] is not None]
-                winner = block_paths[0] if block_paths else top[0]
+                score2 = self._score_block_edge(outgroup_graph, n1, n2, hog_parent)
 
-            w_bid, w_cid, w_hogs, w_edges, w_score = winner
+            # ── Step 4: 选 winner ──
+            has_og = outgroup_graph is not None
+            if score1 > score2:
+                winner_bid, winner_cid, winner_hogs, winner_edges = \
+                    path1_bid, path1_cid, path1_hogs, path1_edges
+                loser_bid, loser_cid, loser_hogs = \
+                    path2_bid, path2_cid, path2_hogs
+            elif score2 > score1:
+                winner_bid, winner_cid, winner_hogs, winner_edges = \
+                    path2_bid, path2_cid, path2_hogs, path2_edges
+                loser_bid, loser_cid, loser_hogs = \
+                    path1_bid, path1_cid, path1_hogs
+            else:
+                # 同分：块路径优先；都块→更长的优先；都 shortcut→path1
+                if path1_bid is not None:
+                    if path2_bid is not None:
+                        # 两块路径，取更长的
+                        if len(path1_hogs) >= len(path2_hogs):
+                            winner_bid, winner_cid, winner_hogs, winner_edges = \
+                                path1_bid, path1_cid, path1_hogs, path1_edges
+                            loser_bid, loser_cid, loser_hogs = \
+                                path2_bid, path2_cid, path2_hogs
+                        else:
+                            winner_bid, winner_cid, winner_hogs, winner_edges = \
+                                path2_bid, path2_cid, path2_hogs, path2_edges
+                            loser_bid, loser_cid, loser_hogs = \
+                                path1_bid, path1_cid, path1_hogs
+                    else:
+                        # path1 是块，path2 是 shortcut → 块优先
+                        winner_bid, winner_cid, winner_hogs, winner_edges = \
+                            path1_bid, path1_cid, path1_hogs, path1_edges
+                        loser_bid, loser_cid, loser_hogs = \
+                            path2_bid, path2_cid, path2_hogs
+                elif path2_bid is not None:
+                    # path2 是块，path1 是 shortcut → 块优先
+                    winner_bid, winner_cid, winner_hogs, winner_edges = \
+                        path2_bid, path2_cid, path2_hogs, path2_edges
+                    loser_bid, loser_cid, loser_hogs = \
+                        path1_bid, path1_cid, path1_hogs
+                else:
+                    # 两条都是 shortcut → path1 胜
+                    winner_bid, winner_cid, winner_hogs, winner_edges = \
+                        path1_bid, path1_cid, path1_hogs, path1_edges
+                    loser_bid, loser_cid, loser_hogs = \
+                        path2_bid, path2_cid, path2_hogs
 
-            # ── 统一加颜色：所有路径的颜色加到 winner 边上 ──
-            for u, v in w_edges:
+            # ── Step 5: 加颜色 ──
+            # winner 路径保留为祖先态，补上 loser 的孩子颜色
+            # 使祖先路径成为共享边（两边孩子都有）
+            for u, v in winner_edges:
                 wdata = self._block_edge_data(u, v)
                 wcols = wdata.get('colors', set())
-                for _, lcid, _, _, _ in paths:
-                    if lcid == w_cid:
-                        continue
-                    ch = next((s[1] for s in bg.nodes[n1].get('sources', set())
-                               if isinstance(s, tuple) and len(s) == 2
-                               and s[0] == lcid), 0)
-                    wcols.add((lcid, ch))
+                ch = next((s[1] for s in bg.nodes[n1].get('sources', set())
+                           if isinstance(s, tuple) and len(s) == 2
+                           and s[0] == loser_cid), 0)
+                wcols.add((loser_cid, ch))
                 wdata['colors'] = wcols
 
-            # ── 删除 loser ──
-            for l_bid, lcid, l_hogs, l_edges, l_score in paths:
-                if lcid == w_cid:
-                    continue
-                if l_bid is not None:
-                    # 删块
-                    n_edges_removed += bg.degree(l_bid)
-                    bg.remove_node(l_bid)
-                    del self._blocks[l_bid]
-                    removed_blocks.add(l_bid)
-                    n_blocks_removed += 1
-                    n_insertions += 1
-                else:
-                    # 删 shortcut 边
-                    if bg.has_edge(n1, n2):
-                        bg.remove_edge(n1, n2)
-                        n_edges_removed += 1
+            # ── Step 6: 删 loser ──
+            if loser_bid is not None:
+                # loser 是块 → 删块节点和所有邻接边
+                # （祖先态不需要这个块，它是衍生的插入）
+                n_edges_removed += bg.degree(loser_bid)
+                bg.remove_node(loser_bid)
+                del self._blocks[loser_bid]
+                removed_blocks.add(loser_bid)
+                n_blocks_removed += 1
+                n_insertions += 1
+                etype = 'insertion' if is_simple else 'reciprocal_indel'
+            else:
+                # loser 是 shortcut 边 → 删边
+                # （衍生态 shortcut，祖先态走 winner 块路径）
+                if bg.has_edge(n1, n2):
+                    bg.remove_edge(n1, n2)
+                    n_edges_removed += 1
+                n_deletions += 1
+                etype = 'deletion'
 
-                if l_bid is None:
-                    etype = 'deletion'
-                elif len(paths) == 2:
-                    etype = 'insertion'
-                else:
-                    etype = 'reciprocal_indel'
-                self.events.append(TAKREvent(
-                    event_type=etype,
-                    branch=f"{self.hog_level}-{lcid}",
-                    genes_involved=list(l_hogs) if l_hogs else [],
-                    desc=f"{etype}: {'block' if l_bid else 'shortcut'} "
-                         f"{l_bid or f'{n1}↔{n2}'} resolved ({n1}↔{n2}, "
-                         f"winner={w_cid}, scores={[p[4] for p in paths]})",
-                    support=len(l_hogs) if l_hogs else 1,
-                ))
-                if l_bid is None:
-                    n_deletions += 1
-                    n_simple += 1
-                else:
-                    if len(paths) > 2:
-                        n_reciprocal += 1
-                        n_reciprocal_resolved += 1
-                    else:
-                        n_insertions += 1
-                        n_simple += 1
+            self.events.append(TAKREvent(
+                event_type=etype,
+                branch=f"{self.hog_level}-{loser_cid}",
+                genes_involved=list(loser_hogs) if loser_hogs else [],
+                desc=f"{etype}: {'block ' + str(loser_bid) if loser_bid else 'shortcut ' + str((n1, n2))}"
+                     f" resolved ({n1}↔{n2}, winner={winner_cid}, "
+                     f"scores={score1}/{score2})",
+                support=len(loser_hogs) if loser_hogs else 1,
+            ))
+            if is_simple:
+                n_simple += 1
+            else:
+                n_reciprocal += 1
+                n_reciprocal_resolved += 1
 
         # 统计 loser 反推 winner 得 score 分布
         # （保留原 simple_dist / score_dist 逻辑，从 event 信息反填）

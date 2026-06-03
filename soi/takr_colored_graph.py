@@ -2877,19 +2877,13 @@ class ColoredGraph(nx.DiGraph):
                      len(orig_comp_has_telomere))
 
     def _resolve_seg_events(self, outgroup_graph=None) -> int:
-        """Phase 4a: 图结构驱动的 deletion / insertion。
+        """Phase 4a: 气泡结构驱动的 deletion / insertion / reciprocal_indel。
 
-        对单物种块 B（只有 child X），要求：
-        1. 前后邻居 N1、N2 存在且都是 shared 块（≥2 孩子）
-        2. N1↔N2 存在 shortcut 边（带 other child Y 的颜色）
-        → 否则跳过（不是 indel，是该孩子真正的独有区域）
-
-        外群定极性（图级别）：
-        - outgroup_graph.has_edge(h1, h2) → N1↔N2 直连是祖先态
-          → B 是 X 的 insertion → 删块，给 shortcut 边加 X 颜色
-        - 无此边 / 无外群 → N1↔N2 shortcut 是衍生
-          → Y 丢失 B → deletion → 删 shortcut 边的 Y 颜色
-        - 无外群 → deletion（保块删边）+ warning
+        按 (N1, N2) 邻居对分组单物种块：
+        - 0 块：跳过
+        - 1 块 B（child X）：简单 indel，有 shortcut 边才处理
+        - 2 块 Bx、By（X≠Y）：reciprocal_indel
+        外群边打分定祖先态，高分路径保留，低分删除。
         """
         if not hasattr(self, '_blocks') or not self._blocks:
             return 0
@@ -2909,14 +2903,12 @@ class ColoredGraph(nx.DiGraph):
         pre_nodes = bg.number_of_nodes()
         pre_edges = bg.number_of_edges()
 
-        # 统计单物种块总数
         n_single_species = sum(
             1 for bid in self._blocks
             if len(set(c for c, _ in bg.nodes[bid].get('sources', set()))) == 1
         )
 
         def _strip_color(u, v, cid):
-            """删边 (u,v) 中 cid 的颜色；颜色全空则删边。返回是否删了边。"""
             data = self._block_edge_data(u, v)
             old = data.get('colors', set())
             new = {(c, ch) for c, ch in old if c != cid}
@@ -2926,114 +2918,162 @@ class ColoredGraph(nx.DiGraph):
                 return True
             return False
 
+        def _score_edge(ga, gb):
+            """ga, gb 两个块之间在外群图中存在的 HOG 邻接对数。"""
+            if outgroup_graph is None:
+                return 0
+            return sum(1
+                       for ha in self._blocks.get(ga, [])
+                       for hb in self._blocks.get(gb, [])
+                       if outgroup_graph.has_edge(str(ha), str(hb)))
+
+        # === 按 (N1, N2) 邻居对分组单物种块 ===
+        from collections import defaultdict
+        groups = defaultdict(list)  # (n1, n2) → [(bid, cid, hogs)]
+
         for bid in list(self._blocks.keys()):
             if bid in removed_blocks:
                 continue
-            hogs = self._blocks[bid]
             sources = bg.nodes[bid].get('sources', set())
             owner_set = set(c for c, _ in sources)
             if len(owner_set) != 1:
                 continue
             own_cid = next(iter(owner_set))
-            other_cid = None
-            for c in self.children():
-                if c != own_cid:
-                    other_cid = c
-                    break
-            if other_cid is None:
-                continue
-
-            # 找邻居：按 own_cid 方向
             preds = [p for p in bg.predecessors(bid)
                      if any(c == own_cid for c, _ in
                             self._block_edge_data(p, bid).get('colors', set()))]
             succs = [s for s in bg.successors(bid)
                      if any(c == own_cid for c, _ in
                             self._block_edge_data(bid, s).get('colors', set()))]
-
-            if not preds or not succs:
+            if len(preds) != 1 or len(succs) != 1:
                 continue
+            n1, n2 = preds[0], succs[0]
+            n1_srcs = set(c for c, _ in bg.nodes[n1].get('sources', set()))
+            n2_srcs = set(c for c, _ in bg.nodes[n2].get('sources', set()))
+            if len(n1_srcs) < 2 or len(n2_srcs) < 2:
+                continue
+            groups[(n1, n2)].append((bid, own_cid, self._blocks[bid]))
 
-            for n1 in preds:
-                for n2 in succs:
-                    # === 图结构鉴定 ===
-                    # 邻居必须是 shared 块（≥2 孩子）
-                    n1_srcs = set(c for c, _ in bg.nodes[n1].get('sources', set()))
-                    n2_srcs = set(c for c, _ in bg.nodes[n2].get('sources', set()))
-                    if len(n1_srcs) < 2 or len(n2_srcs) < 2:
-                        continue
+        n_groups = len(groups)
+        logger.debug("  [bubble] %d single-species blocks → %d neighbor-pair groups",
+                     sum(len(v) for v in groups.values()), n_groups)
 
-                    # 邻居间必须有 shortcut 边（带 other child 颜色）
-                    if not bg.has_edge(n1, n2):
-                        continue
-                    sc_data = self._block_edge_data(n1, n2)
-                    sc_colors = sc_data.get('colors', set())
-                    has_sc = any(c == other_cid for c, _ in sc_colors)
-                    if not has_sc:
-                        continue
+        for (n1, n2), items in groups.items():
+            n_items = len(items)
+            if n_items == 1:
+                # ── 简单 indel ──
+                bid, own_cid, hogs = items[0]
+                other_cid = None
+                for c in self.children():
+                    if c != own_cid:
+                        other_cid = c
+                        break
+                if other_cid is None:
+                    continue
 
-                    # === 外群定极性（图级别） ===
-                    has_og = outgroup_graph is not None
-                    og_has_edge = False
-                    if has_og:
-                        og_has_edge = any(
-                            outgroup_graph.has_edge(str(h1), str(h2))
-                            for h1 in self._blocks.get(n1, [])
-                            for h2 in self._blocks.get(n2, [])
-                        )
+                # 需要 shortcut 边
+                if not bg.has_edge(n1, n2):
+                    continue
+                sc_data = self._block_edge_data(n1, n2)
+                sc_colors = sc_data.get('colors', set())
+                if not any(c == other_cid for c, _ in sc_colors):
+                    continue
 
-                    if has_og and og_has_edge:
-                        # 祖先有 N1↔N2 → insertion
-                        etype = 'insertion'
-                        target = own_cid
-                        # 给 shortcut 边加 own_cid 颜色（祖先邻接）
-                        ch1 = next((ch for c, ch in n1_srcs if c == own_cid), 0)
-                        sc_colors.add((own_cid, ch1))
-                        sc_data['colors'] = sc_colors
-                        # 删块（remove_node 自动清理所有邻接边）
-                        n_edges_removed += bg.degree(bid)
-                        bg.remove_node(bid)
-                        del self._blocks[bid]
-                        removed_blocks.add(bid)
-                        n_blocks_removed += 1
-                        n_insertions += 1
-                    else:
-                        # 祖先无（或无外群）→ deletion
-                        etype = 'deletion'
-                        target = other_cid
-                        if _strip_color(n1, n2, other_cid):
-                            n_edges_removed += 1
-                        n_deletions += 1
-                        if not has_og:
-                            n_fallback += 1
-                            warn_list.append(
-                                f"no_outgroup: {bid} {own_cid}→{other_cid} ({len(hogs)} HOGs)")
+                # 打分：路径 B vs shortcut
+                score_path = _score_edge(n1, bid) + _score_edge(bid, n2)
+                score_sc = _score_edge(n1, n2)
 
+                has_og = outgroup_graph is not None
+                if has_og and score_path > score_sc:
+                    # B 路径更匹配外群 → 祖先有 B → 对方丢失
+                    etype = 'deletion'
+                    target = other_cid
+                    if _strip_color(n1, n2, other_cid):
+                        n_edges_removed += 1
+                    n_deletions += 1
+                elif has_og and score_sc > score_path:
+                    # shortcut 更匹配外群 → 祖先无 B → 拥有方插入
+                    etype = 'insertion'
+                    target = own_cid
+                    ch1 = next((ch for c, ch in
+                                set(c for c, _ in bg.nodes[n1].get('sources', set()))
+                                if c == own_cid), 0)
+                    sc_colors.add((own_cid, ch1))
+                    sc_data['colors'] = sc_colors
+                    n_edges_removed += bg.degree(bid)
+                    bg.remove_node(bid)
+                    del self._blocks[bid]
+                    removed_blocks.add(bid)
+                    n_blocks_removed += 1
+                    n_insertions += 1
+                else:
+                    # 同分或无外群 → deletion（保守，保块删边）
+                    etype = 'deletion'
+                    target = other_cid
+                    if _strip_color(n1, n2, other_cid):
+                        n_edges_removed += 1
+                    n_deletions += 1
+                    if not has_og:
+                        n_fallback += 1
+                        warn_list.append(
+                            f"no_outgroup: {bid} {own_cid}→{other_cid} ({len(hogs)} HOGs)")
+
+                self.events.append(TAKREvent(
+                    event_type=etype,
+                    branch=f"{self.hog_level}-{target}",
+                    genes_involved=list(hogs),
+                    desc=f"{etype}: {bid} ({len(hogs)} HOGs) {n1}↔{n2} in {target}",
+                    support=len(hogs),
+                ))
+
+            elif n_items == 2:
+                # ── reciprocal_indel ──
+                (b1, c1, h1), (b2, c2, h2) = items
+                if c1 == c2:
+                    continue
+
+                score1 = _score_edge(n1, b1) + _score_edge(b1, n2)
+                score2 = _score_edge(n1, b2) + _score_edge(b2, n2)
+                has_og = outgroup_graph is not None
+
+                if has_og and score1 > score2:
+                    winner, loser = (b1, c1), (b2, c2)
+                elif has_og and score2 > score1:
+                    winner, loser = (b2, c2), (b1, c1)
+                else:
+                    # 同分或无外群 → 只记，不删
+                    if not has_og:
+                        n_fallback += 1
                     self.events.append(TAKREvent(
-                        event_type=etype,
-                        branch=f"{self.hog_level}-{target}",
-                        genes_involved=list(hogs),
-                        desc=f"{etype}: {bid} ({len(hogs)} HOGs) "
-                             f"{n1}↔{n2} in {target}",
-                        support=len(hogs),
+                        event_type='reciprocal_indel',
+                        branch=f"{self.hog_level}-{c1}|{c2}",
+                        genes_involved=list(h1) + list(h2),
+                        desc=f"reciprocal_indel: {b1}/{b2} ambiguous "
+                             f"({n1}↔{n2}, scores={score1}/{score2})",
+                        support=len(h1) + len(h2),
                     ))
-                    break  # 一块只处理一对邻居
-                if bid in removed_blocks:
-                    break
+                    continue
 
-        # reciprocal_indel: 两个孩子的平行路径（气泡）
-        nr, er, nr_insertions, nr_deletions, nr_fallback = \
-            self._resolve_reciprocal_indels(outgroup_graph, bg,
-                                            n_edges_removed, removed_blocks)
-        n_blocks_removed += nr
-        n_edges_removed += er
-        n_insertions += nr_insertions
-        n_deletions += nr_deletions
-        n_fallback += nr_fallback
+                w_bid, w_cid = winner
+                l_bid, l_cid = loser
+                # 删 loser 块
+                n_edges_removed += bg.degree(l_bid)
+                bg.remove_node(l_bid)
+                del self._blocks[l_bid]
+                removed_blocks.add(l_bid)
+                n_blocks_removed += 1
+                n_insertions += 1
+                self.events.append(TAKREvent(
+                    event_type='reciprocal_indel',
+                    branch=f"{self.hog_level}-{l_cid}",
+                    genes_involved=list(self._blocks.get(l_bid, [])),
+                    desc=f"reciprocal_indel: {l_bid} -> {w_bid} "
+                         f"({n1}↔{n2}, winner={w_cid}, scores={score1}/{score2})",
+                    support=len(self._blocks.get(l_bid, [])),
+                ))
 
         if n_fallback:
-            logger.warning("  [seg] %d events with no outgroup (fallback=deletion):",
-                           n_fallback)
+            logger.warning("  [seg] %d events with no outgroup:", n_fallback)
             for w in warn_list[:5]:
                 logger.warning("    %s", w)
             if len(warn_list) > 5:
@@ -3046,119 +3086,19 @@ class ColoredGraph(nx.DiGraph):
                         "(%d insertions, %d deletions%s)",
                         n_blocks_removed, n_edges_removed,
                         n_insertions, n_deletions,
-                        f", {n_fallback} fallback-warned" if n_fallback else "")
+                        f", {n_fallback} fallback" if n_fallback else "")
             logger.info("  [seg] graph: %d→%d nodes, %d→%d edges (Δn=%+d, Δe=%+d)",
                         pre_nodes, post_nodes, pre_edges, post_edges,
                         post_nodes - pre_nodes, post_edges - pre_edges)
         logger.info("  [seg] single-species blocks: %d total → %d resolved as indel"
                     " (%d simple + %d reciprocal%s)",
                     n_single_species,
-                    n_insertions + n_deletions + nr_fallback,
-                    n_insertions + n_deletions - nr_insertions - nr_deletions,
-                    nr_insertions + nr_deletions + nr_fallback,
-                    f", {nr_fallback} fallback" if nr_fallback else "")
+                    n_insertions + n_deletions + n_fallback,
+                    n_insertions + n_deletions - (n_blocks_removed - n_insertions),
+                    n_blocks_removed + n_fallback - n_deletions,
+                    f", {n_fallback} fallback" if n_fallback else "")
 
         return n_blocks_removed + n_deletions
-
-    def _resolve_reciprocal_indels(self, outgroup_graph, bg,
-                                    n_edges_removed, removed_blocks):
-        """检测并解决 reciprocal_indel（气泡结构）。
-
-        两个孩子在同一对 shared 邻居 N1↔N2 之间各有独立单物种路径，
-        且路径的 HOG 属于同一 orthogroup（不同拷贝）。无 shortcut 边。
-
-        外群判极性：outgroup_graph 中有哪个拷贝 → 该路径祖先态，删另一条。
-        无外群 → 记录事件，不动图。
-        返回 (blocks_removed, edges_removed, insertions, deletions, fallbacks)
-        """
-        n_blk = 0
-        n_edg = 0
-        n_ins = 0
-        n_del = 0
-        n_fb = 0
-
-        # 按邻居对分组单物种块: (n1, n2) → [(bid, cid, hogs)]
-        from collections import defaultdict
-        bubble_groups = defaultdict(list)
-
-        for bid in self._blocks:
-            if bid in removed_blocks:
-                continue
-            sources = bg.nodes[bid].get('sources', set())
-            owner_set = set(c for c, _ in sources)
-            if len(owner_set) != 1:
-                continue
-            own_cid = next(iter(owner_set))
-
-            preds = [p for p in bg.predecessors(bid)
-                     if any(c == own_cid for c, _ in
-                            self._block_edge_data(p, bid).get('colors', set()))]
-            succs = [s for s in bg.successors(bid)
-                     if any(c == own_cid for c, _ in
-                            self._block_edge_data(bid, s).get('colors', set()))]
-            if len(preds) != 1 or len(succs) != 1:
-                continue
-            n1, n2 = preds[0], succs[0]
-
-            # 邻居必须是 shared 块，且无 shortcut 边
-            n1_srcs = set(c for c, _ in bg.nodes[n1].get('sources', set()))
-            n2_srcs = set(c for c, _ in bg.nodes[n2].get('sources', set()))
-            if len(n1_srcs) < 2 or len(n2_srcs) < 2:
-                continue
-            if bg.has_edge(n1, n2):
-                continue  # 有 shortcut 边 → 简单 indel 已处理
-
-            bubble_groups[(n1, n2)].append((bid, own_cid, self._blocks[bid]))
-
-        for (n1, n2), blocks in bubble_groups.items():
-            if len(blocks) != 2:
-                continue  # 需要恰好两个单物种块
-            (b1, c1, h1), (b2, c2, h2) = blocks
-            if c1 == c2:
-                continue  # 同一孩子，不是跨孩子的
-
-            # 外群定极性
-            has_og = outgroup_graph is not None
-            ancestral = None
-            derived = None
-            if has_og:
-                if any(str(h) in outgroup_graph for h in h1):
-                    ancestral, derived = (b1, c1), (b2, c2)
-                elif any(str(h) in outgroup_graph for h in h2):
-                    ancestral, derived = (b2, c2), (b1, c1)
-
-            if ancestral:
-                # 保留祖先块，合并衍生孩子路径
-                a_bid, a_cid = ancestral
-                d_bid, d_cid = derived
-                # 删衍生块及其边
-                n_edg += bg.degree(d_bid)
-                bg.remove_node(d_bid)
-                del self._blocks[d_bid]
-                removed_blocks.add(d_bid)
-                n_blk += 1
-                n_ins += 1
-                self.events.append(TAKREvent(
-                    event_type='reciprocal_indel',
-                    branch=f"{self.hog_level}-{d_cid}",
-                    genes_involved=list(self._blocks.get(d_bid, [])),
-                    desc=f"reciprocal_indel: {d_bid} -> {a_bid} "
-                         f"({n1}↔{n2}, ancestral={a_cid})",
-                    support=len(self._blocks.get(d_bid, [])),
-                ))
-            else:
-                # 无外群 → 记录，不修改图
-                n_fb += 1
-                self.events.append(TAKREvent(
-                    event_type='reciprocal_indel',
-                    branch=f"{self.hog_level}-{c1}|{c2}",
-                    genes_involved=list(h1) + list(h2),
-                    desc=f"reciprocal_indel: {b1}/{b2} ambiguous "
-                         f"({n1}↔{n2}, no outgroup)",
-                    support=len(h1) + len(h2),
-                ))
-
-        return n_blk, n_edg, n_ins, n_del, n_fb
 
     def _resolve_unidir_trans(self, outgroup_adjacency: Set = None) -> int:
         """Phase 4b: 检测 unidirectional translocation。

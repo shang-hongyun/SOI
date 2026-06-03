@@ -2919,13 +2919,15 @@ class ColoredGraph(nx.DiGraph):
             return False
 
         def _score_edge(ga, gb):
-            """ga, gb 两个块之间在外群图中存在的 HOG 邻接对数。"""
+            """ga 尾部 HOG 与 gb 首部 HOG 在外群图中是否存在边。1 或 0。"""
             if outgroup_graph is None:
                 return 0
-            return sum(1
-                       for ha in self._blocks.get(ga, [])
-                       for hb in self._blocks.get(gb, [])
-                       if outgroup_graph.has_edge(str(ha), str(hb)))
+            ha_list = self._blocks.get(ga, [])
+            hb_list = self._blocks.get(gb, [])
+            if not ha_list or not hb_list:
+                return 0
+            ha, hb = ha_list[-1], hb_list[0]
+            return 1 if outgroup_graph.has_edge(str(ha), str(hb)) else 0
 
         # === 按 (N1, N2) 邻居对分组单物种块 ===
         from collections import defaultdict

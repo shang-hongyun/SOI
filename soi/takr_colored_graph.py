@@ -2993,7 +2993,7 @@ class ColoredGraph(nx.DiGraph):
                     continue
 
                 # 打分：路径 B vs shortcut
-                score_path = self._score_block_edge(outgroup_graph, n1, bid) + self._score_block_edge(outgroup_graph, bid, n2)
+                score_path = self._score_block_path(outgroup_graph, [n1, bid, n2])
                 score_sc = self._score_block_edge(outgroup_graph, n1, n2)
 
                 has_og = outgroup_graph is not None
@@ -3046,8 +3046,8 @@ class ColoredGraph(nx.DiGraph):
                 if c1 == c2:
                     continue
 
-                score1 = self._score_block_edge(outgroup_graph, n1, b1) + self._score_block_edge(outgroup_graph, b1, n2)
-                score2 = self._score_block_edge(outgroup_graph, n1, b2) + self._score_block_edge(outgroup_graph, b2, n2)
+                score1 = self._score_block_path(outgroup_graph, [n1, b1, n2])
+                score2 = self._score_block_path(outgroup_graph, [n1, b2, n2])
                 key = (score1, score2)
                 score_dist[key] = score_dist.get(key, 0) + 1
                 has_og = outgroup_graph is not None

@@ -334,7 +334,7 @@ class ReconstructorV2:
         node = self.akr.tree.search_nodes(name=node_id)
         if not node or not node[0].up:
             return outgroup_graph
-        parent_hog_level = node[0].up.name
+        parent_hog_level = node_id
 
         logger.debug("  [outgroup] %s: sibling leaves %s -> mapping to %s",
                      node_id, og_leaves, parent_hog_level)

@@ -2909,6 +2909,17 @@ class ColoredGraph(nx.DiGraph):
         pre_nodes = bg.number_of_nodes()
         pre_edges = bg.number_of_edges()
 
+        def _strip_color(u, v, cid):
+            """删边 (u,v) 中 cid 的颜色；颜色全空则删边。返回是否删了边。"""
+            data = self._block_edge_data(u, v)
+            old = data.get('colors', set())
+            new = {(c, ch) for c, ch in old if c != cid}
+            data['colors'] = new
+            if not new:
+                bg.remove_edge(u, v)
+                return True
+            return False
+
         for bid in list(self._blocks.keys()):
             if bid in removed_blocks:
                 continue
@@ -2973,12 +2984,7 @@ class ColoredGraph(nx.DiGraph):
                         for (u, v) in [(n1, bid), (bid, n2)]:
                             if not bg.has_edge(u, v):
                                 continue
-                            d = self._block_edge_data(u, v)
-                            old = d.get('colors', set())
-                            new = {(c, ch) for c, ch in old if c != own_cid}
-                            d['colors'] = new
-                            if not new:
-                                bg.remove_edge(u, v)
+                            if _strip_color(u, v, own_cid):
                                 n_edges_removed += 1
                         # 给 shortcut 边加 own_cid 颜色
                         ch1 = next((ch for c, ch in n1_srcs if c == own_cid), 0)
@@ -2994,11 +3000,7 @@ class ColoredGraph(nx.DiGraph):
                         # 祖先无（或无外群）→ deletion
                         etype = 'seg_deletion'
                         target = other_cid
-                        # 删 shortcut 边的 other_cid 颜色
-                        new_colors = {(c, ch) for c, ch in sc_colors if c != other_cid}
-                        sc_data['colors'] = new_colors
-                        if not new_colors:
-                            bg.remove_edge(n1, n2)
+                        if _strip_color(n1, n2, other_cid):
                             n_edges_removed += 1
                         n_deletions += 1
                         if not has_og:

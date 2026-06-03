@@ -2876,6 +2876,24 @@ class ColoredGraph(nx.DiGraph):
                      len(self._original_shared_components),
                      len(orig_comp_has_telomere))
 
+    def _score_block_edge(self, outgroup_graph, ga, gb):
+        """ga 尾部 HOG 与 gb 首部 HOG 在外群图中是否存在边。返回 1 或 0。"""
+        if outgroup_graph is None or not hasattr(self, '_blocks'):
+            return 0
+        ha_list = self._blocks.get(ga, [])
+        hb_list = self._blocks.get(gb, [])
+        if not ha_list or not hb_list:
+            return 0
+        ha, hb = ha_list[-1], hb_list[0]
+        return 1 if outgroup_graph.has_edge(str(ha), str(hb)) else 0
+
+    def _score_block_path(self, outgroup_graph, block_ids):
+        """路径中相邻块之间在外群图中存在的边数。遍历 zip 逐对调用 _score_block_edge。"""
+        if outgroup_graph is None or len(block_ids) < 2:
+            return 0
+        return sum(self._score_block_edge(outgroup_graph, a, b)
+                   for a, b in zip(block_ids, block_ids[1:]))
+
     def _resolve_seg_events(self, outgroup_graph=None) -> int:
         """Phase 4a: 气泡结构驱动的 deletion / insertion / reciprocal_indel。
 
@@ -2900,6 +2918,7 @@ class ColoredGraph(nx.DiGraph):
         n_simple = 0
         n_reciprocal = 0
         n_reciprocal_resolved = 0
+        score_dist = {}
         removed_blocks = set()
         warn_list = []
 
@@ -2920,17 +2939,6 @@ class ColoredGraph(nx.DiGraph):
                 bg.remove_edge(u, v)
                 return True
             return False
-
-        def _score_edge(ga, gb):
-            """ga 尾部 HOG 与 gb 首部 HOG 在外群图中是否存在边。1 或 0。"""
-            if outgroup_graph is None:
-                return 0
-            ha_list = self._blocks.get(ga, [])
-            hb_list = self._blocks.get(gb, [])
-            if not ha_list or not hb_list:
-                return 0
-            ha, hb = ha_list[-1], hb_list[0]
-            return 1 if outgroup_graph.has_edge(str(ha), str(hb)) else 0
 
         # === 按 (N1, N2) 邻居对分组单物种块 ===
         from collections import defaultdict
@@ -2985,8 +2993,8 @@ class ColoredGraph(nx.DiGraph):
                     continue
 
                 # 打分：路径 B vs shortcut
-                score_path = _score_edge(n1, bid) + _score_edge(bid, n2)
-                score_sc = _score_edge(n1, n2)
+                score_path = self._score_block_edge(outgroup_graph, n1, bid) + self._score_block_edge(outgroup_graph, bid, n2)
+                score_sc = self._score_block_edge(outgroup_graph, n1, n2)
 
                 has_og = outgroup_graph is not None
                 if has_og and score_path > score_sc:
@@ -3038,8 +3046,10 @@ class ColoredGraph(nx.DiGraph):
                 if c1 == c2:
                     continue
 
-                score1 = _score_edge(n1, b1) + _score_edge(b1, n2)
-                score2 = _score_edge(n1, b2) + _score_edge(b2, n2)
+                score1 = self._score_block_edge(outgroup_graph, n1, b1) + self._score_block_edge(outgroup_graph, b1, n2)
+                score2 = self._score_block_edge(outgroup_graph, n1, b2) + self._score_block_edge(outgroup_graph, b2, n2)
+                key = (score1, score2)
+                score_dist[key] = score_dist.get(key, 0) + 1
                 has_og = outgroup_graph is not None
 
                 if has_og and score1 > score2:
@@ -3106,6 +3116,10 @@ class ColoredGraph(nx.DiGraph):
                     n_simple, n_reciprocal,
                     f", {n_reciprocal_resolved}/{n_reciprocal} resolved"
                     if n_reciprocal else "")
+
+        if score_dist:
+            dist_str = ' '.join(f'{k[0]}/{k[1]}={v}' for k, v in sorted(score_dist.items()))
+            logger.info("  [seg] reciprocal score distribution: %s", dist_str)
 
         return n_blocks_removed + n_deletions
 
